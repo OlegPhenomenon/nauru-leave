@@ -147,13 +147,13 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
               </p>
               <p className="muted">{t.policy.explanation}</p>
               {t.policy.status === 'demo_fictional' ? (
-                <span className="badge badge-demo">Fictional demo rule — not verified for real use</span>
+                <span className="badge badge-demo">Fictional demo rule — not Nauru law</span>
               ) : t.policy.status === 'verified' ? (
-                <span className="badge" style={{ background: 'var(--ok-bg)', color: 'var(--ok)', borderColor: '#9ccbab' }}>
+                <span className="badge badge-ok">
                   Verified{t.policy.verified_by ? ` by ${t.policy.verified_by.display_name}` : ''}
                 </span>
               ) : (
-                <span className="badge">{t.policy.status}</span>
+                <span className="badge badge-med">Rule not verified — {t.policy.status}</span>
               )}{' '}
               {canEdit && t.policy.status !== 'verified' ? (
                 <button

@@ -25,6 +25,22 @@ endpoints use it. The client accepts either `{items|rows: []}` or a bare array
   (`'demo_fictional'|'verified'|…`). The Settings tab shows the
   “Fictional demo rule” badge when `status === 'demo_fictional'` and a Verify
   button when it is not `'verified'`.
+- `BalanceSummary` (from `GET /api/balances/me` and
+  `GET /api/balances/:employee_id`) carries `policy: PolicyVersion | null`;
+  `POST /api/requests/preview` also returns `policy`. Every surface that shows
+  a policy uses `PolicyBadge` (`src/components/ui.tsx`): a fictional demo rule
+  is always labelled “Fictional demo rule — not Nauru law”.
+- Preview `warnings` for `code: 'team_overlap'` carry
+  `details: [{ name, from, to }]` — rendered as a sub-list naming the absent
+  teammates (`WarnList` in `src/components/ui.tsx`).
+- Calendar absence cells: `label` is the leave type name, or the literal
+  `"Away"` when the absence is restricted (e.g. medical). Cells render the
+  word “Away” whenever the label is masked, linked only if `request_id` is
+  present.
+- `GET /api/requests/:id` returns 403 `forbidden` for requests outside the
+  caller's scope (another unit, sensitive leave). `RequestDetail` renders a
+  friendly “You don’t have access to this request” page with a way back —
+  not the generic error box.
 - `Schedule`: `{ id, name, versions?: ScheduleVersion[] }`;
   `ScheduleVersion.week` is either `{mon..sun: minutes}` or `number[7]`
   (both rendered). POST `/api/schedules` body is
@@ -82,3 +98,27 @@ endpoints use it. The client accepts either `{items|rows: []}` or a bare array
   `request_id` and the `label` field.
 - Bundle is a single chunk (no code splitting) to keep the Rust binary embed
   simple; 112 KB gzipped JS.
+
+## End-to-end test (Playwright)
+
+`e2e/main-scenario.spec.ts` walks scenario steps 1–5 (balance → request →
+three-step approval → amendment → time travel) against a **running** stack.
+It is not part of `npm test`.
+
+```bash
+# 1. backend (fresh data dir so seeded balances start at 20 days)
+NLD_MODE=demo NLD_BIND=127.0.0.1:18080 NLD_DATA_DIR=/tmp/nld-fe-data \
+  NLD_PUBLIC_URL=http://127.0.0.1:5173 /tmp/nauru-leave-snapshot serve
+
+# 2. dev server with the /api proxy pointed at that backend
+cd frontend && NLD_API=http://127.0.0.1:18080 npx vite --host 127.0.0.1
+
+# 3. in another shell
+cd frontend && npm run e2e        # E2E_BASE=http://127.0.0.1:5173 by default
+```
+
+Browsers: `npx playwright install chromium` once if chromium is not cached.
+The scenario mutates the sandbox (it creates/approves requests and moves the
+business date to 2026-11-12), so re-run it only after `POST /api/demo/reset`
+or a fresh `NLD_DATA_DIR`. The demo backend rate-limits bursts; the spec
+waits and retries when it sees `rate_limited`.

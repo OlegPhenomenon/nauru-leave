@@ -127,21 +127,18 @@ export default function TeamCalendar() {
                         const a = byDate.get(d);
                         if (!a) return <td key={d} className="cal-off" />;
                         const cls = a.state === 'approved' ? 'cal-a' : 'cal-p';
-                        const part = a.part === 'full' ? '' : ` ${a.part}`;
-                        const cell = `${a.label}${part}`;
+                        // The API masks sensitive absences (e.g. medical) with the label
+                        // "Away" — show the word, not just a dot, so the day reads plainly.
+                        const masked = a.label === 'Away' || !a.request_id;
+                        const inner = masked
+                          ? `${a.label}${a.part !== 'full' ? ` ${a.part}` : ''}`
+                          : `${a.state === 'approved' ? '●' : '◐'}${a.part !== 'full' ? ` ${a.part}` : ''}`;
                         return (
                           <td key={d} className={cls} title={`${a.label} (${a.state})`}>
                             {a.request_id ? (
-                              <Link to={`/requests/${a.request_id}`}>
-                                {a.state === 'approved' ? '●' : '◐'}
-                                {a.part !== 'full' ? ` ${a.part}` : ''}
-                              </Link>
+                              <Link to={`/requests/${a.request_id}`}>{inner}</Link>
                             ) : (
-                              <span>
-                                {a.state === 'approved' ? '●' : '◐'}
-                                {a.part !== 'full' ? ` ${a.part}` : ''}
-                                <span className="print-only"> {cell}</span>
-                              </span>
+                              <span>{inner}</span>
                             )}
                           </td>
                         );

@@ -83,6 +83,7 @@ export interface BalanceSummary {
   taken_minutes: number;
   minutes_per_day: number;
   accounts: AccountBalance[];
+  policy: PolicyVersion | null;
 }
 
 export type LedgerKind =
@@ -305,6 +306,7 @@ export interface Preview {
   route: { kind: StepKind; who: string; problem: string | null }[];
   warnings: Warning[];
   errors: { code: string; message: string }[];
+  policy: PolicyVersion | null;
 }
 
 // --- Session & demo ---

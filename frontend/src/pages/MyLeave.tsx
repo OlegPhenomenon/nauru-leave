@@ -7,6 +7,7 @@ import {
   ErrBox,
   Loading,
   PhaseBadge,
+  PolicyBadge,
   ReqLink,
   StatusBadge,
 } from '../components/ui';
@@ -120,6 +121,12 @@ export default function MyLeave() {
               <p className="muted">This leave type does not use a balance — days are counted, no
                 account is deducted.</p>
             )}
+            {b.policy ? (
+              <div style={{ marginTop: '0.6rem' }}>
+                <PolicyBadge policy={b.policy} />
+                <div className="muted small">{b.policy.explanation}</div>
+              </div>
+            ) : null}
           </div>
         ))}
       </div>

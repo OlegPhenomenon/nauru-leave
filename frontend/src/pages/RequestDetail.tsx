@@ -104,10 +104,11 @@ function RevisionFields({
 }: {
   leaveTypes: LeaveType[];
   value: RevisionFieldValue;
-  onChange: (v: RevisionFieldValue) => void;
+  onChange: (patch: Partial<RevisionFieldValue>) => void;
 }) {
-  type V = RevisionFieldValue;
-  const set = (patch: Partial<V>) => onChange({ ...value, ...patch });
+  // Patch-style updates: the parent merges into current state, so an edit that
+  // lands in the same tick as the prefill effect can't clobber other fields.
+  const set = (patch: Partial<RevisionFieldValue>) => onChange(patch);
   const lt = leaveTypes.find((t) => t.id === value.leave_type_id);
   const halfDay = lt?.allow_half_day ?? false;
   return (
@@ -255,9 +256,21 @@ export default function RequestDetail() {
 
   // One Idempotency-Key per click-intent; reused if the user retries (API.md).
   const [opKey, setOpKey] = useState('');
+  function patchFields(patch: Partial<typeof fields>) {
+    setFields((f) => ({ ...f, ...patch }));
+  }
   function openAction(a: ActionKind | null) {
     setOpKey(newIdempotencyKey());
     setActionErr(null);
+    setReason('');
+    setBasisDoc('');
+    setOutcome('');
+    setBody('');
+    setWithChanges(false);
+    setChangeReason('');
+    setMinutesDelta('');
+    setFile(null);
+    setSensitivity('normal');
     setAction(a);
   }
 
@@ -282,7 +295,35 @@ export default function RequestDetail() {
   }
 
   if (q.loading) return <Loading />;
-  if (q.error) return <ErrBox error={q.error} />;
+  if (q.error) {
+    // A request someone links you can be outside your scope (sensitive leave,
+    // another unit). Say so plainly instead of showing a raw API error.
+    if (q.error.status === 403)
+      return (
+        <div className="panel" style={{ maxWidth: '36rem', margin: '2rem auto' }}>
+          <h1>You don’t have access to this request</h1>
+          <p className="muted">
+            This request is not shared with you. It may belong to another team or contain
+            restricted (e.g. medical) details. If you believe you should see it, ask an HR
+            officer to check your role and scope.
+          </p>
+          <Link className="btn btn-secondary" to="/my">
+            Back to My leave
+          </Link>
+        </div>
+      );
+    if (q.error.status === 404)
+      return (
+        <div className="panel" style={{ maxWidth: '36rem', margin: '2rem auto' }}>
+          <h1>Request not found</h1>
+          <p className="muted">This link does not match any request you can see.</p>
+          <Link className="btn btn-secondary" to="/my">
+            Back to My leave
+          </Link>
+        </div>
+      );
+    return <ErrBox error={q.error} />;
+  }
   if (!d) return null;
   const mpd = d.minutes_per_day;
   const can = (a: AllowedAction) => d.allowed_actions.includes(a);
@@ -687,8 +728,8 @@ export default function RequestDetail() {
               Related:{' '}
               {d.children.map((c) => (
                 <span key={c.id} style={{ marginRight: '0.6rem' }}>
-                  <ReqLink id={c.id} number={c.number} />{' '}
-                  <StatusBadge status={c.status} label={c.kind} />
+                  <ReqLink id={c.id} number={c.number} /> <span className="badge">{c.kind}</span>{' '}
+                  <StatusBadge status={c.status} />
                 </span>
               ))}
             </p>
@@ -792,7 +833,7 @@ export default function RequestDetail() {
           <RevisionFields
             leaveTypes={leaveTypesQ.data ?? []}
             value={fields}
-            onChange={setFields}
+            onChange={patchFields}
           />
           {actionErr ? <ErrBox error={actionErr} /> : null}
           <div className="btn-row">
@@ -953,7 +994,7 @@ export default function RequestDetail() {
           ) : null}
           {action === 'revise' || withChanges ? (
             <>
-              <RevisionFields leaveTypes={leaveTypesQ.data ?? []} value={fields} onChange={setFields} />
+              <RevisionFields leaveTypes={leaveTypesQ.data ?? []} value={fields} onChange={patchFields} />
               <Field label="Change reason (required)">
                 <input
                   type="text"
@@ -1011,7 +1052,7 @@ export default function RequestDetail() {
             Creates a new amendment request — the approved dates stay in force until the amendment is
             decided.
           </p>
-          <RevisionFields leaveTypes={leaveTypesQ.data ?? []} value={fields} onChange={setFields} />
+          <RevisionFields leaveTypes={leaveTypesQ.data ?? []} value={fields} onChange={patchFields} />
           <Field label="Change reason (required)">
             <input type="text" value={changeReason} onChange={(e) => setChangeReason(e.target.value)} />
           </Field>

@@ -1,8 +1,8 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { ApiError } from '../api/client';
-import type { Status, Step } from '../api/types';
-import { fmtDuration } from '../lib/format';
+import type { PolicyVersion, Status, Step, Warning } from '../api/types';
+import { fmtDate, fmtDuration } from '../lib/format';
 
 // Statuses are always words + a shape, never colour alone (spec).
 const STATUS_META: Record<Status, { icon: string; cls: string; label: string }> = {
@@ -125,7 +125,7 @@ export function Field({
   );
 }
 
-export function WarnList({ warnings }: { warnings: { code: string; message: string }[] }) {
+export function WarnList({ warnings }: { warnings: Warning[] }) {
   if (!warnings.length) return null;
   return (
     <ul className="warn-list">
@@ -133,6 +133,18 @@ export function WarnList({ warnings }: { warnings: { code: string; message: stri
         <li key={i}>
           <span aria-hidden="true">⚠ </span>
           {w.message}
+          {w.code === 'team_overlap' && Array.isArray(w.details) ? (
+            <ul className="warn-detail">
+              {(w.details as { name?: string; from?: string; to?: string }[]).map((o, j) =>
+                o.name ? (
+                  <li key={j}>
+                    {o.name}
+                    {o.from && o.to ? ` — ${fmtDate(o.from)} to ${fmtDate(o.to)}` : ''}
+                  </li>
+                ) : null,
+              )}
+            </ul>
+          ) : null}
         </li>
       ))}
     </ul>
@@ -144,6 +156,31 @@ export function ReqLink({ id, number }: { id: number; number: string }) {
     <Link className="req-num" to={`/requests/${id}`}>
       {number}
     </Link>
+  );
+}
+
+/**
+ * Marks where a leave policy comes from. Demo rules must never look like
+ * verified law — the badge text is fixed by docs/DEMO_DATA.md.
+ */
+export function PolicyBadge({ policy }: { policy: PolicyVersion | null | undefined }) {
+  if (!policy) return null;
+  if (policy.status === 'demo_fictional')
+    return (
+      <span className="badge badge-demo" title={policy.explanation}>
+        Fictional demo rule — not Nauru law
+      </span>
+    );
+  if (policy.status === 'verified')
+    return (
+      <span className="badge badge-ok" title={policy.explanation}>
+        Verified rule
+      </span>
+    );
+  return (
+    <span className="badge badge-med" title={policy.explanation}>
+      Rule not verified — confirm with HR before real use
+    </span>
   );
 }
 

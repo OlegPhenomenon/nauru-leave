@@ -458,6 +458,17 @@ th.num {
   border-color: #e3a19d;
   color: var(--err);
 }
+.badge-ok {
+  background: var(--ok-bg);
+  border-color: #9ccbab;
+  color: var(--ok);
+}
+.warn-detail {
+  margin: 0.2rem 0 0;
+  padding-left: 1.1rem;
+  list-style: disc;
+  font-size: 0.85rem;
+}
 
 /* ---------- alerts ---------- */
 
@@ -804,13 +815,15 @@ table.cal td.cal-name {
 }
 .two-col {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0,…) lets a column shrink below its content's min-content width —
+     inner wide tables scroll via .table-wrap instead of blowing out the page. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 1rem;
   align-items: start;
 }
 @media (max-width: 800px) {
   .two-col {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 .stale-banner {

@@ -9,7 +9,7 @@ import type {
   Preview,
   RequestDetail,
 } from '../api/types';
-import { Dur, Empty, ErrBox, Field, WarnList } from '../components/ui';
+import { Dur, Empty, ErrBox, Field, PolicyBadge, WarnList } from '../components/ui';
 import { fmtHours, fmtWeekday, partLabel, stepLabel } from '../lib/format';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
@@ -73,6 +73,7 @@ function PreviewPanel({ preview, pending }: { preview: Preview | null; pending: 
         </table>
       </div>
       {preview.balance_after.length ? (
+        <div className="table-wrap">
         <table className="small" style={{ maxWidth: '34rem' }}>
           <thead>
             <tr>
@@ -95,6 +96,13 @@ function PreviewPanel({ preview, pending }: { preview: Preview | null; pending: 
             ))}
           </tbody>
         </table>
+        </div>
+      ) : null}
+      {preview.policy ? (
+        <p className="small">
+          <PolicyBadge policy={preview.policy} />{' '}
+          <span className="muted">{preview.policy.explanation}</span>
+        </p>
       ) : null}
       {preview.route.length ? (
         <>
