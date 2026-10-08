@@ -184,7 +184,7 @@ export default function PersonDetail() {
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Balances</h2>
           <div className="card-grid">
-            {e.balances.map((b) => (
+            {e.balances.filter((b) => b.leave_type.uses_balance).map((b) => (
               <div className="card" key={b.leave_type.id}>
                 <h3>{b.leave_type.name}</h3>
                 <span className="balance-num">

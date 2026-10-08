@@ -253,8 +253,9 @@ export default function Reports() {
       <section className="panel">
         <h2 style={{ marginTop: 0 }}>Exports (transfer file)</h2>
         <p className="muted small">
-          A CSV for the finance system. Marking it “transferred” is a manual confirmation — the file
-          itself is not proof of payroll posting.
+          A generic CSV for handing approved leave to another system (for example payroll). It is
+          not a ready-made import format for any specific product. Marking it “transferred” is a
+          manual confirmation — the file itself is not proof of payroll posting.
         </p>
         <div className="toolbar">
           <Field label="From">

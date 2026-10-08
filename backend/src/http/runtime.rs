@@ -201,10 +201,18 @@ impl AppState {
         registry.execute_batch("CREATE TABLE IF NOT EXISTS sandboxes(id TEXT PRIMARY KEY, generation INTEGER NOT NULL, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, has_pending INTEGER NOT NULL DEFAULT 1);
             CREATE TABLE IF NOT EXISTS retired(id TEXT NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(id,generation));
             CREATE TABLE IF NOT EXISTS creation_events(ip TEXT NOT NULL,at INTEGER NOT NULL);")?;
+        // Rebuild the template on every start so an upgraded binary never hands out a seed built by an older
+        // schema or seed. Build aside, then swap; existing sandboxes are independent copies and stay untouched.
         let template = self.config.data_dir.join("template.sqlite");
-        if !template.exists() {
-            crate::seed::build_template(&template, &self.config.data_dir.join("files/template"))?;
-        }
+        let template_files = self.config.data_dir.join("files/template");
+        let next = self.config.data_dir.join("template.next.sqlite");
+        let next_files = self.config.data_dir.join("files/template.next");
+        let _ = std::fs::remove_file(&next);
+        let _ = std::fs::remove_dir_all(&next_files);
+        crate::seed::build_template(&next, &next_files)?;
+        let _ = std::fs::remove_dir_all(&template_files);
+        std::fs::rename(&next_files, &template_files)?;
+        std::fs::rename(&next, &template)?;
         Ok(())
     }
     pub(crate) fn registry(&self) -> Res<Connection> {

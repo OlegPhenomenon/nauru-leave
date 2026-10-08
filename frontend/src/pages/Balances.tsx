@@ -40,7 +40,10 @@ export default function Balances() {
           leave_type_id: leaveType || undefined,
           date: asOf || undefined,
         },
-      }).then((d) => unwrapList<BalanceRow>(d)),
+      })
+        .then((d) => unwrapList<BalanceRow>(d))
+        // Types that do not use a balance (e.g. unpaid leave) have nothing to show here.
+        .then((rows) => rows.filter((r) => r.summary.leave_type.uses_balance)),
     [orgUnit, leaveType, asOf],
   );
   const adjQ = useApi(
@@ -98,7 +101,7 @@ export default function Balances() {
           <Field label="Leave type">
             <select value={leaveType} onChange={(e) => setLeaveType(e.target.value)}>
               <option value="">All</option>
-              {typesQ.data?.map((t) => (
+              {typesQ.data?.filter((t) => t.uses_balance).map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>

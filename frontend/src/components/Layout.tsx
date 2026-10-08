@@ -171,7 +171,6 @@ const NAV: { to: string; label: string; show: (s: Session) => boolean }[] = [
     label: 'Operations',
     show: (s) => s.hasRole('tech_admin', 'hr', 'auditor'),
   },
-  { to: '/help', label: 'Help', show: () => true },
 ];
 
 export default function Layout() {
@@ -198,6 +197,9 @@ export default function Layout() {
           ) : null}
           {me ? (
             <div className="user-box">
+              <NavLink to="/help" className="help-link">
+                Help
+              </NavLink>
               <span>{me.user.display_name}</span>
               <button
                 className="btn btn-secondary btn-sm"

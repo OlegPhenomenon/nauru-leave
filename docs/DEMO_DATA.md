@@ -37,7 +37,7 @@ responsible HR officer before real use."
 | NPS-1001 | Alexei Novak | IU | Olga Berg | Standard | Employee. Главный сценарий. Opening 2026 ANNUAL = 20 дней, без заявлений. |
 | NPS-1002 | Olga Berg | IU | Elena Ward | Standard | Manager IU. Её FAMILY-заявление в `needs_information` (вопрос Maria: "Please confirm whether the school event date is fixed."). Делегация manager_recommendation → Tom Reed на 2026-12-14…2026-12-31 (будущая). |
 | NPS-1003 | Tom Reed | IU | Olga Berg | Standard | Approved ANNUAL 2025-12-29…2026-01-07 (граница года: 2025-дни → счёт 2025, 2026-дни → счёт 2026; факт подтверждён Maria). Withdrawn заявление 2026-09-14. |
-| NPS-1004 | Lina Cole | IU | Olga Berg | Part-time | `submitted` ANNUAL 2026-11-10…2026-11-12 (ждёт Olga) → предупреждение team_overlap для заявления Alexei. |
+| NPS-1004 | Lina Cole | IU | Olga Berg | Part-time | Opening 2026 в её собственных днях (360 мин/день), пропорционально неполному графику: ANNUAL = 7200 (20 дней), SICK = 3600 (10 дней), FAMILY = 1800 (5 дней). `submitted` ANNUAL 2026-11-10…2026-11-12 (ждёт Olga) → предупреждение team_overlap для заявления Alexei. |
 | NPS-1005 | Sam Oduya | IU | Olga Berg | Standard | **Без входа**, email sam.oduya@unreachable.demo (уведомление падает → видно в Operations). Бумажное заявление, введено Maria, получено 2026-10-05, ANNUAL 2026-10-20…2026-10-21, `under_review` (Olga рекомендовала, ждёт HR). Предложенная Maria корректировка +480 мин ("Paper record correction", basis "HR file NPS-1005/2026-114"), ждёт David. |
 | NPS-2001 | Rita Moss | CSU | Elena Ward | Standard | Manager CSU. Approved ANNUAL 2026-10-16 am (полдня). Истёкшая делегация → Ben Carter 2026-09-01…2026-09-15. |
 | NPS-2002 | Ben Carter | CSU | Rita Moss | Standard | Rejected ANNUAL 2026-10-26…2026-10-30 (Elena: "Community programme week — please choose other dates"). Approved, затем полностью отменённый ANNUAL 2026-09-21…2026-09-22 (cancelled). |
@@ -48,8 +48,10 @@ responsible HR officer before real use."
 | NPS-0004 | Pavel Grant | CHR | Elena Ward | Standard | tech_admin. Не видит медицинские файлы, не меняет остатки. |
 | NPS-0005 | Grace Lin | CHR | Elena Ward | Standard | auditor (scope all). |
 
-Opening balances: ANNUAL 2026 = 9600 для всех (effective 2026-01-01), Tom дополнительно ANNUAL 2025 = 9600
-(effective 2025-01-01); SICK 2026 = 4800 и FAMILY 2026 = 2400 для всех. Начисление 2027 **не** проведено — HR может
+Opening balances: ANNUAL 2026 = 9600 для всех, кроме Lina (effective 2026-01-01), Tom дополнительно ANNUAL 2025 = 9600
+(effective 2025-01-01); SICK 2026 = 4800 и FAMILY 2026 = 2400 для всех, кроме Lina. У Lina (part-time Mon–Thu 6 ч,
+360 мин/день) opening проведены в её собственных днях: ANNUAL 2026 = 7200 (20 × 360), SICK 2026 = 3600 (10 × 360),
+FAMILY 2026 = 1800 (5 × 360) — пропорционально неполному графику (вымышленное демо-правило). Начисление 2027 **не** проведено — HR может
 провести его в демо (Balances → Run accrual 2027), чтобы показать разбиение заявления на границе 2026/2027.
 
 ## Персонажи на экране входа

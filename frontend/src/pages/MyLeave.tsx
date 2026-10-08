@@ -28,6 +28,7 @@ export default function MyLeave() {
   );
 
   const requests = requestsQ.data ?? [];
+  const balances = (balancesQ.data ?? []).filter((b) => b.leave_type.uses_balance);
   const open = requests.filter((r) =>
     ['draft', 'submitted', 'needs_information', 'under_review'].includes(r.status),
   );
@@ -53,74 +54,67 @@ export default function MyLeave() {
 
       {balancesQ.loading ? <Loading label="Loading balances…" /> : null}
       {balancesQ.error ? <ErrBox error={balancesQ.error} /> : null}
-      {balancesQ.data && balancesQ.data.length === 0 && empId ? (
+      {balancesQ.data && balances.length === 0 && empId ? (
         <Empty>No balance accounts yet.</Empty>
       ) : null}
       <div className="card-grid">
-        {balancesQ.data?.map((b) => (
+        {balances.map((b) => (
           <div className="card" key={b.leave_type.id}>
             <h3>{b.leave_type.name}</h3>
-            {b.leave_type.uses_balance ? (
-              <>
-                <span className="balance-num">
-                  <Dur minutes={b.available_minutes} mpd={b.minutes_per_day} />
-                </span>
-                <span className="balance-sub">available now</span>
-                <dl className="kv" style={{ marginTop: '0.6rem' }}>
-                  <div className="kv-row">
-                    <dt>Ledger</dt>
-                    <dd>
-                      <Dur minutes={b.ledger_minutes} mpd={b.minutes_per_day} />
-                    </dd>
-                  </div>
-                  <div className="kv-row">
-                    <dt>Reserved by open requests</dt>
-                    <dd>
-                      <Dur minutes={b.reserved_minutes} mpd={b.minutes_per_day} />
-                    </dd>
-                  </div>
-                  {b.approved_upcoming_minutes > 0 ? (
-                    <div className="kv-row">
-                      <dt>Approved, still upcoming</dt>
-                      <dd>
-                        <Dur minutes={b.approved_upcoming_minutes} mpd={b.minutes_per_day} />
-                      </dd>
-                    </div>
-                  ) : null}
-                  {b.taken_minutes > 0 ? (
-                    <div className="kv-row">
-                      <dt>Taken (past dates)</dt>
-                      <dd>
-                        <Dur minutes={b.taken_minutes} mpd={b.minutes_per_day} />
-                      </dd>
-                    </div>
-                  ) : null}
-                </dl>
-                {b.accounts.length > 1 || b.accounts.some((a) => a.period_year !== undefined) ? (
-                  <table className="small">
-                    <tbody>
-                      {b.accounts.map((a) => (
-                        <tr key={a.account_id}>
-                          <td>{a.period_year}</td>
-                          <td className="num">
-                            <Dur minutes={a.available_minutes} mpd={a.minutes_per_day} />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : null}
-                <Link
-                  to={`/balances/${empId}/explain?leave_type_id=${b.leave_type.id}`}
-                  className="small"
-                >
-                  How is this calculated?
-                </Link>
-              </>
-            ) : (
-              <p className="muted">This leave type does not use a balance — days are counted, no
-                account is deducted.</p>
-            )}
+            <span className="balance-num">
+              <Dur minutes={b.available_minutes} mpd={b.minutes_per_day} />
+            </span>
+            <span className="balance-sub">available now</span>
+            <dl className="kv" style={{ marginTop: '0.6rem' }}>
+              <div className="kv-row">
+                <dt>Ledger</dt>
+                <dd>
+                  <Dur minutes={b.ledger_minutes} mpd={b.minutes_per_day} />
+                </dd>
+              </div>
+              <div className="kv-row">
+                <dt>Reserved by open requests</dt>
+                <dd>
+                  <Dur minutes={b.reserved_minutes} mpd={b.minutes_per_day} />
+                </dd>
+              </div>
+              {b.approved_upcoming_minutes > 0 ? (
+                <div className="kv-row">
+                  <dt>Approved, still upcoming</dt>
+                  <dd>
+                    <Dur minutes={b.approved_upcoming_minutes} mpd={b.minutes_per_day} />
+                  </dd>
+                </div>
+              ) : null}
+              {b.taken_minutes > 0 ? (
+                <div className="kv-row">
+                  <dt>Taken (past dates)</dt>
+                  <dd>
+                    <Dur minutes={b.taken_minutes} mpd={b.minutes_per_day} />
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
+            {b.accounts.length > 1 || b.accounts.some((a) => a.period_year !== undefined) ? (
+              <table className="small">
+                <tbody>
+                  {b.accounts.map((a) => (
+                    <tr key={a.account_id}>
+                      <td>{a.period_year}</td>
+                      <td className="num">
+                        <Dur minutes={a.available_minutes} mpd={a.minutes_per_day} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : null}
+            <Link
+              to={`/balances/${empId}/explain?leave_type_id=${b.leave_type.id}`}
+              className="small"
+            >
+              How is this calculated?
+            </Link>
             {b.policy ? (
               <div style={{ marginTop: '0.6rem' }}>
                 <PolicyBadge policy={b.policy} />
