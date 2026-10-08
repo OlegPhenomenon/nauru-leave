@@ -66,17 +66,41 @@ fn notification_retry() {
     assert_eq!((status.as_str(), attempts), ("failed", 1));
 
     // not due yet (next attempt in +1 min)
-    let n = notify::deliver_due(&mut w.conn, &MailboxTransport, t0 + time::Duration::seconds(30))
-        .unwrap();
+    let n = notify::deliver_due(
+        &mut w.conn,
+        &MailboxTransport,
+        t0 + time::Duration::seconds(30),
+    )
+    .unwrap();
     assert_eq!(n, 0);
     // due at +1min -> attempts=2, next in +5
-    notify::deliver_due(&mut w.conn, &MailboxTransport, t0 + time::Duration::minutes(2)).unwrap();
+    notify::deliver_due(
+        &mut w.conn,
+        &MailboxTransport,
+        t0 + time::Duration::minutes(2),
+    )
+    .unwrap();
     let (_, status, attempts, _) = notification_for(&w, "unreachable");
     assert_eq!((status.as_str(), attempts), ("failed", 2));
     // attempt 3 at +5min mark, then 4, then gave_up on the 5th
-    notify::deliver_due(&mut w.conn, &MailboxTransport, t0 + time::Duration::minutes(8)).unwrap();
-    notify::deliver_due(&mut w.conn, &MailboxTransport, t0 + time::Duration::minutes(40)).unwrap();
-    notify::deliver_due(&mut w.conn, &MailboxTransport, t0 + time::Duration::minutes(80)).unwrap();
+    notify::deliver_due(
+        &mut w.conn,
+        &MailboxTransport,
+        t0 + time::Duration::minutes(8),
+    )
+    .unwrap();
+    notify::deliver_due(
+        &mut w.conn,
+        &MailboxTransport,
+        t0 + time::Duration::minutes(40),
+    )
+    .unwrap();
+    notify::deliver_due(
+        &mut w.conn,
+        &MailboxTransport,
+        t0 + time::Duration::minutes(80),
+    )
+    .unwrap();
     let (_, status, attempts, _) = notification_for(&w, "unreachable");
     assert_eq!((status.as_str(), attempts), ("gave_up", 5));
 
@@ -149,7 +173,14 @@ fn upload_checks() {
 
     // not a pdf/png/jpeg
     let err = requests::upload_attachment(
-        &mut w.conn, &clock, &alexei, &store, req, "x.bin", b"garbage bytes", "normal",
+        &mut w.conn,
+        &clock,
+        &alexei,
+        &store,
+        req,
+        "x.bin",
+        b"garbage bytes",
+        "normal",
     )
     .unwrap_err();
     assert_eq!(err.code(), "validation");
@@ -158,7 +189,14 @@ fn upload_checks() {
     let mut infected = b"%PDF-1.4\n".to_vec();
     infected.extend_from_slice(EICAR.as_bytes());
     let att = requests::upload_attachment(
-        &mut w.conn, &clock, &alexei, &store, req, "bad.pdf", &infected, "normal",
+        &mut w.conn,
+        &clock,
+        &alexei,
+        &store,
+        req,
+        "bad.pdf",
+        &infected,
+        "normal",
     )
     .unwrap();
     let ctx = requests::attachment_ctx(&w.conn, att, w.today).unwrap();
@@ -184,12 +222,23 @@ fn backup_restore_roundtrip() {
     let req = w.submit_leave(w.u_alexei, w.annual, "2026-11-09", "2026-11-13");
     w.approve_all(req);
     let att = requests::upload_attachment(
-        &mut w.conn, &clock, &alexei, &store, req, "a.pdf", b"%PDF-1.4\nbody\n", "normal",
+        &mut w.conn,
+        &clock,
+        &alexei,
+        &store,
+        req,
+        "a.pdf",
+        b"%PDF-1.4\nbody\n",
+        "normal",
     )
     .unwrap();
     let file_key: String = w
         .conn
-        .query_row("SELECT storage_key FROM attachments WHERE id=?1", [att], |r| r.get(0))
+        .query_row(
+            "SELECT storage_key FROM attachments WHERE id=?1",
+            [att],
+            |r| r.get(0),
+        )
         .unwrap();
     let file_bytes = store.get(&file_key).unwrap();
     let totals_before = w.totals(w.alexei, w.annual);
@@ -246,20 +295,38 @@ fn seed_builds() {
 
     let today = common::d("2026-10-08");
     let demo_today: String = conn
-        .query_row("SELECT value FROM settings WHERE key='demo_today'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM settings WHERE key='demo_today'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(demo_today, "2026-10-08");
 
     let alexei: i64 = conn
-        .query_row("SELECT id FROM employees WHERE service_id='NPS-1001'", [], |r| r.get(0))
+        .query_row(
+            "SELECT id FROM employees WHERE service_id='NPS-1001'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let annual: i64 = conn
-        .query_row("SELECT id FROM leave_types WHERE code='ANNUAL'", [], |r| r.get(0))
+        .query_row("SELECT id FROM leave_types WHERE code='ANNUAL'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     let (ledger_m, _reserved, available) =
         nauru_leave::ledger::totals(&conn, alexei, annual, today).unwrap();
     assert_eq!(ledger_m, 9600);
     assert_eq!(available, 9600);
+
+    let mut st = conn.prepare("SELECT a.period_year,SUM(ra.minutes) FROM revision_allocations ra JOIN leave_accounts a ON a.id=ra.account_id JOIN request_revisions rr ON rr.id=ra.revision_id JOIN leave_requests lr ON lr.effective_revision_id=rr.id JOIN employees e ON e.id=lr.employee_id WHERE e.service_id='NPS-1003' AND lr.status='approved' GROUP BY a.period_year ORDER BY a.period_year").unwrap();
+    let split: Vec<(i64, i64)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(split, vec![(2025, 1440), (2026, 1920)]);
 
     // the medical attachment exists, is clean and stored on disk
     let (storage_key, sensitivity, scan): (String, String, String) = conn

@@ -58,7 +58,7 @@ impl Actor {
 
     /// Does the actor hold `role` covering `unit_id` (scope NULL = all)?
     pub fn role_in_scope(&self, conn: &Connection, role: &str, unit_id: Option<i64>) -> Res<bool> {
-        for g in &self.roles {
+        for g in model::valid_grants(conn, self.user_id, self.today)? {
             if g.role == role && model::unit_in_scope(conn, g.scope_org_unit_id, unit_id)? {
                 return Ok(true);
             }
@@ -177,6 +177,8 @@ pub fn require(conn: &Connection, actor: &Actor, action: Action, res: &Resource)
 
 /// The gate. Returns Err(Forbidden/SelfApprovalForbidden) when denied.
 pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> Res<()> {
+    let fresh = Actor::load(conn, actor.user_id, actor.today)?;
+    let actor = &fresh;
     match action {
         Action::ManageSettings => {
             if actor.role_in_scope(conn, "hr", None)? {
@@ -186,7 +188,11 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
             }
         }
         Action::ManageImportsExports => {
-            if actor.has_role("hr") {Ok(())} else {Err(DomainError::forbidden("needs hr role"))}
+            if actor.has_role("hr") {
+                Ok(())
+            } else {
+                Err(DomainError::forbidden("needs hr role"))
+            }
         }
         Action::ManagePeople => {
             let unit = match res {
@@ -243,7 +249,6 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
         | Action::Revise
         | Action::Amend
         | Action::CancelRequest
-        | Action::Comment
         | Action::UploadAttachment => {
             let req = req_of(res);
             // owner, the person who entered a paper request, or hr in scope
@@ -256,6 +261,12 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
                 Err(DomainError::forbidden("not the owner"))
             }
         }
+        Action::Comment => {
+            if actor.has_role("auditor") || actor.has_role("tech_admin") {
+                return Err(DomainError::forbidden("read-only role cannot comment"));
+            }
+            view_level(conn, actor, req_of(res)).map(|_| ())
+        }
         Action::DecideStep => match res {
             Resource::Step { request, step } => {
                 decide_authority(conn, actor, request, step).map(|_| ())
@@ -264,11 +275,19 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
         },
         Action::ViewAttachment => match res {
             Resource::Attachment(a) => {
-                if a.sensitivity=="medical" {
-                    if actor.employee_id==Some(a.request.employee_id) || actor.user_id==a.uploaded_by || actor.role_in_scope(conn,"hr_medical",a.request.org_unit_id)? {Ok(())}else{Err(DomainError::forbidden("medical file"))}
-                } else {view_level(conn,actor,&a.request).map(|_|())}
+                if a.sensitivity == "medical" {
+                    if actor.employee_id == Some(a.request.employee_id)
+                        || actor.role_in_scope(conn, "hr_medical", a.request.org_unit_id)?
+                    {
+                        Ok(())
+                    } else {
+                        Err(DomainError::forbidden("medical file"))
+                    }
+                } else {
+                    view_level(conn, actor, &a.request).map(|_| ())
+                }
             }
-            _=>unreachable!(),
+            _ => unreachable!(),
         },
         Action::DownloadAttachment => match res {
             Resource::Attachment(a) => {
@@ -276,8 +295,7 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
                     return Err(DomainError::forbidden("file is quarantined"));
                 }
                 if a.sensitivity == "medical" {
-                    let owner = actor.employee_id == Some(a.request.employee_id)
-                        || actor.user_id == a.uploaded_by;
+                    let owner = actor.employee_id == Some(a.request.employee_id);
                     if owner || actor.role_in_scope(conn, "hr_medical", a.request.org_unit_id)? {
                         Ok(())
                     } else {
@@ -332,7 +350,7 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
             _ => unreachable!(),
         },
         Action::RunAccrual | Action::ClosePeriod => {
-            if actor.role_in_scope(conn,"hr",None)? {
+            if actor.role_in_scope(conn, "hr", None)? {
                 Ok(())
             } else {
                 Err(DomainError::forbidden("needs hr role"))
@@ -401,6 +419,8 @@ impl RequestCtx {
 
 /// Visibility of a request for the actor. Err = no access at all.
 pub fn view_level(conn: &Connection, actor: &Actor, req: &RequestCtx) -> Res<ViewLevel> {
+    let fresh = Actor::load(conn, actor.user_id, actor.today)?;
+    let actor = &fresh;
     let masked = if req.sensitive_type {
         ViewLevel::Restricted
     } else {
@@ -471,6 +491,8 @@ pub fn decide_authority(
     req: &RequestCtx,
     step: &Step,
 ) -> Res<Authority> {
+    let fresh = Actor::load(conn, actor.user_id, actor.today)?;
+    let actor = &fresh;
     // self-approval ban: the employee can never decide their own request,
     // whatever roles or delegations they hold.
     if Some(actor.user_id) == req.employee_user_id {
@@ -519,6 +541,16 @@ fn direct_authority(
     if let Some(assignee) = step.assignee_user_id {
         if assignee != who {
             return Ok(None);
+        }
+        let required_role = match step.kind {
+            StepKind::ManagerRecommendation => None,
+            StepKind::HrCheck => Some("hr"),
+            StepKind::FinalDecision => Some("final_approver"),
+        };
+        if let Some(role) = required_role {
+            if !role_in_scope_for(conn, who, &[role], req.org_unit_id, actor.today)? {
+                return Ok(None);
+            }
         }
         let label = assignee_label(conn, req, step, who)?;
         return Ok(Some(Authority {
@@ -597,4 +629,15 @@ fn role_in_scope_for(
         }
     }
     Ok(false)
+}
+
+/// CLI callers are trusted by local OS access; refuse to mutate a demo database.
+pub fn require_operator(conn: &Connection) -> Res<()> {
+    let demo: i64 = conn.query_row("SELECT COUNT(*) FROM settings WHERE (key='mode' AND value!='production') OR key='demo_today'", [], |r| r.get(0))?;
+    if demo > 0 {
+        return Err(DomainError::forbidden(
+            "operator provisioning requires a production database",
+        ));
+    }
+    Ok(())
 }

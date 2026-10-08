@@ -115,10 +115,14 @@ pub fn scheduled_on(
 }
 
 /// Current schedule/exception identifiers and minutes, compared with a frozen day snapshot.
-pub fn snapshot_on(conn: &Connection, employee_id: i64, d: Date) -> Res<(Option<i64>, Option<i64>, i64)> {
-    let (version, _, minutes)=schedule_on(conn, employee_id, d)?;
-    let (exception, _, minutes)=apply_exception(conn, version, d, minutes)?;
-    Ok((version,exception,minutes))
+pub fn snapshot_on(
+    conn: &Connection,
+    employee_id: i64,
+    d: Date,
+) -> Res<(Option<i64>, Option<i64>, i64)> {
+    let (version, _, minutes) = schedule_on(conn, employee_id, d)?;
+    let (exception, _, minutes) = apply_exception(conn, version, d, minutes)?;
+    Ok((version, exception, minutes))
 }
 
 /// (schedule_version_id, schedule_name, weekday minutes) for `d`.
@@ -260,8 +264,7 @@ pub fn find_overlap(
     days: &[ComputedDay],
     exclude_request_ids: &[i64],
 ) -> Res<Option<OverlapHit>> {
-    let mut blockers: BTreeMap<String, String> = BTreeMap::new(); // date -> part
-    let mut hit_req: BTreeMap<String, (i64, String)> = BTreeMap::new();
+    let mut blockers: BTreeMap<String, Vec<(String, i64, String)>> = BTreeMap::new();
 
     // Candidate requests: open leave/amendment (current revision) and
     // approved leave (effective revision).
@@ -296,8 +299,11 @@ pub fn find_overlap(
             if day.part == "none" || day.minutes <= 0 {
                 continue;
             }
-            blockers.insert(model::date_s(&day.date), day.part.clone());
-            hit_req.insert(model::date_s(&day.date), (rid, number.clone()));
+            blockers.entry(model::date_s(&day.date)).or_default().push((
+                day.part,
+                rid,
+                number.clone(),
+            ));
         }
     }
 
@@ -306,16 +312,17 @@ pub fn find_overlap(
             continue;
         }
         let ds = model::date_s(&d.date);
-        if let Some(part) = blockers.get(&ds) {
-            let new_part = Part::parse(&d.part).unwrap_or(Part::Full);
-            let old_part = Part::parse(part).unwrap_or(Part::Full);
-            if new_part.overlaps(&old_part) {
-                let (rid, number) = hit_req.get(&ds).cloned().unwrap_or((0, String::new()));
-                return Ok(Some(OverlapHit {
-                    request_id: rid,
-                    request_number: number,
-                    date: d.date,
-                }));
+        if let Some(blockers) = blockers.get(&ds) {
+            for (part, rid, number) in blockers {
+                let new_part = Part::parse(&d.part).unwrap_or(Part::Full);
+                let old_part = Part::parse(part).unwrap_or(Part::Full);
+                if new_part.overlaps(&old_part) {
+                    return Ok(Some(OverlapHit {
+                        request_id: *rid,
+                        request_number: number.clone(),
+                        date: d.date,
+                    }));
+                }
             }
         }
     }

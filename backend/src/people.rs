@@ -76,7 +76,14 @@ pub fn create_employee(
     let id: i64 = conn.query_row(
         "INSERT INTO employees(service_id, full_name, email, user_id, start_date, created_at)
          VALUES (?1,?2,?3,?4,?5,?6) RETURNING id",
-        params![service_id, full_name, email, user_id, date_s(&start_date), now_ts],
+        params![
+            service_id,
+            full_name,
+            email,
+            user_id,
+            date_s(&start_date),
+            now_ts
+        ],
         |r| r.get(0),
     )?;
     assign(conn, id, org_unit_id, manager_employee_id, start_date)?;
@@ -280,8 +287,13 @@ pub fn create_delegation(
 ) -> Res<i64> {
     let now_ts = clock.now_ts();
     crate::db::write_tx(conn, |tx| {
-        if !["manager_recommendation", "hr_check", "final_decision", "all_approvals"]
-            .contains(&scope)
+        if ![
+            "manager_recommendation",
+            "hr_check",
+            "final_decision",
+            "all_approvals",
+        ]
+        .contains(&scope)
         {
             return Err(DomainError::validation("bad delegation scope"));
         }
@@ -386,7 +398,19 @@ pub fn transfer(
             tx,
             actor,
             Action::TransferEmployee,
-            &Resource::Employee { employee_id, org_unit_id: cur_unit },
+            &Resource::Employee {
+                employee_id,
+                org_unit_id: cur_unit,
+            },
+        )?;
+        authz::require(
+            tx,
+            actor,
+            Action::TransferEmployee,
+            &Resource::Employee {
+                employee_id,
+                org_unit_id: Some(org_unit_id),
+            },
         )?;
         // close the assignment valid today
         let day_before = valid_from
@@ -397,8 +421,14 @@ pub fn transfer(
              WHERE employee_id=?1 AND valid_from<=?3 AND (valid_to IS NULL OR valid_to>=?3)",
             params![employee_id, date_s(&day_before), date_s(&today)],
         )?;
-        assign(tx, employee_id, org_unit_id, manager_employee_id, valid_from)?;
-        if reassign_open_steps {
+        assign(
+            tx,
+            employee_id,
+            org_unit_id,
+            manager_employee_id,
+            valid_from,
+        )?;
+        if reassign_open_steps && valid_from <= today {
             let new_manager_user = manager_employee_id
                 .map(|m| model::load_employee(tx, m))
                 .transpose()?

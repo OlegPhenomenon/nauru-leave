@@ -151,7 +151,7 @@ pub async fn serve(config: Config) -> crate::Res<()> {
         let mut count = 0u64;
         loop {
             ticks.tick().await;
-            if let Err(e) = worker_state.jobs(count % 120 == 0).await {
+            if let Err(e) = worker_state.jobs(count.is_multiple_of(120)).await {
                 tracing::error!(error=%e,"background jobs");
             }
             count += 1;

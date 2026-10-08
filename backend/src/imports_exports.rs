@@ -1256,6 +1256,82 @@ pub fn changes_since_export(conn: &Connection) -> Res<Vec<serde_json::Value>> {
 
 // ------------------------------------------------------------------ tests
 
+fn import_row_scope(
+    conn: &Connection,
+    actor: &Actor,
+    kind: &str,
+    row: &serde_json::Value,
+    today: Date,
+) -> Res<()> {
+    // Invalid rows remain preview errors. Scope validation applies whenever an employee/unit can be resolved.
+    if let Some(sid) = row["service_id"].as_str() {
+        if let Some(employee) = employee_by_service_id(conn, sid)? {
+            authz::require(
+                conn,
+                actor,
+                Action::ManagePeople,
+                &Resource::Employee {
+                    employee_id: employee,
+                    org_unit_id: model::unit_of(conn, employee, today)?,
+                },
+            )?;
+        }
+    }
+    if kind == "employees" {
+        if let Some(unit) = row["org_unit_id"].as_i64() {
+            authz::require(
+                conn,
+                actor,
+                Action::ManagePeople,
+                &Resource::Employee {
+                    employee_id: 0,
+                    org_unit_id: Some(unit),
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+/// Saved CSVs are re-authorized against the current employee assignments on each download/mark.
+pub fn authorized_export(
+    conn: &Connection,
+    actor: &Actor,
+    id: i64,
+) -> Res<(ExportRecord, Vec<u8>)> {
+    authz::require(conn, actor, Action::ManageImportsExports, &Resource::Global)?;
+    let (record, bytes) = load_export(conn, id)?;
+    let owner: i64 = conn.query_row(
+        "SELECT created_by FROM export_batches WHERE id=?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    if owner != actor.user_id && !actor.role_in_scope(conn, "hr", None)? {
+        return Err(DomainError::forbidden("export belongs to another HR scope"));
+    }
+    let mut csv = csv::Reader::from_reader(bytes.as_slice());
+    for row in csv.records() {
+        let row = row?;
+        let sid = row
+            .get(0)
+            .unwrap_or("")
+            .strip_prefix('\'')
+            .unwrap_or(row.get(0).unwrap_or(""));
+        let employee = employee_by_service_id(conn, sid)?
+            .ok_or_else(|| DomainError::forbidden("export employee is unavailable"))?;
+        authz::require(
+            conn,
+            actor,
+            Action::ManagePeople,
+            &Resource::Employee {
+                employee_id: employee,
+                org_unit_id: model::unit_of(conn, employee, actor.today)?,
+            },
+        )?;
+    }
+    Ok((record, bytes))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1493,10 +1569,10 @@ mod tests {
             .find(|a| a.1 == annual && a.2 == 2026)
             .unwrap()
             .0;
-        // opening was 9600, Nia's consumption untouched — historical adds 0
+        // Tom's seed leave consumed 1920 from 2026; historical adds 0
         assert_eq!(
             ledger::balance_at(&conn, a26, date!(2026 - 10 - 08)).unwrap(),
-            9600
+            9600 - 1920
         );
     }
 
@@ -1544,79 +1620,4 @@ mod tests {
             .unwrap();
         assert_eq!(&records[3][0], "'\rret");
     }
-}
-
-fn import_row_scope(
-    conn: &Connection,
-    actor: &Actor,
-    kind: &str,
-    row: &serde_json::Value,
-    today: Date,
-) -> Res<()> {
-    // Invalid rows remain preview errors. Scope validation applies whenever an employee/unit can be resolved.
-    if let Some(sid) = row["service_id"].as_str() {
-        if let Some(employee) = employee_by_service_id(conn, sid)? {
-            authz::require(
-                conn,
-                actor,
-                Action::ManagePeople,
-                &Resource::Employee {
-                    employee_id: employee,
-                    org_unit_id: model::unit_of(conn, employee, today)?,
-                },
-            )?;
-        }
-    }
-    if kind == "employees" {
-        if let Some(unit) = row["org_unit_id"].as_i64() {
-            authz::require(
-                conn,
-                actor,
-                Action::ManagePeople,
-                &Resource::Employee {
-                    employee_id: 0,
-                    org_unit_id: Some(unit),
-                },
-            )?;
-        }
-    }
-    Ok(())
-}
-/// Saved CSVs are re-authorized against the current employee assignments on each download/mark.
-pub fn authorized_export(
-    conn: &Connection,
-    actor: &Actor,
-    id: i64,
-) -> Res<(ExportRecord, Vec<u8>)> {
-    authz::require(conn, actor, Action::ManageImportsExports, &Resource::Global)?;
-    let (record, bytes) = load_export(conn, id)?;
-    let owner: i64 = conn.query_row(
-        "SELECT created_by FROM export_batches WHERE id=?1",
-        [id],
-        |r| r.get(0),
-    )?;
-    if owner != actor.user_id && !actor.role_in_scope(conn, "hr", None)? {
-        return Err(DomainError::forbidden("export belongs to another HR scope"));
-    }
-    let mut csv = csv::Reader::from_reader(bytes.as_slice());
-    for row in csv.records() {
-        let row = row?;
-        let sid = row
-            .get(0)
-            .unwrap_or("")
-            .strip_prefix('\'')
-            .unwrap_or(row.get(0).unwrap_or(""));
-        let employee = employee_by_service_id(conn, sid)?
-            .ok_or_else(|| DomainError::forbidden("export employee is unavailable"))?;
-        authz::require(
-            conn,
-            actor,
-            Action::ManagePeople,
-            &Resource::Employee {
-                employee_id: employee,
-                org_unit_id: model::unit_of(conn, employee, actor.today)?,
-            },
-        )?;
-    }
-    Ok((record, bytes))
 }

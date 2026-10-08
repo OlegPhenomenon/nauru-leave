@@ -19,6 +19,7 @@ pub mod model;
 pub mod notify;
 pub mod people;
 pub mod presentation;
+pub mod provisioning;
 pub mod queries;
 pub mod requests;
 pub mod seed;

@@ -193,7 +193,7 @@ pub fn seed_template(conn: &mut Connection, files_dir: &Path) -> Res<()> {
 
     // ------------------------------------------------------------- opening balances
     for emp in [alexei, olga, tom, lina, sam_emp, rita, ben, nia, maria, elena, david, pavel, grace] {
-        ledger::post_opening(conn, emp, annual, 2026, 9600, d("2026-01-01"),
+        ledger::post_opening(conn, emp, annual, 2026, 9600, if emp == tom { d("2025-12-10") } else { d("2026-01-01") },
             "Opening balance 2026 (20 days)", Some(u_maria), "2026-01-01T09:00:00Z")?;
         ledger::post_opening(conn, emp, sick, 2026, 4800, d("2026-01-01"),
             "Opening balance 2026", Some(u_maria), "2026-01-01T09:00:00Z")?;

@@ -21,7 +21,9 @@ use crate::clock::Clock;
 use crate::error::DomainError;
 use crate::files::{self, FileStore};
 use crate::ledger::{self, DayAllocation};
-use crate::model::{self, date_s, LeaveRequest, Part, RequestKind, RequestStatus, Revision, Step, StepKind};
+use crate::model::{
+    self, date_s, LeaveRequest, Part, RequestKind, RequestStatus, Revision, Step, StepKind,
+};
 use crate::notify;
 use crate::Res;
 
@@ -179,8 +181,19 @@ fn idem_store(
 pub fn request_ctx(conn: &Connection, req: &LeaveRequest, today: Date) -> Res<RequestCtx> {
     let emp = model::load_employee(conn, req.employee_id)?;
     let org_unit_id = model::unit_of(conn, req.employee_id, today)?;
-    let sensitive = match req.current_revision_id {
-        Some(r) => model::load_leave_type(conn, model::load_revision(conn, r)?.leave_type_id)?.sensitive,
+    let revision_id = if req.kind == RequestKind::Leave
+        && matches!(
+            req.status,
+            RequestStatus::Approved | RequestStatus::Cancelled
+        ) {
+        req.effective_revision_id
+    } else {
+        req.current_revision_id
+    };
+    let sensitive = match revision_id {
+        Some(r) => {
+            model::load_leave_type(conn, model::load_revision(conn, r)?.leave_type_id)?.sensitive
+        }
         None => false,
     };
     Ok(RequestCtx {
@@ -231,9 +244,10 @@ fn resolve_employee(
     input: &DraftInput,
 ) -> Res<(i64, &'static str)> {
     let own = actor.employee_id;
-    let target = input.employee_id.or(own).ok_or_else(|| {
-        DomainError::forbidden("no employee record linked to this account")
-    })?;
+    let target = input
+        .employee_id
+        .or(own)
+        .ok_or_else(|| DomainError::forbidden("no employee record linked to this account"))?;
     let unit = model::unit_of(conn, target, actor.today)?;
     if Some(target) == own {
         if input.paper {
@@ -242,7 +256,10 @@ fn resolve_employee(
                 conn,
                 actor,
                 Action::CreatePaper,
-                &Resource::Employee { employee_id: target, org_unit_id: unit },
+                &Resource::Employee {
+                    employee_id: target,
+                    org_unit_id: unit,
+                },
             )?;
             return Ok((target, "paper"));
         }
@@ -258,7 +275,10 @@ fn resolve_employee(
             conn,
             actor,
             Action::CreatePaper,
-            &Resource::Employee { employee_id: target, org_unit_id: unit },
+            &Resource::Employee {
+                employee_id: target,
+                org_unit_id: unit,
+            },
         )?;
         Ok((target, "paper"))
     }
@@ -274,7 +294,10 @@ fn validate_range(
 ) -> Res<()> {
     let lt = model::load_leave_type(conn, leave_type_id)?;
     if !lt.active {
-        return Err(DomainError::validation(format!("leave type {} is inactive", lt.code)));
+        return Err(DomainError::validation(format!(
+            "leave type {} is inactive",
+            lt.code
+        )));
     }
     if end < start {
         return Err(DomainError::validation("end_date before start_date"));
@@ -283,6 +306,58 @@ fn validate_range(
         return Err(DomainError::validation(
             "single-day request: start_part and end_part must match",
         ));
+    }
+    Ok(())
+}
+
+fn validate_change_input(
+    conn: &Connection,
+    attachment_request: i64,
+    input: &ReviseInput,
+) -> Res<()> {
+    validate_range(
+        conn,
+        input.leave_type_id,
+        input.start_date,
+        input.end_date,
+        input.start_part,
+        input.end_part,
+    )?;
+    let lt = model::load_leave_type(conn, input.leave_type_id)?;
+    if lt.requires_attachment {
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM attachments WHERE request_id=?1 OR request_id=(SELECT parent_request_id FROM leave_requests WHERE id=?1)", [attachment_request], |r| r.get(0))?;
+        if count == 0 {
+            return Err(DomainError::validation(format!(
+                "{} requires an attachment",
+                lt.code
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Past days in force must stay identical; corrections follow the HR adjustment route.
+fn validate_past_change(
+    conn: &Connection,
+    effective_revision: i64,
+    new_type: i64,
+    days: &[ComputedDay],
+    today: Date,
+) -> Res<()> {
+    let old = model::load_revision(conn, effective_revision)?;
+    let old_days = model::revision_days(conn, effective_revision)?;
+    let old_past: BTreeMap<_, _> = old_days
+        .iter()
+        .filter(|d| d.date < today && d.minutes > 0)
+        .map(|d| (d.date, (d.part.as_str(), d.minutes)))
+        .collect();
+    let new_past: BTreeMap<_, _> = days
+        .iter()
+        .filter(|d| d.date < today && d.minutes > 0)
+        .map(|d| (d.date, (d.part.as_str(), d.minutes)))
+        .collect();
+    if old_past != new_past || (!old_past.is_empty() && old.leave_type_id != new_type) {
+        return Err(DomainError::PastDatesNeedHrCorrection);
     }
     Ok(())
 }
@@ -370,10 +445,22 @@ fn create_reservations(
 
 /// Create the standard 3-step route. Step 1 = manager (assignee set when the
 /// employee has a manager with a login), steps 2–3 wait.
-fn create_route(conn: &Connection, request_id: i64, revision_id: i64, employee_id: i64, today: Date, now_ts: &str) -> Res<()> {
+fn create_route(
+    conn: &Connection,
+    request_id: i64,
+    revision_id: i64,
+    employee_id: i64,
+    today: Date,
+    now_ts: &str,
+) -> Res<()> {
     let manager_user = model::manager_at(conn, employee_id, today)?.and_then(|m| m.user_id);
     for (seq, kind, status, assignee) in [
-        (1i64, StepKind::ManagerRecommendation, "pending", manager_user),
+        (
+            1i64,
+            StepKind::ManagerRecommendation,
+            "pending",
+            manager_user,
+        ),
         (2, StepKind::HrCheck, "waiting", None),
         (3, StepKind::FinalDecision, "waiting", None),
     ] {
@@ -444,7 +531,9 @@ pub fn create_draft(
             input.end_part,
         )?;
         if source == "paper" && input.paper_received_date.is_none() {
-            return Err(DomainError::validation("paper request needs paper_received_date"));
+            return Err(DomainError::validation(
+                "paper request needs paper_received_date",
+            ));
         }
         let id: i64 = tx.query_row(
             "INSERT INTO leave_requests
@@ -564,7 +653,7 @@ pub fn delete_draft(
     actor: &Actor,
     request_id: i64,
     expected_version: i64,
-) -> Res<()> {
+) -> Res<Vec<String>> {
     let today = clock.today(conn)?;
     let now_ts = clock.now_ts();
     crate::db::write_tx(conn, |tx| {
@@ -575,7 +664,17 @@ pub fn delete_draft(
         model::check_version(&req, expected_version)?;
         let ctx = request_ctx(tx, &req, today)?;
         authz::require(tx, actor, Action::DeleteDraft, &Resource::Request(&ctx))?;
-        for rev in [req.current_revision_id, req.effective_revision_id].into_iter().flatten() {
+        let mut statement =
+            tx.prepare("SELECT storage_key FROM attachments WHERE request_id=?1")?;
+        let keys: Vec<String> = statement
+            .query_map([request_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(statement);
+        tx.execute("UPDATE leave_requests SET current_revision_id=NULL, effective_revision_id=NULL WHERE id=?1", [request_id])?;
+        for rev in [req.current_revision_id, req.effective_revision_id]
+            .into_iter()
+            .flatten()
+        {
             tx.execute(
                 "DELETE FROM revision_allocations WHERE day_id IN
                  (SELECT id FROM request_days WHERE revision_id=?1)",
@@ -597,8 +696,29 @@ pub fn delete_draft(
             Some(request_id),
             serde_json::json!({}),
         )?;
-        Ok(())
+        notify::record_change(tx, clock, actor.user_id, "request.delete")?;
+        Ok(keys)
     })
+}
+
+/// Finish file cleanup after the enclosing transaction commits (including HTTP receipts).
+pub fn finish_draft_deletion(conn: &Connection, store: &FileStore, keys: &[String]) -> Res<()> {
+    if !conn.is_autocommit() {
+        return Err(DomainError::validation(
+            "draft file cleanup requires a committed transaction",
+        ));
+    }
+    for key in keys {
+        let referenced: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM attachments WHERE storage_key=?1",
+            [key],
+            |r| r.get(0),
+        )?;
+        if referenced == 0 {
+            store.remove(key)?;
+        }
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------ preview
@@ -630,6 +750,19 @@ fn preview_in(
     today: Date,
 ) -> Res<Preview> {
     let employee_id = input.employee_id.or(actor.employee_id);
+    if let Some(employee_id) = employee_id {
+        if Some(employee_id) != actor.employee_id {
+            authz::require(
+                conn,
+                actor,
+                Action::CreatePaper,
+                &Resource::Employee {
+                    employee_id,
+                    org_unit_id: model::unit_of(conn, employee_id, today)?,
+                },
+            )?;
+        }
+    }
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut days = Vec::new();
@@ -642,9 +775,9 @@ fn preview_in(
         let parent = model::load_request(conn, parent_id)?;
         let ctx = request_ctx(conn, &parent, today)?;
         authz::require(conn, actor, Action::ViewRequest, &Resource::Request(&ctx))?;
-        let eff = parent.effective_revision_id.ok_or_else(|| {
-            DomainError::validation("request has no approved revision")
-        })?;
+        let eff = parent
+            .effective_revision_id
+            .ok_or_else(|| DomainError::validation("request has no approved revision"))?;
         let eff_days = model::revision_days(conn, eff)?;
         let mut freed: BTreeMap<i64, i64> = BTreeMap::new();
         let cancelled_numbers = next_number_preview(conn, today)?;
@@ -696,6 +829,13 @@ fn preview_in(
         let mut extra: BTreeMap<i64, i64> = BTreeMap::new();
         if let Some(parent_id) = amend_of {
             let parent = model::load_request(conn, parent_id)?;
+            let ctx = request_ctx(conn, &parent, today)?;
+            authz::require(conn, actor, Action::Amend, &Resource::Request(&ctx))?;
+            if parent.employee_id != employee_id {
+                return Err(DomainError::validation(
+                    "amendment employee does not match parent",
+                ));
+            }
             if let Some(eff) = parent.effective_revision_id {
                 extra = model::allocation_totals(conn, eff)?;
             }
@@ -714,7 +854,10 @@ fn preview_in(
                 days = d;
                 total_minutes = days.iter().map(|x| x.minutes).sum();
             }
-            Err(e) => errors.push(PreviewError { code: e.code().into(), message: e.message() }),
+            Err(e) => errors.push(PreviewError {
+                code: e.code().into(),
+                message: e.message(),
+            }),
         }
         if !days.is_empty() {
             match calendar::find_overlap(conn, employee_id, &days, &exclude)? {
@@ -727,7 +870,14 @@ fn preview_in(
                     ),
                 }),
                 None => {
-                    match ledger::allocate(conn, employee_id, input.leave_type_id, &days, today, &extra) {
+                    match ledger::allocate(
+                        conn,
+                        employee_id,
+                        input.leave_type_id,
+                        &days,
+                        today,
+                        &extra,
+                    ) {
                         Ok(allocs) => {
                             // balance_after per touched account/year
                             let mut touched: BTreeMap<i64, i64> = BTreeMap::new();
@@ -750,8 +900,10 @@ fn preview_in(
                                 });
                             }
                         }
-                        Err(e) => errors
-                            .push(PreviewError { code: e.code().into(), message: e.message() }),
+                        Err(e) => errors.push(PreviewError {
+                            code: e.code().into(),
+                            message: e.message(),
+                        }),
                     }
                 }
             }
@@ -865,7 +1017,13 @@ pub fn team_overlap(
          GROUP BY e.id",
     )?;
     let rows = st.query_map(
-        params![employee_id, unit, date_s(&today), date_s(&start), date_s(&end)],
+        params![
+            employee_id,
+            unit,
+            date_s(&today),
+            date_s(&start),
+            date_s(&end)
+        ],
         |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -896,20 +1054,35 @@ fn route_preview(conn: &Connection, employee_id: Option<i64>, today: Date) -> Re
         Some(e) => match model::manager_at(conn, e, today)? {
             Some(m) => match m.user_id {
                 Some(uid) => (model::load_user(conn, uid)?.display_name, None),
-                None => ("manager".to_string(), Some("Manager has no login".to_string())),
+                None => (
+                    "manager".to_string(),
+                    Some("Manager has no login".to_string()),
+                ),
             },
-            None => ("manager".to_string(), Some("No manager assigned".to_string())),
+            None => (
+                "manager".to_string(),
+                Some("No manager assigned".to_string()),
+            ),
         },
         None => ("manager".to_string(), Some("No employee".to_string())),
     };
     out.push(RouteStep {
         kind: "manager_recommendation".into(),
-        who: if manager_problem.is_none() { Some(manager_label) } else { None },
+        who: if manager_problem.is_none() {
+            Some(manager_label)
+        } else {
+            None
+        },
         problem: manager_problem,
     });
-    let unit = employee_id.and_then(|e| model::unit_of(conn, e, today).ok()).flatten();
+    let unit = employee_id
+        .and_then(|e| model::unit_of(conn, e, today).ok())
+        .flatten();
     let unit_name = unit
-        .and_then(|u| conn.query_row("SELECT name FROM org_units WHERE id=?1", [u], |r| r.get(0)).ok())
+        .and_then(|u| {
+            conn.query_row("SELECT name FROM org_units WHERE id=?1", [u], |r| r.get(0))
+                .ok()
+        })
         .unwrap_or_else(|| "the service".to_string());
     out.push(RouteStep {
         kind: "hr_check".into(),
@@ -1018,7 +1191,10 @@ pub fn submit(
             rev.id,
             "submitted",
             &subject,
-            &format!("Your leave request {number} was submitted. Open: /requests/{}", req.id),
+            &format!(
+                "Your leave request {number} was submitted. Open: /requests/{}",
+                req.id
+            ),
             &now_ts,
         )?;
         if let Some(assignee) = step_assignee(tx, req.id, 1)? {
@@ -1029,12 +1205,26 @@ pub fn submit(
                 "step_pending",
                 assignee,
                 &subject,
-                &format!("A leave request awaits your recommendation. Open: /requests/{}", req.id),
+                &format!(
+                    "A leave request awaits your recommendation. Open: /requests/{}",
+                    req.id
+                ),
                 &now_ts,
             )?;
         }
-        let out = Submitted { request_id: req.id, number, version: req.version + 1 };
-        idem_store(tx, actor.user_id, idempotency_key, &hash, &serde_json::to_string(&out)?, &now_ts)?;
+        let out = Submitted {
+            request_id: req.id,
+            number,
+            version: req.version + 1,
+        };
+        idem_store(
+            tx,
+            actor.user_id,
+            idempotency_key,
+            &hash,
+            &serde_json::to_string(&out)?,
+            &now_ts,
+        )?;
         Ok(out)
     })
 }
@@ -1080,7 +1270,11 @@ pub fn decide(
             return Ok(());
         }
         let req = model::load_request(tx, request_id)?;
-        if !matches!(req.status, RequestStatus::Submitted | RequestStatus::UnderReview) {
+        if !matches!(
+            req.status,
+            RequestStatus::Submitted | RequestStatus::UnderReview
+        ) && !(req.status == RequestStatus::NeedsInformation && outcome == "reject")
+        {
             return Err(DomainError::validation(format!(
                 "request is {}, no step is decidable",
                 req.status.as_str()
@@ -1104,7 +1298,9 @@ pub fn decide(
             )));
         }
         if model::outcome_needs_reason(outcome) && reason.map(|r| r.is_empty()).unwrap_or(true) {
-            return Err(DomainError::validation("reason is required for this outcome"));
+            return Err(DomainError::validation(
+                "reason is required for this outcome",
+            ));
         }
         let ctx = request_ctx(tx, &req, today)?;
         let authority = authz::decide_authority(tx, actor, &ctx, &step)?;
@@ -1267,7 +1463,9 @@ fn apply_final_approval(
                  WHERE request_id=?1 AND revision_id=?2 AND active=1",
             )?;
             let rows: Vec<(i64, i64)> = st
-                .query_map(params![req.id, step.revision_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .query_map(params![req.id, step.revision_id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for (acc, minutes) in rows {
                 ledger::post_entry(
@@ -1327,13 +1525,28 @@ fn apply_change_approval(
     let eff = parent
         .effective_revision_id
         .ok_or_else(|| DomainError::validation("parent has no effective revision"))?;
+    let new_revision = model::load_revision(conn, change_rev)?;
+    let new_days: Vec<ComputedDay> = model::revision_days(conn, change_rev)?
+        .into_iter()
+        .map(|d| ComputedDay {
+            date: d.date,
+            part: d.part,
+            scheduled_minutes: d.scheduled_minutes,
+            minutes: d.minutes,
+            period_year: d.period_year,
+            schedule_version_id: d.schedule_version_id,
+            exception_id: d.exception_id,
+            explanation: d.explanation,
+        })
+        .collect();
+    validate_past_change(conn, eff, new_revision.leave_type_id, &new_days, today)?;
     let eff_totals = model::allocation_totals(conn, eff)?;
     let new_totals = model::allocation_totals(conn, change_rev)?;
     let mut accounts: std::collections::BTreeSet<i64> = eff_totals.keys().copied().collect();
     accounts.extend(new_totals.keys().copied());
     for acc in accounts {
-        let delta = new_totals.get(&acc).copied().unwrap_or(0)
-            - eff_totals.get(&acc).copied().unwrap_or(0);
+        let delta =
+            new_totals.get(&acc).copied().unwrap_or(0) - eff_totals.get(&acc).copied().unwrap_or(0);
         if delta > 0 {
             ledger::post_entry(
                 conn,
@@ -1367,7 +1580,15 @@ fn apply_change_approval(
                     reverses_entry_id: reverses,
                     adjustment_id: None,
                     import_batch_id: None,
-                    basis: format!("Returned by {} {}", if is_cancel { "cancellation" } else { "amendment" }, change.number),
+                    basis: format!(
+                        "Returned by {} {}",
+                        if is_cancel {
+                            "cancellation"
+                        } else {
+                            "amendment"
+                        },
+                        change.number
+                    ),
                     author_user_id: Some(actor.user_id),
                     op_key: format!("return:{}:{}", change_rev, acc),
                 },
@@ -1390,7 +1611,11 @@ fn apply_change_approval(
         [change_rev],
         |r| r.get(0),
     )?;
-    let new_status = if is_cancel && remaining == 0 { "cancelled" } else { "approved" };
+    let new_status = if is_cancel && remaining == 0 {
+        "cancelled"
+    } else {
+        "approved"
+    };
     conn.execute(
         "UPDATE leave_requests SET effective_revision_id=?2, status=?3,
          version=version+1, updated_at=?4 WHERE id=?1",
@@ -1446,7 +1671,11 @@ pub fn respond(
                     params![req.id, req.current_revision_id],
                     |r| r.get(0),
                 )?;
-                let back = if done > 0 { "under_review" } else { "submitted" };
+                let back = if done > 0 {
+                    "under_review"
+                } else {
+                    "submitted"
+                };
                 tx.execute(
                     "UPDATE leave_requests SET status=?2 WHERE id=?1",
                     params![req.id, back],
@@ -1485,6 +1714,16 @@ fn revise_in(
     let old_rev_id = req
         .current_revision_id
         .ok_or_else(|| DomainError::Internal(anyhow::anyhow!("no current revision")))?;
+    if req.kind == RequestKind::Cancellation {
+        return Err(DomainError::validation(
+            "cancellation responses must be text-only",
+        ));
+    }
+    validate_change_input(conn, req.id, ch)?;
+    let mut exclude = vec![req.id];
+    if let Some(parent) = req.parent_request_id {
+        exclude.push(parent);
+    }
     let days = calendar::compute_checked(
         conn,
         req.employee_id,
@@ -1493,7 +1732,7 @@ fn revise_in(
         ch.end_date,
         ch.start_part,
         ch.end_part,
-        &[req.id],
+        &exclude,
     )?;
     // an amendment revises against the parent's effective minutes as capacity
     let mut extra: BTreeMap<i64, i64> = BTreeMap::new();
@@ -1505,7 +1744,25 @@ fn revise_in(
             }
         }
     }
-    let allocs = ledger::allocate(conn, req.employee_id, ch.leave_type_id, &days, today, &extra)?;
+    if req.kind == RequestKind::Amendment {
+        let parent = model::load_request(conn, req.parent_request_id.unwrap())?;
+        validate_past_change(
+            conn,
+            parent.effective_revision_id.unwrap(),
+            ch.leave_type_id,
+            &days,
+            today,
+        )?;
+    }
+    ledger::release_reservations(conn, req.id, "superseded", now_ts)?;
+    let allocs = ledger::allocate(
+        conn,
+        req.employee_id,
+        ch.leave_type_id,
+        &days,
+        today,
+        &extra,
+    )?;
     let rev_no: i64 = conn.query_row(
         "SELECT COALESCE(MAX(rev_no),0)+1 FROM request_revisions WHERE request_id=?1",
         [req.id],
@@ -1536,7 +1793,6 @@ fn revise_in(
     let day_ids = store_days(conn, new_rev, &days)?;
     store_allocations(conn, new_rev, &day_ids, &allocs)?;
     // supersede old reservations + steps, then create the fresh reservation set
-    ledger::release_reservations(conn, req.id, "superseded", now_ts)?;
     conn.execute(
         "UPDATE approval_steps SET status='superseded'
          WHERE request_id=?1 AND revision_id=?2 AND status IN ('pending','waiting')",
@@ -1661,6 +1917,7 @@ pub fn amend(
         check_changeable_parent(tx, actor, &parent, expected_version, today, Action::Amend)?;
         let eff = parent.effective_revision_id.unwrap();
         let eff_totals = model::allocation_totals(tx, eff)?;
+        validate_change_input(tx, parent.id, input)?;
         let days = calendar::compute_checked(
             tx,
             parent.employee_id,
@@ -1671,6 +1928,7 @@ pub fn amend(
             input.end_part,
             &[parent.id],
         )?;
+        validate_past_change(tx, eff, input.leave_type_id, &days, today)?;
         let allocs = ledger::allocate(
             tx,
             parent.employee_id,
@@ -1724,11 +1982,24 @@ pub fn amend(
             rev_id,
             "amendment",
             &subject,
-            &format!("An amendment to your request {} was submitted. Open: /requests/{}", parent.number, child_id),
+            &format!(
+                "An amendment to your request {} was submitted. Open: /requests/{}",
+                parent.number, child_id
+            ),
             &now_ts,
         )?;
-        let out = ChildCreated { request_id: child_id, number };
-        idem_store(tx, actor.user_id, idempotency_key, &hash, &serde_json::to_string(&out)?, &now_ts)?;
+        let out = ChildCreated {
+            request_id: child_id,
+            number,
+        };
+        idem_store(
+            tx,
+            actor.user_id,
+            idempotency_key,
+            &hash,
+            &serde_json::to_string(&out)?,
+            &now_ts,
+        )?;
         Ok(out)
     })
 }
@@ -1768,7 +2039,14 @@ pub fn cancel(
             return Err(DomainError::PastDatesNeedHrCorrection);
         }
         let parent = model::load_request(tx, parent_id)?;
-        check_changeable_parent(tx, actor, &parent, expected_version, today, Action::CancelRequest)?;
+        check_changeable_parent(
+            tx,
+            actor,
+            &parent,
+            expected_version,
+            today,
+            Action::CancelRequest,
+        )?;
         let eff_id = parent.effective_revision_id.unwrap();
         let eff_rev = model::load_revision(tx, eff_id)?;
         let eff_days = model::revision_days(tx, eff_id)?;
@@ -1876,11 +2154,24 @@ pub fn cancel(
             rev_id,
             "cancellation",
             &subject,
-            &format!("A cancellation of your request {} was submitted. Open: /requests/{}", parent.number, child_id),
+            &format!(
+                "A cancellation of your request {} was submitted. Open: /requests/{}",
+                parent.number, child_id
+            ),
             &now_ts,
         )?;
-        let out = ChildCreated { request_id: child_id, number };
-        idem_store(tx, actor.user_id, idempotency_key, &hash, &serde_json::to_string(&out)?, &now_ts)?;
+        let out = ChildCreated {
+            request_id: child_id,
+            number,
+        };
+        idem_store(
+            tx,
+            actor.user_id,
+            idempotency_key,
+            &hash,
+            &serde_json::to_string(&out)?,
+            &now_ts,
+        )?;
         Ok(out)
     })
 }
@@ -1992,6 +2283,24 @@ pub fn reassign(
         }
         let ctx = request_ctx(tx, &req, today)?;
         authz::require(tx, actor, Action::ReassignStep, &Resource::Request(&ctx))?;
+        if let Some(who) = assignee_user_id {
+            let assignee = Actor::load(tx, who, today)?;
+            if ctx.employee_user_id == Some(who) {
+                return Err(DomainError::SelfApprovalForbidden);
+            }
+            let role = match step.kind {
+                StepKind::HrCheck => Some("hr"),
+                StepKind::FinalDecision => Some("final_approver"),
+                StepKind::ManagerRecommendation => None,
+            };
+            if let Some(role) = role {
+                if !assignee.role_in_scope(tx, role, ctx.org_unit_id)? {
+                    return Err(DomainError::forbidden(
+                        "assignee lacks required role in scope",
+                    ));
+                }
+            }
+        }
         tx.execute(
             "UPDATE approval_steps SET assignee_user_id=?2 WHERE id=?1",
             params![step_id, assignee_user_id],
@@ -2011,7 +2320,7 @@ pub fn reassign(
     })
 }
 
-/// Post a comment on a request (anyone who can view it).
+/// Post a comment on a request (participants with write access).
 pub fn comment(
     conn: &mut Connection,
     clock: &Clock,
@@ -2024,14 +2333,22 @@ pub fn comment(
     crate::db::write_tx(conn, |tx| {
         let req = model::load_request(tx, request_id)?;
         let ctx = request_ctx(tx, &req, today)?;
-        authz::require(tx, actor, Action::ViewRequest, &Resource::Request(&ctx))?;
+        authz::require(tx, actor, Action::Comment, &Resource::Request(&ctx))?;
         tx.execute(
             "INSERT INTO messages(request_id, author_user_id, kind, body, created_at)
              VALUES (?1,?2,'comment',?3,?4)",
             params![req.id, actor.user_id, body, now_ts],
         )?;
-        audit::log(tx, &now_ts, Some(actor.user_id), None, "request.comment", "request",
-            Some(req.id), serde_json::json!({}))?;
+        audit::log(
+            tx,
+            &now_ts,
+            Some(actor.user_id),
+            None,
+            "request.comment",
+            "request",
+            Some(req.id),
+            serde_json::json!({}),
+        )?;
         notify::record_change(tx, clock, actor.user_id, "request.comment")?;
         Ok(())
     })
@@ -2074,7 +2391,12 @@ pub fn upload_attachment(
     let result = crate::db::write_tx(conn, |tx| {
         let req = model::load_request(tx, request_id)?;
         let ctx = request_ctx(tx, &req, today)?;
-        authz::require(tx, actor, Action::UploadAttachment, &Resource::Request(&ctx))?;
+        authz::require(
+            tx,
+            actor,
+            Action::UploadAttachment,
+            &Resource::Request(&ctx),
+        )?;
         let n: i64 = tx.query_row(
             "SELECT COUNT(*) FROM attachments WHERE request_id=?1",
             [request_id],
@@ -2141,14 +2463,18 @@ pub fn actual_period(
     crate::db::write_tx(conn, |tx| {
         let req = model::load_request(tx, request_id)?;
         if req.kind != RequestKind::Leave || req.status != RequestStatus::Approved {
-            return Err(DomainError::validation("actual period applies to approved leave"));
+            return Err(DomainError::validation(
+                "actual period applies to approved leave",
+            ));
         }
         model::check_version(&req, expected_version)?;
         let ctx = request_ctx(tx, &req, today)?;
         authz::require(tx, actor, Action::ConfirmActual, &Resource::Request(&ctx))?;
         let eff = model::load_revision(tx, req.effective_revision_id.unwrap())?;
         if eff.end_date >= today {
-            return Err(DomainError::validation("the leave period has not ended yet"));
+            return Err(DomainError::validation(
+                "the leave period has not ended yet",
+            ));
         }
         match action {
             "confirm" => {
@@ -2203,7 +2529,9 @@ pub fn actual_period(
                 model::bump_version(tx, req.id, &now_ts)?;
                 Ok(Some(id))
             }
-            _ => Err(DomainError::validation("action must be confirm|propose_adjustment")),
+            _ => Err(DomainError::validation(
+                "action must be confirm|propose_adjustment",
+            )),
         }
     })
 }

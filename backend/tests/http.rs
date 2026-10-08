@@ -64,6 +64,7 @@ struct Client {
     csrf: Option<String>,
 }
 impl Client {
+    #[allow(clippy::too_many_arguments)]
     async fn raw(
         &mut self,
         method: &str,
@@ -729,8 +730,7 @@ async fn csv_formula_safe() {
     let mut csv = csv::Reader::from_reader(text.as_bytes());
     let fields = csv
         .records()
-        .map(|r| r.unwrap().iter().map(str::to_owned).collect::<Vec<_>>())
-        .flatten()
+        .flat_map(|r| r.unwrap().iter().map(str::to_owned).collect::<Vec<_>>())
         .collect::<Vec<_>>();
     assert!(fields.iter().any(|s| s.starts_with("'=HYPERLINK")));
 }
@@ -1111,7 +1111,7 @@ async fn notification_worker_and_registry_marker() {
     c.login("Maria Santos").await;
     f.state.jobs(false).await.unwrap();
     let v = c.ok("GET", "/api/demo/mailbox", json!({})).await;
-    assert!(v["items"].as_array().unwrap().len() > 0);
+    assert!(!v["items"].as_array().unwrap().is_empty());
     let registry = nauru_leave::db::open(&f.dir.join("sandboxes.sqlite")).unwrap();
     let marker: i64 = registry
         .query_row("SELECT has_pending FROM sandboxes LIMIT 1", [], |r| {
@@ -1529,4 +1529,36 @@ async fn comment_is_audited_and_notifies() {
         .unwrap(),
         count
     );
+}
+
+#[tokio::test]
+async fn delete_draft_removes_attachment_after_commit() {
+    let f=Fixture::new(Mode::Demo).await; let mut c=f.client();c.start().await;c.login("Alexei Novak").await;
+    let r=c.annual("2026-11-02","2026-11-03").await;let id=r["id"].as_i64().unwrap();
+    assert_eq!(c.upload(&format!("/api/requests/{id}/attachments"),"draft.pdf",b"%PDF-1.4 draft",&[("sensitivity","normal")]).await.0,200);
+    let sbx=&c.cookies["nld_sbx"];let conn=nauru_leave::db::open(&f.dir.join(format!("sandboxes/{sbx}-g1.sqlite"))).unwrap();
+    let key:String=conn.query_row("SELECT storage_key FROM attachments WHERE request_id=?1",[id],|r|r.get(0)).unwrap();
+    let path=f.dir.join(format!("files/{sbx}-g1")).join(key);assert!(path.exists());
+    let (status,_)=c.call("DELETE",&format!("/api/requests/{id}?expected_version={}",r["version"]),json!({})).await;
+    assert_eq!(status,204);assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn colleague_calendar_masks_sensitive_leave_as_away() {
+    let f=Fixture::new(Mode::Demo).await;let mut c=f.client();c.start().await;c.login("Tom Reed").await;
+    let calendar=c.ok("GET","/api/calendar?from=2026-10-01&to=2026-10-02",json!({})).await;
+    let text=calendar.to_string();assert!(text.contains("Away"),"{text}");assert!(!text.contains("Sick leave"));
+}
+
+#[tokio::test]
+async fn cli_create_logs_in_with_password_and_totp_in_production() {
+    use std::{io::Write,process::{Command,Stdio}};
+    let f=Fixture::new(Mode::Production).await;
+    let mut child=Command::new(env!("CARGO_BIN_EXE_nauru-leave")).env("NLD_MODE","production").env("NLD_DATA_DIR",&f.dir).args(["user","create","--email","cli@example.test","--name","CLI User","--role","tech_admin","--password-stdin"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(b"production-test-password\n").unwrap();let output=child.wait_with_output().unwrap();assert!(output.status.success(),"{}",String::from_utf8_lossy(&output.stderr));
+    let conn=nauru_leave::db::open(&f.dir.join("main.sqlite")).unwrap();let secret:String=conn.query_row("SELECT totp_secret FROM users WHERE email='cli@example.test'",[],|r|r.get(0)).unwrap();
+    let code=totp_rs::Builder::new().with_secret(totp_rs::Secret::try_from_base32(&secret).unwrap()).build().unwrap().generate_current().to_string();
+    let mut c=f.client();let login=c.ok("POST","/api/auth/login",json!({"email":"cli@example.test","password":"production-test-password"})).await;assert_eq!(login["needs_totp"],true);
+    assert_eq!(c.call("GET","/api/me",json!({})).await.0,401);
+    c.ok("POST","/api/auth/totp",json!({"code":code})).await;let me=c.ok("GET","/api/me",json!({})).await;assert_eq!(me["user"]["email"],"cli@example.test");assert_eq!(me["totp_ok"],true);
 }

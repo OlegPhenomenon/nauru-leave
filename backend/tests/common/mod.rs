@@ -87,6 +87,9 @@ pub struct W {
     pub u_david: i64,
     pub u_pavel: i64,
     pub u_grace: i64,
+    pub u_scoped_hr: i64,
+    pub u_scoped_final: i64,
+    pub u_scoped_auditor: i64,
 }
 
 const NOW: &str = "2025-01-02T09:00:00Z";
@@ -102,7 +105,8 @@ impl W {
         // org units
         let chr = people::create_org_unit(c, "CHR", "Central HR Office (demo)", None).unwrap();
         let iu = people::create_org_unit(c, "IU", "Infrastructure Unit (demo)", None).unwrap();
-        let csu = people::create_org_unit(c, "CSU", "Community Services Unit (demo)", None).unwrap();
+        let csu =
+            people::create_org_unit(c, "CSU", "Community Services Unit (demo)", None).unwrap();
 
         // schedules
         let (std_sched, _) = people::create_schedule(
@@ -138,9 +142,18 @@ impl W {
         }
 
         // leave types + policies (valid from 2025)
-        let annual =
-            people::create_leave_type(c, "ANNUAL", "Annual leave", false, true, true, true, false, 5)
-                .unwrap();
+        let annual = people::create_leave_type(
+            c,
+            "ANNUAL",
+            "Annual leave",
+            false,
+            true,
+            true,
+            true,
+            false,
+            5,
+        )
+        .unwrap();
         let sick =
             people::create_leave_type(c, "SICK", "Sick leave", true, true, true, true, false, 0)
                 .unwrap();
@@ -180,11 +193,86 @@ impl W {
             0,
         )
         .unwrap();
-        people::create_policy(c, annual, d("2025-01-01"), 9600, "annual_upfront", 3, true, None, false, "demo", "demo_fictional", None, NOW).unwrap();
-        people::create_policy(c, sick, d("2025-01-01"), 4800, "annual_upfront", 3, false, None, false, "demo", "demo_fictional", None, NOW).unwrap();
-        people::create_policy(c, family, d("2025-01-01"), 2400, "annual_upfront", 3, false, None, false, "demo", "demo_fictional", None, NOW).unwrap();
-        people::create_policy(c, unpaid, d("2025-01-01"), 0, "none", 0, false, None, false, "demo", "demo_fictional", None, NOW).unwrap();
-        people::create_policy(c, carry, d("2025-01-01"), 0, "none", 0, true, Some(3), false, "demo", "demo_fictional", None, NOW).unwrap();
+        people::create_policy(
+            c,
+            annual,
+            d("2025-01-01"),
+            9600,
+            "annual_upfront",
+            3,
+            true,
+            None,
+            false,
+            "demo",
+            "demo_fictional",
+            None,
+            NOW,
+        )
+        .unwrap();
+        people::create_policy(
+            c,
+            sick,
+            d("2025-01-01"),
+            4800,
+            "annual_upfront",
+            3,
+            false,
+            None,
+            false,
+            "demo",
+            "demo_fictional",
+            None,
+            NOW,
+        )
+        .unwrap();
+        people::create_policy(
+            c,
+            family,
+            d("2025-01-01"),
+            2400,
+            "annual_upfront",
+            3,
+            false,
+            None,
+            false,
+            "demo",
+            "demo_fictional",
+            None,
+            NOW,
+        )
+        .unwrap();
+        people::create_policy(
+            c,
+            unpaid,
+            d("2025-01-01"),
+            0,
+            "none",
+            0,
+            false,
+            None,
+            false,
+            "demo",
+            "demo_fictional",
+            None,
+            NOW,
+        )
+        .unwrap();
+        people::create_policy(
+            c,
+            carry,
+            d("2025-01-01"),
+            0,
+            "none",
+            0,
+            true,
+            Some(3),
+            false,
+            "demo",
+            "demo_fictional",
+            None,
+            NOW,
+        )
+        .unwrap();
 
         // people — managers created before their reports
         let mk = |sid: &str, name: &str, unit: i64, mgr: Option<i64>, sched: i64| -> (i64, i64) {
@@ -246,13 +334,73 @@ impl W {
             people::grant_role(c, u, role, None, d("2025-01-01"), None, None, NOW).unwrap();
         }
 
-        // opening balances for 2026 + Tom's carryover year 2025
-        for e in [alexei, olga, tom, lina, sam, rita, ben, nia, maria, elena, david, pavel, grace] {
-            ledger::post_opening(c, e, annual, 2026, 9600, d("2026-01-01"), "Opening 2026", Some(u_maria), "2026-01-01T09:00:00Z").unwrap();
-            ledger::post_opening(c, e, sick, 2026, 4800, d("2026-01-01"), "Opening 2026", Some(u_maria), "2026-01-01T09:00:00Z").unwrap();
-            ledger::post_opening(c, e, family, 2026, 2400, d("2026-01-01"), "Opening 2026", Some(u_maria), "2026-01-01T09:00:00Z").unwrap();
+        let u_scoped_hr =
+            people::create_user(c, "unit-hr@example.test", "Unit HR", None, NOW).unwrap();
+        let u_scoped_final =
+            people::create_user(c, "unit-final@example.test", "Unit Final", None, NOW).unwrap();
+        let u_scoped_auditor =
+            people::create_user(c, "unit-audit@example.test", "Unit Auditor", None, NOW).unwrap();
+        for (u, role) in [
+            (u_scoped_hr, "hr"),
+            (u_scoped_final, "final_approver"),
+            (u_scoped_auditor, "auditor"),
+        ] {
+            people::grant_role(c, u, role, Some(iu), d("2025-01-01"), None, None, NOW).unwrap();
         }
-        ledger::post_opening(c, tom, annual, 2025, 9600, d("2025-01-01"), "Opening 2025", Some(u_maria), "2025-01-01T09:00:00Z").unwrap();
+
+        // opening balances for 2026 + Tom's carryover year 2025
+        for e in [
+            alexei, olga, tom, lina, sam, rita, ben, nia, maria, elena, david, pavel, grace,
+        ] {
+            ledger::post_opening(
+                c,
+                e,
+                annual,
+                2026,
+                9600,
+                d("2026-01-01"),
+                "Opening 2026",
+                Some(u_maria),
+                "2026-01-01T09:00:00Z",
+            )
+            .unwrap();
+            ledger::post_opening(
+                c,
+                e,
+                sick,
+                2026,
+                4800,
+                d("2026-01-01"),
+                "Opening 2026",
+                Some(u_maria),
+                "2026-01-01T09:00:00Z",
+            )
+            .unwrap();
+            ledger::post_opening(
+                c,
+                e,
+                family,
+                2026,
+                2400,
+                d("2026-01-01"),
+                "Opening 2026",
+                Some(u_maria),
+                "2026-01-01T09:00:00Z",
+            )
+            .unwrap();
+        }
+        ledger::post_opening(
+            c,
+            tom,
+            annual,
+            2025,
+            9600,
+            d("2025-01-01"),
+            "Opening 2025",
+            Some(u_maria),
+            "2025-01-01T09:00:00Z",
+        )
+        .unwrap();
 
         let today = d("2026-10-08");
         c.execute(
@@ -307,6 +455,9 @@ impl W {
             u_david,
             u_pavel,
             u_grace,
+            u_scoped_hr,
+            u_scoped_final,
+            u_scoped_auditor,
         }
     }
 
@@ -447,7 +598,9 @@ impl W {
     pub fn reservations(&self, req_id: i64) -> Vec<(i64, i64)> {
         let mut st = self
             .conn
-            .prepare("SELECT account_id, minutes FROM reservations WHERE request_id=?1 AND active=1")
+            .prepare(
+                "SELECT account_id, minutes FROM reservations WHERE request_id=?1 AND active=1",
+            )
             .unwrap();
         st.query_map([req_id], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -475,7 +628,14 @@ impl W {
         ledger::balance_summary(&self.conn, emp, lt, self.today)
             .unwrap()
             .into_iter()
-            .map(|b| (b.period_year, b.ledger_minutes, b.reserved_minutes, b.available_minutes))
+            .map(|b| {
+                (
+                    b.period_year,
+                    b.ledger_minutes,
+                    b.reserved_minutes,
+                    b.available_minutes,
+                )
+            })
             .collect()
     }
 

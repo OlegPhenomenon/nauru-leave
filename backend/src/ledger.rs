@@ -601,7 +601,7 @@ pub fn close_period(
             .collect::<rusqlite::Result<Vec<i64>>>()?;
         let mut posted = 0;
         for acc in accs {
-            let bal = balance_at(tx, acc, expiry)?;
+            let bal = (balance_at(tx, acc, today)? - reserved(tx, acc)?).max(0);
             if bal <= 0 {
                 continue;
             }

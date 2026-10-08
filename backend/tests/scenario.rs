@@ -118,7 +118,10 @@ fn concurrent_last_days() {
     let oks = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
     assert_eq!(oks, 1, "exactly one submission must win: {r1:?} {r2:?}");
     let loser = if r1.is_err() { r1 } else { r2 };
-    assert!(matches!(loser.unwrap_err(), DomainError::InsufficientBalance(_)));
+    assert!(matches!(
+        loser.unwrap_err(),
+        DomainError::InsufficientBalance(_)
+    ));
     // only the winner's reservation exists: 5280 of 9600
     assert_eq!(w.totals(w.alexei, w.annual), (9600, 5280, 4320));
 }
@@ -251,6 +254,12 @@ fn overlap_rules() {
     pm_input.end_part = Part::Pm;
     let pm = requests::create_draft(&mut w.conn, &clock, &alexei, &pm_input).unwrap();
     requests::submit(&mut w.conn, &clock, &alexei, pm, 1, None).unwrap();
+
+    let duplicate = requests::create_draft(&mut w.conn, &clock, &alexei, &am_input).unwrap();
+    assert!(matches!(
+        requests::submit(&mut w.conn, &clock, &alexei, duplicate, 1, None),
+        Err(DomainError::Overlap(_))
+    ));
 
     // full day on top of the am half -> conflict
     let full_input = w.input(w.annual, "2026-11-16", "2026-11-16");

@@ -553,6 +553,8 @@ fn dispatch(
         Ok(v)
     })?;
     if method == Method::DELETE && segments[0] == "requests" {
+        let keys: Vec<String> = serde_json::from_value(value["deleted_storage_keys"].clone())?;
+        requests::finish_draft_deletion(&conn, &FileStore::new(&database.files)?, &keys)?;
         Ok(Output::empty())
     } else {
         Ok(Output::json(value))
@@ -612,6 +614,7 @@ fn revise(v: &Value) -> Res<requests::ReviseInput> {
         change_reason: admin::text(v, "change_reason")?.into(),
     })
 }
+#[allow(clippy::too_many_arguments)]
 fn write(
     conn: &mut Connection,
     a: &Actor,
@@ -635,7 +638,7 @@ fn write(
                     requests::update_draft(conn, clock, a, id, &draft(v)?, version()?)?
                 }
                 ("DELETE", None) => {
-                    requests::delete_draft(
+                    let keys = requests::delete_draft(
                         conn,
                         clock,
                         a,
@@ -643,7 +646,7 @@ fn write(
                         qid(q, "expected_version")?
                             .ok_or_else(|| DomainError::validation("expected_version required"))?,
                     )?;
-                    return Ok(Value::Null);
+                    return Ok(json!({"deleted_storage_keys": keys}));
                 }
                 ("POST", Some("submit")) => {
                     requests::submit(conn, clock, a, id, version()?, None)?;

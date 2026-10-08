@@ -401,57 +401,6 @@ fn rows_one(conn: &Connection, sql: &str, id: i64) -> Res<Value> {
         .pop()
         .ok_or_else(|| DomainError::not_found("record"))
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn settings_authorization_and_transaction() {
-        let mut c = db::open_memory().unwrap();
-        db::migrate(&c).unwrap();
-        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
-        crate::seed::seed_template(&mut c, &dir).unwrap();
-        let clock = Clock::demo();
-        let alex = Actor::load(&c, 1, clock.today(&c).unwrap()).unwrap();
-        assert!(mutate(
-            &mut c,
-            &clock,
-            &alex,
-            Mode::Demo,
-            "POST",
-            &["org-units"],
-            &json!({"code":"X","name":"X"})
-        )
-        .is_err());
-        let maria_id: i64 = c
-            .query_row(
-                "SELECT id FROM users WHERE display_name='Maria Santos'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let maria = Actor::load(&c, maria_id, clock.today(&c).unwrap()).unwrap();
-        mutate(
-            &mut c,
-            &clock,
-            &maria,
-            Mode::Demo,
-            "POST",
-            &["org-units"],
-            &json!({"code":"X","name":"X"}),
-        )
-        .unwrap();
-        assert_eq!(
-            c.query_row(
-                "SELECT COUNT(*) FROM audit_events WHERE entity='org-unit'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            1
-        );
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-}
 /// Demo business-date mutation still requires a real authenticated actor.
 pub fn set_demo_clock(conn: &mut Connection, clock: &Clock, actor: &Actor, date: Date) -> Res<()> {
     db::write_tx(conn, |tx| {
@@ -574,4 +523,56 @@ pub fn download(
         result?;
     }
     Ok((bytes, mime, name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn settings_authorization_and_transaction() {
+        let mut c = db::open_memory().unwrap();
+        db::migrate(&c).unwrap();
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        crate::seed::seed_template(&mut c, &dir).unwrap();
+        let clock = Clock::demo();
+        let alex = Actor::load(&c, 1, clock.today(&c).unwrap()).unwrap();
+        assert!(mutate(
+            &mut c,
+            &clock,
+            &alex,
+            Mode::Demo,
+            "POST",
+            &["org-units"],
+            &json!({"code":"X","name":"X"})
+        )
+        .is_err());
+        let maria_id: i64 = c
+            .query_row(
+                "SELECT id FROM users WHERE display_name='Maria Santos'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let maria = Actor::load(&c, maria_id, clock.today(&c).unwrap()).unwrap();
+        mutate(
+            &mut c,
+            &clock,
+            &maria,
+            Mode::Demo,
+            "POST",
+            &["org-units"],
+            &json!({"code":"X","name":"X"}),
+        )
+        .unwrap();
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE entity='org-unit'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
