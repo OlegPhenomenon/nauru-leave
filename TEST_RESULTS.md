@@ -1,459 +1,136 @@
-# HTTP server verification report
+# Test results
 
-The HTTP server is implemented across all documented endpoint families. The route inventory contains 72 API paths / 86 method-path pairs (seven demo-only paths), plus GET /up and embedded frontend routes. Domain request lifecycle changes remain deferred to the separate reviewer run requested by the user.
+Run on 2026-10-08, macOS arm64, Rust 1.98.1, Node 23.10 (Docker build uses Node 22 and Rust 1.98.0).
+Every item below was executed; output is pasted from the actual run. Items not executed are listed at the end.
 
-## Implemented behavior
+## 1. Automated backend tests — `cd backend && cargo test`
 
-- Bounded spawn_blocking database work, persistent sandbox registry, explicit creation/reset generations, TTL cleanup, rolling creation limits, per-IP request token buckets and file quotas.
-- Password/Argon2 login, privileged-user and manager TOTP, lockout, rotating sessions, CSRF/origin checks, security headers and API no-store.
-- Authorized request actions and projections, privacy filtering, current-permission checks on idempotency replay and attachment/export downloads.
-- Multipart file validation and quarantine; atomic CSV import preview/commit with business-key and committed-hash idempotency; formula-safe reports/transfer exports.
-- Settings/directory/adjustments/accrual/period closure, audit viewer, operations/retry endpoints, one background notification worker, demo mailbox and production SMTP with rustls.
-- Embedded static frontend, SPA fallback, hashed-asset cache, missing-build fallback; serve/jobs/backup/restore CLI and Docker/Compose packaging.
-
-## Automated tests
-
-`cd backend && cargo test --locked --release` — **68 passed, 0 failed**, including 25 HTTP tests. Tests use real SQLite databases and actual domain functions; external SMTP delivery is exercised against a local SMTP server.
+All tests use real SQLite databases and the real domain functions (no mocks of business logic).
 
 ```text
-Running unittests src/lib.rs (target/release/deps/nauru_leave-d4988cbc408e8947)
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
-Running unittests src/main.rs (target/release/deps/nauru_leave-82bc2e864062e7ea)
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-Running tests/authz_tests.rs (target/release/deps/authz_tests-64e66ad6d9724eb1)
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
-Running tests/http.rs (target/release/deps/http-8c1111fb15d3dfc3)
-test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.07s
-Running tests/idempotency.rs (target/release/deps/idempotency-dc9d7376b0ed83d2)
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
-Running tests/lifecycle.rs (target/release/deps/lifecycle-30ca0f9dabf7bd8b)
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
-Running tests/scenario.rs (target/release/deps/scenario-ad45df8164008261)
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
-Running tests/system.rs (target/release/deps/system-17c1821aa9102e9f)
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
-Doc-tests nauru_leave
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs        test result: ok. 8 passed; 0 failed
+     Running tests/authz_tests.rs        test result: ok. 7 passed; 0 failed
+     Running tests/http.rs               test result: ok. 28 passed; 0 failed
+     Running tests/idempotency.rs        test result: ok. 4 passed; 0 failed
+     Running tests/lifecycle.rs          test result: ok. 10 passed; 0 failed
+     Running tests/provisioning.rs       test result: ok. 2 passed; 0 failed
+     Running tests/regressions.rs        test result: ok. 18 passed; 0 failed
+     Running tests/scenario.rs           test result: ok. 9 passed; 0 failed
+     Running tests/system.rs             test result: ok. 5 passed; 0 failed
 ```
 
-HTTP coverage includes all requested named tests: sandbox_isolation, production_has_no_demo_routes, csrf_required, isolation_other_employee, medical_access, upload_checks, import_preview_errors, import_idempotent, csv_formula_safe, main_scenario_export, every_api_route_is_registered. Additional HTTP coverage checks TOTP/lockout/replay, scope revocation, restart/TTL/generations, caps and creation rates, SMTP outside transactions, notification markers, backups, settings/drift, stale versions, contract projections and atomic comment audit/outbox.
+Total **91 passed, 0 failed**. `cargo clippy --all-targets -- -D warnings`: clean.
 
-The A1 HTTP test verifies 20 → 20/5/15 → 15/0/15 → amendment approval 17/0/17 → business date 2026-11-12 / period_ended, exact Idempotency-Key replay, rejected key/body reuse, final transfer rows with effective revision and period year, mark-transferred and changes-since-export.
+### Acceptance checklist ([docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)) → tests
 
-## Frontend and release builds
+| ID | Check | Test(s) | Result |
+|---|---|---|---|
+| A1 | 20 → 15 (reserve 5) → 15 → amend → 17 → period ended, still 17 | `scenario::main_scenario`; browser: `e2e/main-scenario.spec.ts` | pass |
+| A2 | Full history and transfer CSV with number + revision | `http::main_scenario_export` | pass |
+| A3 | Second user has no access (request, lists, calendar, reports, exports, files) | `http::isolation_other_employee`, `scenario::isolation_other_employee` | pass |
+| A4 | Backup → restore into a clean directory, same data and files | `system::backup_restore_roundtrip`; manual run §4 | pass |
+| B1 | Idempotent submit / decide | `idempotency::idempotent_submit`, `idempotency::idempotent_decide` | pass |
+| B2 | Two parallel requests for the last days | `scenario::concurrent_last_days` | pass |
+| B3 | Year boundary split across accounts | `scenario::year_boundary_allocation`, `regressions::seed_builds` | pass |
+| B4 | Insufficient balance blocked | `scenario::insufficient_blocks` | pass |
+| B5 | Half day 240/480, weekends/holidays 0, part-time 360 | `scenario::half_day_and_holidays`, `scenario::part_time_schedule` | pass |
+| B6 | Withdraw releases; partial cancel returns only cancelled days | `lifecycle::withdraw_releases`, `lifecycle::partial_cancel` | pass |
+| B7 | Accrual / period close / import replays do not duplicate | `idempotency::accrual_idempotent`, `http::import_idempotent` | pass |
+| B8 | Ledger and audit cannot be updated or deleted | `idempotency::ledger_immutable` | pass |
+| B9 | Amendment reserves positive delta per account | `lifecycle::amendment_per_account_delta` | pass |
+| C1 | No self-approval, including via delegation | `authz_tests::no_self_approval` | pass |
+| C2 | Delegation only within its dates; real author kept | `authz_tests::delegation_window` | pass |
+| C3 | Material change → new revision, route restarted, reservation recalculated | `lifecycle::revise_restarts_route`, `regressions::revise_tight_balance` | pass |
+| C4 | Stale `expected_version` → 409 | `lifecycle::stale_version` | pass |
+| C5 | Unassigned step visible to HR, not skipped | `lifecycle::unassigned_step_visible` | pass |
+| C6 | Transfer: old manager loses access | `authz_tests::transfer_access` | pass |
+| C7 | Medical file access; colleagues see "Away" | `authz_tests::medical_access`, `http::medical_access` | pass |
+| C8 | Technical admin cannot change balances or read files | `authz_tests::tech_admin_limits` | pass |
+| C9 | Adjustment proposer ≠ approver | `authz_tests::adjustment_two_person` | pass |
+| C10 | Overlaps blocked; am + pm allowed; am + pm + am blocked | `scenario::overlap_rules` | pass |
+| D1 | CSV import preview reports every error kind | `http::import_preview_errors` | pass |
+| D2 | CSV formula injection neutralised | `http::csv_formula_safe` | pass |
+| D3 | Email failure does not roll back; retry/backoff/manual retry | `system::notification_retry` | pass |
+| D4 | Wrong file type rejected; EICAR quarantined, not downloadable | `http::upload_checks`, `system::upload_checks` | pass |
+| D5 | Emails carry no leave type or reasons | `system::email_minimal` | pass |
+| E1 | Demo sandboxes isolated from each other | `http::sandbox_isolation` | pass |
+| E2 | Demo-only endpoints absent in production | `http::production_has_no_demo_routes` | pass |
+| E3 | Docker image builds and serves the UI | manual run §5 | pass |
+| E4 | Mutation without CSRF token → 403 | `http::csrf_required` | pass |
 
-`cd frontend && npm ci && npm run build` — passed. No frontend source changes. Local npm reported a Node 23.10 engine warning for Vitest; the actual Vite build succeeded, and the Docker frontend build uses the required Node 22 image.
+`tests/regressions.rs` holds one regression test per finding of the independent code review (revision
+self-competition, amendment overlap with its parent, am+pm+am overlap, draft deletion, HR self-escalation via step
+reassignment, preview authorisation, scoped HR jobs, masking of amended sensitive types, carry-over expiry, past-date
+changes, cancellation responses, auditor comments, medical uploader access, validation of amendments, stale
+authorisation snapshot, rejection while information is requested, transfer scope).
+
+## 2. Frontend — `cd frontend`
 
 ```text
-vite v8.3.1
-44 modules transformed
-dist/index.html                   0.52 kB | gzip: 0.33 kB
-dist/assets/index-C_kuVEqE.css   11.05 kB | gzip: 3.14 kB
-dist/assets/index-C4yG5RHp.js   403.49 kB | gzip: 112.35 kB
+npx tsc --noEmit        → no output (pass)
+npm test                → 9 passed (duration formatting incl. ½ day and part-time 6 h days)
+npm run build           → dist/assets/index-*.js 405 kB │ gzip: 112.9 kB
 ```
 
-`cd backend && cargo build --locked --release` — passed. Exactly one Cargo target directory, backend/target. Missing frontend/dist was temporarily tested: the release build succeeded and GET / served the short “Frontend not built” page. Restoring dist produces the embedded React frontend; build.rs watches its parent to detect reappearance even with preserved file timestamps.
+## 3. End-to-end in a real browser — `npm run e2e`
 
-- Local macOS release binary: **7,126,080 bytes** (6.80 MiB).
-- Local idle RSS, measured with `ps -o rss= -p <pid>` after the demo walkthrough and worker interval: **6,496 KiB**.
-- GET /up: 200 `ok`; static root, SPA deep link, immutable hashed asset cache and API no-store: passed.
-- SIGTERM graceful shutdown: passed; verification server stopped.
-- CLI gen-backup-key → backup using NLD_DATA_DIR/main.sqlite + files/main → restore --in to an empty directory: passed; restored requests and all referenced attachment SHA-256 values match. One seeded attachment restored.
+Against the release binary in demo mode (fresh data directory), headless Chromium:
 
-## Docker and Compose
-
-`docker build --progress plain --tag nauru-leave:http-local .` — passed with Node 22, Rust 1.98.0 and the prescribed Debian Bookworm runtime.
-
-- Image: `sha256:6e2cde8aef3a1e948d58dd8f67a23d5fe3ee0365cfd9e00c30e39d9c3f9b0508`.
-- Uncompressed image size (`docker image inspect .Size`): **118,580,596 bytes** (113.09 MiB); exceeds DESIGN's 40 MB target with the required Debian base.
-- Linux release binary inside the image: **6,510,632 bytes** (6.21 MiB).
-- Container idle RSS (`/proc/1/status`, VmRSS): **7,468 KiB**.
-- Runtime user: `10001:10001`; memory limit: `268,435,456` bytes (256 MiB).
-- `docker compose config --quiet` and `docker compose up -d --no-build`: passed; health became `healthy`, `/up` returned `ok`, and `/` served the built React HTML.
-- Validation used an isolated Compose project, `.env.example` in place of a secret `.env`, and a free loopback port through a temporary override. The shipped Compose service, named volume, healthcheck, restart policy, and memory limit were exercised. `docker compose down --volumes` removed the verification service/network/volume.
-
-## Live curl walkthrough
-
-The release server ran on `52884` with a temporary data directory and matching NLD_PUBLIC_URL. Every following command returned HTTP 200. Cookie jar and Origin header were used; this disposable demo session has been stopped. Exact JSON values below are reformatted for readability.
-
-```sh
-BASE=http://127.0.0.1:52884
-curl -sS "$BASE/api/config"
-curl -sS -X POST -H "Origin: $BASE" -c cookies.txt "$BASE/api/demo/start"
-curl -sS -b cookies.txt "$BASE/api/demo/personas"
-curl -sS -X POST -H "Origin: $BASE" -H "Content-Type: application/json" -b cookies.txt -c cookies.txt --data '{"user_id":8}' "$BASE/api/demo/login"
-curl -sS -b cookies.txt "$BASE/api/balances/me"
+```text
+  ✓  1 e2e/main-scenario.spec.ts:59:1 › main scenario steps 1–5: balance, request, approval, amendment, time travel (24.1s)
+  1 passed (24.7s)
 ```
 
-### GET /api/config
+The run asserts: 20 days and the "Fictional demo rule — not Nauru law" label; the 5-day / 40 h preview with route
+and the named team-overlap warning; 15 days and a reservation after submit; 15 after approval by Olga → Maria →
+Elena; 17 after the approved amendment; "Period ended" and still 17 after time travel to 12 Nov 2026.
+Recorded walkthrough: [docs/media/demo-walkthrough.webm](docs/media/demo-walkthrough.webm).
 
-```json
-{
-  "app_version": "0.1.0",
-  "business_date": "2026-10-08",
-  "mode": "demo"
-}
+Additionally walked through by the integration run (screenshots, not committed): print card, approved-absence CSV,
+transfer export, Tom's "You don't have access" page, restricted medical document and "Away" in the calendar,
+withdraw, cancellation, HR paper request for Sam, demo mailbox, failed email to `@unreachable.demo` and manual retry,
+390 px phone layout of My leave and New request.
+
+## 4. Self-installation (production mode) and restore on a clean directory
+
+Executed with the release binary, `NLD_MODE=production`:
+
+```text
+$ nauru-leave init-production --data-dir /tmp/nld-prod
+Production database ready: /tmp/nld-prod/main.sqlite
+$ printf '…\n' | nauru-leave user create --email maria@example.org --name "Maria Santos" --role hr --role hr_medical --password-stdin
+TOTP secret: <redacted>
+$ nauru-leave serve            # NLD_SMTP_URL is mandatory: without it → "NLD_SMTP_URL is required in production"
+POST /api/auth/login  → 200 {"needs_totp": true}
+POST /api/auth/totp   → 200 roles: hr, hr_medical (whole service)
+POST /api/auth/totp with the same code again → 403 "TOTP code already used"
+GET  /api/demo/personas → 404 (demo routes not registered)
+POST /api/org-units, /api/schedules, /api/employees → 200 (NPS-9001 created)
+$ nauru-leave gen-backup-key --out key && nauru-leave backup … --out nld.backup
+backup written: /tmp/nld.backup
+$ nauru-leave restore --in nld.backup --key-file key --data-dir /tmp/nld-restore
+restored into /tmp/nld-restore
+serve on the restored directory → login with password + TOTP → GET /api/employees → [("NPS-9001", "Test Person")]
+restore with a wrong key file → exit 1 "backup key file /dev/null must be exactly 32 bytes"
 ```
 
-### POST /api/demo/start
+## 5. Docker image
 
-```json
-{
-  "sandbox_id": "361525691f601c691ab69a27c77e528d"
-}
+```text
+$ docker build -t nauru-leave:local .        → success (Node 22 → Rust 1.98.0 → debian:bookworm-slim, uid 10001)
+image size: 119 MB
+$ docker run -p 127.0.0.1:18095:8080 -e NLD_MODE=demo --memory 256m nauru-leave:local
+GET /up          → ok
+GET /api/config  → {"app_version":"0.1.0","business_date":"2026-10-08","mode":"demo"}
+GET /            → <title>Nauru Leave Desk
+VmRSS (idle)     → 7612 kB
 ```
 
-### GET /api/demo/personas
+Release binary: 7.1 MB. Idle RSS of the native binary: ~6.5 MB.
 
-```json
-[
-  {
-    "display_name": "Alexei Novak",
-    "roles": [],
-    "story": "Submit leave, follow approvals, then amend it.",
-    "title": "Employee — start here",
-    "user_id": 8
-  },
-  {
-    "display_name": "Olga Berg",
-    "roles": [],
-    "story": "Review your team's requests.",
-    "title": "Manager",
-    "user_id": 6
-  },
-  {
-    "display_name": "Maria Santos",
-    "roles": [
-      "hr",
-      "hr_medical"
-    ],
-    "story": "Check requests and inspect a medical file.",
-    "title": "HR officer",
-    "user_id": 2
-  },
-  {
-    "display_name": "Elena Ward",
-    "roles": [
-      "final_approver"
-    ],
-    "story": "Record the final decision.",
-    "title": "Final approver",
-    "user_id": 1
-  },
-  {
-    "display_name": "David Hale",
-    "roles": [
-      "hr",
-      "adjustment_approver"
-    ],
-    "story": "Apply a correction proposed by another officer.",
-    "title": "HR · second approver for adjustments",
-    "user_id": 3
-  },
-  {
-    "display_name": "Pavel Grant",
-    "roles": [
-      "tech_admin"
-    ],
-    "story": "Manage users and retry notifications.",
-    "title": "Technical admin",
-    "user_id": 4
-  },
-  {
-    "display_name": "Grace Lin",
-    "roles": [
-      "auditor"
-    ],
-    "story": "Read the audit trail.",
-    "title": "Auditor",
-    "user_id": 5
-  },
-  {
-    "display_name": "Nia Fox",
-    "roles": [],
-    "story": "Open your medical certificate.",
-    "title": "Employee with a medical file",
-    "user_id": 12
-  },
-  {
-    "display_name": "Tom Reed",
-    "roles": [],
-    "story": "Try time travel and the delegation.",
-    "title": "Employee, acting manager in December",
-    "user_id": 9
-  }
-]
-```
+## Not executed
 
-### POST /api/demo/login
-
-```json
-{
-  "acting_for": [],
-  "csrf_token": "31b02c06778e4bd6c5ffb03752b69e50fd1309b69a67305c6ca246b84973e4ab",
-  "employee": {
-    "full_name": "Alexei Novak",
-    "id": 8,
-    "org_unit": {
-      "id": 2,
-      "name": "Infrastructure Unit (demo)"
-    },
-    "service_id": "NPS-1001"
-  },
-  "is_manager": false,
-  "roles": [],
-  "totp_ok": true,
-  "user": {
-    "display_name": "Alexei Novak",
-    "email": "alexei.novak@nauru.example",
-    "id": 8
-  }
-}
-```
-
-### GET /api/balances/me
-
-```json
-[
-  {
-    "accounts": [
-      {
-        "account_id": 1,
-        "available_minutes": 9600,
-        "leave_type": {
-          "code": "ANNUAL",
-          "id": 1,
-          "name": "Annual leave",
-          "uses_balance": true
-        },
-        "ledger_minutes": 9600,
-        "minutes_per_day": 480,
-        "period_year": 2026,
-        "reserved_minutes": 0
-      }
-    ],
-    "approved_upcoming_minutes": 0,
-    "available_minutes": 9600,
-    "leave_type": {
-      "code": "ANNUAL",
-      "id": 1,
-      "name": "Annual leave",
-      "uses_balance": true
-    },
-    "ledger_minutes": 9600,
-    "minutes_per_day": 480,
-    "policy": {
-      "accrual_mode": "annual_upfront",
-      "advance_publish_months": 3,
-      "allow_negative": false,
-      "annual_entitlement_min": 9600,
-      "carryover_allowed": true,
-      "carryover_expiry_months": null,
-      "explanation": "Fictional demo rule — not Nauru law. Must be confirmed by the responsible HR officer before real use.",
-      "id": 1,
-      "status": "demo_fictional",
-      "valid_from": "2025-01-01"
-    },
-    "reserved_minutes": 0,
-    "taken_minutes": 0
-  },
-  {
-    "accounts": [
-      {
-        "account_id": 3,
-        "available_minutes": 2400,
-        "leave_type": {
-          "code": "FAMILY",
-          "id": 3,
-          "name": "Family responsibility leave",
-          "uses_balance": true
-        },
-        "ledger_minutes": 2400,
-        "minutes_per_day": 480,
-        "period_year": 2026,
-        "reserved_minutes": 0
-      }
-    ],
-    "approved_upcoming_minutes": 0,
-    "available_minutes": 2400,
-    "leave_type": {
-      "code": "FAMILY",
-      "id": 3,
-      "name": "Family responsibility leave",
-      "uses_balance": true
-    },
-    "ledger_minutes": 2400,
-    "minutes_per_day": 480,
-    "policy": {
-      "accrual_mode": "annual_upfront",
-      "advance_publish_months": 3,
-      "allow_negative": false,
-      "annual_entitlement_min": 2400,
-      "carryover_allowed": false,
-      "carryover_expiry_months": null,
-      "explanation": "Fictional demo rule — not Nauru law. Must be confirmed by the responsible HR officer before real use.",
-      "id": 3,
-      "status": "demo_fictional",
-      "valid_from": "2025-01-01"
-    },
-    "reserved_minutes": 0,
-    "taken_minutes": 0
-  },
-  {
-    "accounts": [
-      {
-        "account_id": 2,
-        "available_minutes": 4800,
-        "leave_type": {
-          "code": "SICK",
-          "id": 2,
-          "name": "Sick leave",
-          "uses_balance": true
-        },
-        "ledger_minutes": 4800,
-        "minutes_per_day": 480,
-        "period_year": 2026,
-        "reserved_minutes": 0
-      }
-    ],
-    "approved_upcoming_minutes": 0,
-    "available_minutes": 4800,
-    "leave_type": {
-      "code": "SICK",
-      "id": 2,
-      "name": "Sick leave",
-      "uses_balance": true
-    },
-    "ledger_minutes": 4800,
-    "minutes_per_day": 480,
-    "policy": {
-      "accrual_mode": "annual_upfront",
-      "advance_publish_months": 3,
-      "allow_negative": false,
-      "annual_entitlement_min": 4800,
-      "carryover_allowed": false,
-      "carryover_expiry_months": null,
-      "explanation": "Fictional demo rule — not Nauru law. Must be confirmed by the responsible HR officer before real use.",
-      "id": 2,
-      "status": "demo_fictional",
-      "valid_from": "2025-01-01"
-    },
-    "reserved_minutes": 0,
-    "taken_minutes": 0
-  },
-  {
-    "accounts": [],
-    "approved_upcoming_minutes": 0,
-    "available_minutes": 0,
-    "leave_type": {
-      "code": "UNPAID",
-      "id": 4,
-      "name": "Unpaid leave",
-      "uses_balance": false
-    },
-    "ledger_minutes": 0,
-    "minutes_per_day": 480,
-    "policy": {
-      "accrual_mode": "none",
-      "advance_publish_months": 3,
-      "allow_negative": false,
-      "annual_entitlement_min": 0,
-      "carryover_allowed": false,
-      "carryover_expiry_months": null,
-      "explanation": "Fictional demo rule — not Nauru law. Must be confirmed by the responsible HR officer before real use.",
-      "id": 4,
-      "status": "demo_fictional",
-      "valid_from": "2025-01-01"
-    },
-    "reserved_minutes": 0,
-    "taken_minutes": 0
-  }
-]
-```
-
-## Endpoint inventory
-
-Paths below use axum `{id}` notation; API.md and the frontend use `:id` notation. Demo routes are registered only in demo mode. GET /up performs no database work.
-
-| Method(s) | Path |
-|---|---|
-| GET | `/api/demo/status` |
-| POST | `/api/demo/start` |
-| POST | `/api/demo/reset` |
-| GET | `/api/demo/personas` |
-| POST | `/api/demo/login` |
-| POST | `/api/demo/clock` |
-| GET | `/api/demo/mailbox` |
-| GET | `/api/config` |
-| POST | `/api/auth/login` |
-| POST | `/api/auth/totp` |
-| POST | `/api/auth/logout` |
-| GET | `/api/me` |
-| GET, POST | `/api/leave-types` |
-| GET | `/api/balances/me` |
-| GET | `/api/balances/{employee_id}` |
-| GET | `/api/balances/{employee_id}/explain` |
-| GET | `/api/balances` |
-| GET, POST | `/api/requests` |
-| POST | `/api/requests/preview` |
-| GET, PUT, DELETE | `/api/requests/{id}` |
-| POST | `/api/requests/{id}/submit` |
-| POST | `/api/requests/{id}/withdraw` |
-| POST | `/api/requests/{id}/decide` |
-| POST | `/api/requests/{id}/messages` |
-| POST | `/api/requests/{id}/respond` |
-| POST | `/api/requests/{id}/amend` |
-| POST | `/api/requests/{id}/cancel` |
-| POST | `/api/requests/{id}/reassign` |
-| POST | `/api/requests/{id}/actual` |
-| POST | `/api/requests/{id}/attachments` |
-| GET | `/api/requests/{id}/card` |
-| GET | `/api/attachments/{id}` |
-| GET | `/api/approvals` |
-| GET | `/api/calendar` |
-| GET, POST | `/api/org-units` |
-| PUT | `/api/org-units/{id}` |
-| GET, POST | `/api/employees` |
-| GET, PUT | `/api/employees/{id}` |
-| POST | `/api/employees/{id}/transfer` |
-| POST | `/api/employees/{id}/schedule` |
-| GET, POST | `/api/adjustments` |
-| POST | `/api/adjustments/{id}/decide` |
-| POST | `/api/accruals/run` |
-| POST | `/api/periods/close` |
-| GET | `/api/reports/balances` |
-| GET | `/api/reports/absences` |
-| GET | `/api/reports/pending` |
-| GET | `/api/reports/changes-since-export` |
-| GET | `/api/reports/schedule-drift` |
-| GET, POST | `/api/exports` |
-| GET | `/api/exports/{id}/download` |
-| POST | `/api/exports/{id}/mark-transferred` |
-| GET | `/api/imports` |
-| POST | `/api/imports/preview` |
-| POST | `/api/imports/{id}/commit` |
-| PUT | `/api/leave-types/{id}` |
-| POST | `/api/leave-types/{id}/policies` |
-| POST | `/api/policies/{id}/verify` |
-| GET, POST | `/api/schedules` |
-| GET, POST | `/api/schedules/{id}/versions` |
-| GET, POST | `/api/calendar-exceptions` |
-| DELETE | `/api/calendar-exceptions/{id}` |
-| GET, POST | `/api/users` |
-| PUT | `/api/users/{id}` |
-| POST | `/api/users/{id}/roles` |
-| DELETE | `/api/role-grants/{id}` |
-| GET, POST | `/api/delegations` |
-| POST | `/api/delegations/{id}/revoke` |
-| GET | `/api/ops/notifications` |
-| POST | `/api/ops/notifications/{id}/retry` |
-| GET | `/api/ops/summary` |
-| GET | `/api/audit` |
-
-## Contract differences and open issues
-
-See [API.md — Deviations and implementation clarifications](docs/API.md#deviations-and-implementation-clarifications) for bootstrap CSRF/origin handling, cookie flags, DELETE holiday paths, policy labels, report envelopes/totals, upload/import limits, scope restrictions, monthly accrual and CSP style attributes.
-
-[OPEN_ISSUES.md](docs/OPEN_ISSUES.md) records production account/password/TOTP provisioning absent from the HTTP contract, the lack of versions on non-versioned API mutations, the required Debian image exceeding the 40 MB design target, unverified live SMTP-provider delivery, and the separately assigned request-domain review. No government-system integration, real SMS or government SSO was added.
-
-No commits were made. No Kamal configuration or frontend source was edited. The pre-existing SECURITY.md was left untouched. Verification containers and their temporary Compose volume were removed.
+- Delivery through a real external SMTP provider (no credentials; SMTP transport is tested against a local SMTP
+  server in `tests/http.rs`).
+- A real antivirus engine (the demo detects only the EICAR test string, by design).
+- Independent security assessment.

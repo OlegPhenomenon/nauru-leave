@@ -10,7 +10,7 @@
 | Backend | Rust stable, один crate `backend/` → бинарь `nauru-leave`. axum 0.8, tokio, rusqlite (feature `bundled`), serde, time/chrono, argon2, totp-rs, sha2, rand, csv, rust-embed, tracing. Без ORM. |
 | БД | SQLite, WAL, `foreign_keys=ON`, `busy_timeout=5000`. Все изменяющие операции — `BEGIN IMMEDIATE` (одна писательская блокировка на файл) → два параллельных запроса не потратят одни и те же минуты. |
 | Frontend | `frontend/`: Vite + React + TypeScript + react-router. Без UI-китов, свой CSS. Сборка в `frontend/dist`, встраивается в бинарь через rust-embed. |
-| Запуск | `nauru-leave serve`, `migrate`, `seed-template`, `backup`, `restore`, `run-jobs-once`. Docker multi-stage, рантайм-образ ≤ 40 МБ. |
+| Запуск | `nauru-leave serve`, `init-production`, `user …`, `migrate`, `seed-template`, `backup`, `restore`, `run-jobs-once`. Docker multi-stage на `debian:bookworm-slim` (≈115 МБ образ, из них ≈75 МБ — базовый слой; бинарь ≈7 МБ, RSS в простое ≈7 МБ). |
 
 Экономия ресурсов: один процесс, фоновые задания — одна tokio-задача на весь процесс (общий планировщик, не по
 песочнице). Соединение SQLite открывается на одну операцию внутри `spawn_blocking` и закрывается; вся транзакция —
