@@ -1,0 +1,242 @@
+# Nauru Leave Desk — HTTP API contract
+
+Authoritative contract between `backend/` and `frontend/`. Rules: `docs/DESIGN.md`. Schema: `backend/migrations/0001_init.sql`.
+
+Conventions
+- JSON over `/api/*`. Dates `YYYY-MM-DD`; timestamps RFC3339 UTC. Durations are **integer minutes**; every
+  balance object also carries `minutes_per_day` (from the employee's schedule, default 480) so the UI renders days/hours.
+- Mutations (POST/PUT/DELETE) require header `X-CSRF-Token: <me.csrf_token>`; cookies are sent automatically
+  (`credentials: 'same-origin'`).
+- Request actions take `expected_version` in the body → 409 `stale_version` if it changed.
+- `POST /submit`, `/decide`, `/amend`, `/cancel` accept optional header `Idempotency-Key: <uuid>`.
+- Error body: `{"error":{"code":"...","message":"...","details":{}}}` (codes in DESIGN §12).
+- Lists: `?limit=&offset=`; response `{ "items": [...], "total": n }`.
+- `allowed_actions` on resources is computed by the server; the UI shows only those buttons but the server
+  re-checks everything.
+
+## Types (TypeScript notation)
+
+```ts
+type Role = 'hr'|'hr_medical'|'final_approver'|'adjustment_approver'|'tech_admin'|'auditor';
+type Part = 'full'|'am'|'pm';
+type Status = 'draft'|'submitted'|'needs_information'|'under_review'|'approved'|'rejected'|'withdrawn'|'cancelled';
+type Kind = 'leave'|'amendment'|'cancellation';
+type DatePhase = 'upcoming'|'in_progress'|'period_ended';   // derived from dates, separate from status
+type StepKind = 'manager_recommendation'|'hr_check'|'final_decision';
+type Outcome = 'recommend_approve'|'recommend_reject'|'checked_ok'|'checked_problem'|'approve'|'reject'|'needs_information';
+
+interface UserRef { id: number; display_name: string }
+interface EmployeeRef { id: number; service_id: string; full_name: string; org_unit: { id: number; name: string } | null }
+
+interface Me {
+  user: UserRef & { email: string };
+  employee: EmployeeRef | null;
+  roles: { role: Role; scope_org_unit_id: number | null; scope_name: string }[];
+  is_manager: boolean;                       // has direct reports today
+  acting_for: { delegation_id: number; from: UserRef; scope: string; valid_to: string }[];
+  csrf_token: string;
+  totp_ok: boolean;
+}
+
+interface AppConfig { mode: 'demo'|'production'; business_date: string; app_version: string; sandbox_id?: string }
+
+interface AccountBalance {
+  account_id: number; leave_type: { id: number; code: string; name: string }; period_year: number;
+  ledger_minutes: number; reserved_minutes: number; available_minutes: number; minutes_per_day: number;
+}
+interface BalanceSummary {                      // per leave type, all periods combined
+  leave_type: { id: number; code: string; name: string; uses_balance: boolean };
+  ledger_minutes: number; reserved_minutes: number; available_minutes: number;
+  approved_upcoming_minutes: number; taken_minutes: number;   // reporting indicators (dates), not deductions
+  minutes_per_day: number; accounts: AccountBalance[];
+}
+interface LedgerEntry {
+  id: number; account_id: number; period_year: number; minutes: number;
+  kind: 'opening'|'accrual'|'consumption'|'return'|'adjustment'|'carryover_expiry'|'historical';
+  effective_date: string; basis: string; request_number: string | null; revision_no: number | null;
+  author: UserRef | null; created_at: string; running_total: number;
+}
+interface Reservation { id: number; account_id: number; period_year: number; minutes: number; request_number: string; revision_no: number; created_at: string }
+
+interface DayRow {
+  date: string; part: Part | 'none'; scheduled_minutes: number; minutes: number;
+  period_year: number; explanation: string;           // e.g. "Mon, 480 min (Standard Mon–Fri)", "Holiday: Constitution Day"
+  allocations: { account_id: number; period_year: number; minutes: number; carryover: boolean }[];
+}
+interface Revision {
+  id: number; rev_no: number; leave_type: { id: number; code: string; name: string; sensitive: boolean } | null; // null when restricted
+  start_date: string; end_date: string; start_part: Part; end_part: Part;
+  note: string | null; change_reason: string | null; total_minutes: number;
+  created_by: UserRef; created_at: string; submitted_at: string | null; days: DayRow[];
+}
+interface Step {
+  id: number; seq: number; kind: StepKind; revision_no: number;
+  status: 'waiting'|'pending'|'done'|'superseded'|'closed';
+  assignee: UserRef | null; eligible_description: string;   // "Olga Petrova (manager)" / "Any HR officer for Infrastructure Unit"
+  problem: string | null;                                    // e.g. "No manager assigned"
+  outcome: Outcome | null; completed_at: string | null;
+}
+interface Decision {
+  id: number; step_id: number; step_kind: StepKind; revision_no: number;
+  actor: UserRef; acting_for: UserRef | null; authority: string;
+  outcome: Outcome; reason: string | null; basis_document: string | null; created_at: string;
+}
+interface Message { id: number; kind: 'comment'|'question'|'answer'|'system'; author: UserRef | null; body: string; created_at: string }
+interface AttachmentMeta {
+  id: number; filename: string; content_type: string; size_bytes: number; sensitivity: 'normal'|'medical';
+  scan_status: 'pending'|'clean'|'quarantined'|'scan_failed'; scan_note: string | null;
+  uploaded_by: UserRef; created_at: string; can_download: boolean;   // medical files hidden entirely if no access: listed as {restricted:true}
+}
+interface RequestSummary {
+  id: number; number: string; kind: Kind; status: Status; status_label: string;   // words, not colour
+  date_phase: DatePhase | null; employee: EmployeeRef;
+  leave_type_name: string;                    // "Leave (details restricted)" for sensitive types without access
+  start_date: string; end_date: string; total_minutes: number; minutes_per_day: number;
+  next_action: string | null;                 // "Waiting for HR check (any HR officer)" / "Answer the question from Olga"
+  source: 'self'|'paper'; updated_at: string; version: number;
+}
+interface RequestDetail extends RequestSummary {
+  parent: { id: number; number: string } | null;
+  children: { id: number; number: string; kind: Kind; status: Status }[];   // amendments/cancellations
+  previous_request: { id: number; number: string } | null;
+  entered_by: UserRef; paper_received_date: string | null;
+  current_revision: Revision; effective_revision: Revision | null; revisions: Revision[];
+  steps: Step[]; decisions: Decision[]; messages: Message[];
+  attachments: (AttachmentMeta | { id: number; restricted: true })[];
+  reservations: Reservation[]; ledger_entries: LedgerEntry[];
+  actual: { confirmed_by: UserRef; confirmed_at: string; note: string | null } | null;
+  warnings: Warning[];
+  allowed_actions: ('edit'|'delete'|'submit'|'withdraw'|'respond'|'revise'|'decide'|'amend'|'cancel'|'comment'
+                   |'upload'|'reassign'|'confirm_actual'|'propose_actual_adjustment'|'print')[];
+  decidable_step: { id: number; kind: StepKind; outcomes: Outcome[]; acting_for: UserRef | null } | null;
+  audit: AuditEvent[];
+}
+interface Warning { code: 'late_notice'|'team_overlap'|'schedule_drift'|'unassigned_step'; message: string; details?: any }
+interface AuditEvent { id: number; at: string; actor: UserRef | null; acting_for: UserRef | null; action: string; entity: string; entity_id: number | null; details: any }
+interface DraftInput {
+  employee_id?: number;   // HR only (paper); default = own employee
+  leave_type_id: number; start_date: string; end_date: string; start_part: Part; end_part: Part; note?: string;
+  source?: 'self'|'paper'; paper_received_date?: string; previous_request_id?: number;
+}
+interface Preview {
+  days: DayRow[]; total_minutes: number; minutes_per_day: number;
+  balance_after: { period_year: number; available_before: number; available_after: number }[];
+  route: { kind: StepKind; who: string; problem: string | null }[];
+  warnings: Warning[]; errors: { code: string; message: string }[];   // errors block submit
+}
+```
+
+## Endpoints
+
+### Session & demo
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/api/config` | → `AppConfig` (no auth) |
+| GET | `/api/demo/status` | → `{ has_sandbox: boolean, sandbox_id?: string, created_at?: string }` |
+| POST | `/api/demo/start` | → `{ sandbox_id }` sets `nld_sbx`. 503 `demo_full`, 429 `rate_limited`. |
+| POST | `/api/demo/reset` | → `{ sandbox_id }` new generation, logs out. |
+| GET | `/api/demo/personas` | → `{ user_id, display_name, title, roles: string[], story: string }[]` |
+| POST | `/api/demo/login` | `{ user_id }` → `Me` |
+| POST | `/api/demo/clock` | `{ date }` (≥ current business date, ≤ 2028-12-31) → `AppConfig` |
+| GET | `/api/demo/mailbox` | → `{ items: { id, to_email, subject, body, delivered_at }[] }` (whole sandbox; demo only) |
+| POST | `/api/auth/login` | `{ email, password }` → `{ needs_totp: boolean }` |
+| POST | `/api/auth/totp` | `{ code }` → `Me` |
+| POST | `/api/auth/logout` | → 204 |
+| GET | `/api/me` | → `Me` (401 if none) |
+
+The demo-only endpoints return 404 in production.
+
+### My leave & requests
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/api/leave-types` | → `{ id, code, name, sensitive, paid, uses_balance, allow_half_day, requires_attachment, min_notice_days, active, policy: PolicyVersion }[]` |
+| GET | `/api/balances/me` | → `BalanceSummary[]` |
+| GET | `/api/balances/:employee_id` | → `BalanceSummary[]` (self, manager: no; hr/auditor in scope) |
+| GET | `/api/balances/:employee_id/explain?leave_type_id=` | → `{ entries: LedgerEntry[], reservations: Reservation[], summary: BalanceSummary }` |
+| GET | `/api/requests?scope=mine|team|all&status=&employee_id=&from=&to=` | → list of `RequestSummary` |
+| POST | `/api/requests/preview` | `DraftInput & { amend_of?: number; cancel_of?: number }` → `Preview` |
+| POST | `/api/requests` | `DraftInput` → `RequestDetail` (draft) |
+| PUT | `/api/requests/:id` | `DraftInput & { expected_version }` → `RequestDetail` (draft only) |
+| DELETE | `/api/requests/:id?expected_version=` | → 204 (draft only) |
+| GET | `/api/requests/:id` | → `RequestDetail` |
+| POST | `/api/requests/:id/submit` | `{ expected_version }` → `RequestDetail` |
+| POST | `/api/requests/:id/withdraw` | `{ expected_version, reason? }` → `RequestDetail` |
+| POST | `/api/requests/:id/decide` | `{ expected_version, step_id, outcome, reason?, basis_document? }` → `RequestDetail` (reason required for reject, recommend_reject, needs_information, checked_problem) |
+| POST | `/api/requests/:id/messages` | `{ body }` → `RequestDetail` (comment) |
+| POST | `/api/requests/:id/respond` | `{ expected_version, body, changes?: DraftInput & { change_reason } }` → `RequestDetail` |
+| POST | `/api/requests/:id/amend` | `{ expected_version, leave_type_id, start_date, end_date, start_part, end_part, change_reason }` → `RequestDetail` (the new amendment request) |
+| POST | `/api/requests/:id/cancel` | `{ expected_version, from_date, to_date, change_reason }` (whole range = full cancel) → `RequestDetail` (new cancellation request) |
+| POST | `/api/requests/:id/reassign` | `{ expected_version, step_id, assignee_user_id }` → `RequestDetail` (hr) |
+| POST | `/api/requests/:id/actual` | `{ expected_version, action: 'confirm'|'propose_adjustment', note, minutes_delta?, basis_document? }` → `RequestDetail` (hr; after period ended) |
+| POST | `/api/requests/:id/attachments` | multipart `file`, `sensitivity` → `AttachmentMeta` |
+| GET | `/api/attachments/:id` | → file bytes (permission-checked each time) |
+| GET | `/api/approvals` | → `{ items: (RequestSummary & { step: Step; acting_for: UserRef | null; warnings: Warning[] })[], problems: (RequestSummary & { problem: string })[] }` (problems for hr: unassigned steps) |
+
+### Team calendar
+`GET /api/calendar?org_unit_id=&from=&to=` →
+`{ from, to, org_units: {id,name}[], people: { employee: EmployeeRef, absences: { date: string, part: Part, state: 'approved'|'pending', label: string, request_id: number|null }[] }[], counts: { date: string, approved: number, pending: number }[] }`
+— `label` is the leave type name or `"Away"` for sensitive types / when viewer has no access; `request_id` null
+when viewer may not open the request.
+
+### People (L01)
+| Method | Path | Notes |
+|---|---|---|
+| GET/POST | `/api/org-units` | `{ code, name, parent_id }` |
+| PUT | `/api/org-units/:id` | incl. `active` |
+| GET | `/api/employees?q=&org_unit_id=&include_inactive=` | `EmployeeRef & { email, start_date, end_date, active, manager: EmployeeRef|null, schedule: {id,name}|null, has_login: boolean }` |
+| POST | `/api/employees` | `{ service_id, full_name, email?, start_date, org_unit_id, manager_employee_id?, schedule_id }` |
+| GET | `/api/employees/:id` | detail + `assignments[]`, `schedules[]`, `user`, `balances` (if allowed) |
+| PUT | `/api/employees/:id` | `{ full_name, email, end_date, active }` (deactivate never deletes requests) |
+| POST | `/api/employees/:id/transfer` | `{ org_unit_id, manager_employee_id, valid_from, reassign_open_steps: boolean }` |
+| POST | `/api/employees/:id/schedule` | `{ schedule_id, valid_from }` → also returns `affected_future_requests[]` |
+
+### Balances & adjustments (L04, L11)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/balances?org_unit_id=&leave_type_id=&date=` | `{ items: { employee: EmployeeRef, summary: BalanceSummary }[] }` |
+| POST | `/api/adjustments` | `{ employee_id, leave_type_id, period_year, minutes, reason, basis_document }` → proposed |
+| GET | `/api/adjustments?status=` | list with old/new values `{ ..., balance_before, balance_after_if_applied, proposed_by, decided_by }` |
+| POST | `/api/adjustments/:id/decide` | `{ decision: 'apply'|'reject', note }` (adjustment_approver ≠ proposer) |
+| POST | `/api/accruals/run` | `{ leave_type_id, period_year }` → `{ posted: n, skipped_existing: n }` (idempotent) |
+| POST | `/api/periods/close` | `{ leave_type_id, period_year }` → expiry entries per policy, idempotent |
+
+### Reports & export (L10, L12)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/reports/balances?date=&org_unit_id=&format=json|csv` | balance at date |
+| GET | `/api/reports/absences?from=&to=&org_unit_id=&format=` | approved absences, counts + hours, rows link to request |
+| GET | `/api/reports/pending?format=` | requests awaiting action with age |
+| GET | `/api/reports/changes-since-export?format=` | approved changes after the last transfer export |
+| GET | `/api/reports/schedule-drift` | future approved/pending days whose frozen schedule differs from current |
+| POST | `/api/exports` | `{ from, to }` → `{ id, row_count, sha256, created_at }` |
+| GET | `/api/exports` / `/api/exports/:id/download` | CSV, formula-safe |
+| POST | `/api/exports/:id/mark-transferred` | `{ note }` |
+| POST | `/api/imports/preview` | multipart `file`, `kind`, `mode?` → `{ batch_id, rows: { line, data, errors: string[] }[], rows_total, rows_valid }` |
+| POST | `/api/imports/:id/commit` | → `{ applied: n, skipped_duplicates: n }` (409 if any row invalid — all-or-nothing) |
+| GET | `/api/imports` | history |
+
+### Settings (L02, L03, L09)
+| Method | Path | Notes |
+|---|---|---|
+| POST/PUT | `/api/leave-types`, `/api/leave-types/:id` | hr |
+| POST | `/api/leave-types/:id/policies` | new `PolicyVersion` `{ valid_from, annual_entitlement_min, accrual_mode, advance_publish_months, carryover_allowed, carryover_expiry_months, allow_negative, explanation }` |
+| POST | `/api/policies/:id/verify` | hr marks rule verified (production requirement) |
+| GET/POST | `/api/schedules`, `/api/schedules/:id/versions` | |
+| GET/POST/DELETE | `/api/calendar-exceptions` | holidays; response includes `affected_future_requests` |
+| GET/POST/PUT | `/api/users`, `/api/users/:id` | tech_admin: `{ email, display_name, active, employee_id? }`; deactivate revokes sessions |
+| POST/DELETE | `/api/users/:id/roles`, `/api/role-grants/:id` | tech_admin; cannot grant self final_approver/adjustment_approver |
+| GET/POST | `/api/delegations` | `{ from_user_id, to_user_id, scope, valid_from, valid_to, reason }` (self or hr/tech_admin) |
+| POST | `/api/delegations/:id/revoke` | |
+
+### Operations & audit (L13)
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/api/ops/notifications?status=` | `{ id, to_email(masked for non-admin), subject, status, attempts, last_error, next_attempt_at, created_at, sent_at }` — no body |
+| POST | `/api/ops/notifications/:id/retry` | tech_admin / hr |
+| GET | `/api/ops/summary` | counts: queued/failed/gave_up, quarantined files, active reservations total, sandbox info |
+| GET | `/api/audit?entity=&entity_id=&actor_user_id=&limit=` | auditor, hr (scope), tech_admin (no PII details) |
+
+### Printable card
+`GET /api/requests/:id/card` → `RequestDetail` subset; frontend route `/requests/:id/print` renders a print stylesheet
+with: number, employee, dates per day, revision, every decision (actor, acting-for, authority, time), footer
+"Record of decision in Nauru Leave Desk — not a government electronic signature."
