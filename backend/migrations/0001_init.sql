@@ -247,11 +247,14 @@ CREATE TABLE request_revisions (
 );
 
 -- Per-date breakdown frozen at submission (schedule + exception snapshot).
+-- An approved cancellation creates its OWN revision on the cancellation
+-- request: days inside the cancelled range get part='none', minutes=0 and an
+-- explanation "Cancelled by <number>". Submitted revisions are never mutated.
 CREATE TABLE request_days (
     id                  INTEGER PRIMARY KEY,
     revision_id         INTEGER NOT NULL REFERENCES request_revisions(id),
     date                TEXT NOT NULL,
-    part                TEXT NOT NULL CHECK (part IN ('full','am','pm','none')),  -- none = non-working day inside range
+    part                TEXT NOT NULL CHECK (part IN ('full','am','pm','none')),  -- none = non-working/cancelled day inside range
     scheduled_minutes   INTEGER NOT NULL,
     minutes             INTEGER NOT NULL,
     schedule_version_id INTEGER REFERENCES schedule_versions(id),

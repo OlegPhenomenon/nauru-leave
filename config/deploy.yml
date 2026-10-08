@@ -1,0 +1,32 @@
+service: nauru-leave
+image: olegphenomenon/nauru-leave
+servers:
+  web:
+    - 188.34.152.24
+proxy:
+  ssl: true
+  host: nauru.shelfcompass.com
+  app_port: 8080
+  healthcheck:
+    path: /up
+    interval: 3
+    timeout: 5
+registry:
+  server: ghcr.io
+  username: olegphenomenon
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+builder:
+  arch: arm64
+  # Build on the operator's arm64 Mac; the small server should not compile Rust.
+  local: true
+  dockerfile: Dockerfile
+volumes:
+  - nauru_leave_data:/var/lib/nauru-leave
+env:
+  clear:
+    NLD_MODE: demo
+    NLD_PUBLIC_URL: https://nauru.shelfcompass.com
+    NLD_TRUST_PROXY_HEADERS: "true"
+    NLD_MAX_SANDBOXES: "200"
+    NLD_MAX_DB_TASKS: "8"

@@ -1,0 +1,43 @@
+[package]
+name = "nauru-leave"
+version = "0.1.0"
+edition = "2021"
+description = "Nauru Leave Desk — domain core"
+license = "MIT"
+
+[lib]
+name = "nauru_leave"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nauru-leave"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+argon2 = "0.6.0"
+chacha20poly1305 = "0.11.0"
+clap = { version = "4.6.7", features = ["derive"] }
+csv = "1.4.0"
+hex = "0.4.3"
+rand = "0.10.3"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+tar = "0.4.46"
+thiserror = "2.0.21"
+time = { version = "0.3.55", features = ["parsing", "formatting", "macros", "serde"] }
+totp-rs = "6.0.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.27.0", features = ["v4", "serde"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1
+opt-level = "s"
+
+[profile.dev]
+debug = "line-tables-only"
