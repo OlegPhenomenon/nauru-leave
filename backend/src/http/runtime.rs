@@ -23,6 +23,11 @@ pub struct Config {
     pub smtp_url: Option<String>,
     pub backup_key_file: Option<PathBuf>,
     pub trust_proxy_headers: bool,
+    /// Sustained requests per second per client IP (burst = 5×). Visitors from one government office often share
+    /// a single NAT address, so keep this generous.
+    pub requests_per_sec: usize,
+    /// Demo sandbox creations/resets per client IP per hour.
+    pub sandbox_creations_per_hour: usize,
 }
 impl Config {
     pub fn from_env() -> Res<Self> {
@@ -56,8 +61,15 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from),
             trust_proxy_headers: env("NLD_TRUST_PROXY_HEADERS", "false") == "true",
+            requests_per_sec: number("NLD_RATE_PER_SEC", "30")?,
+            sandbox_creations_per_hour: number("NLD_SANDBOX_CREATIONS_PER_HOUR", "30")?,
         };
-        if config.max_db_tasks == 0 || config.max_sandboxes == 0 || config.sandbox_ttl_hours <= 0 {
+        if config.max_db_tasks == 0
+            || config.max_sandboxes == 0
+            || config.sandbox_ttl_hours <= 0
+            || config.requests_per_sec == 0
+            || config.sandbox_creations_per_hour == 0
+        {
             return Err(DomainError::validation("limits must be positive"));
         }
         let url: axum::http::Uri = config
@@ -139,8 +151,11 @@ impl AppState {
     pub async fn new(config: Config) -> Res<Arc<Self>> {
         let state = Arc::new(Self {
             permits: Arc::new(tokio::sync::Semaphore::new(config.max_db_tasks)),
+            requests: RateLimiter::per_second(
+                config.requests_per_sec as f64,
+                (config.requests_per_sec * 5) as f64,
+            ),
             config,
-            requests: RateLimiter::per_second(20.0, 40.0),
             locks: Mutex::new(HashMap::new()),
         });
         state.blocking(|s| s.initialize()).await?;
@@ -256,7 +271,7 @@ impl AppState {
                 [ip.to_string()],
                 |r| r.get(0),
             )?;
-            if n >= 5 {
+            if n >= self.config.sandbox_creations_per_hour as i64 {
                 return Err(DomainError::RateLimited);
             }
             let old: Option<i64> = tx

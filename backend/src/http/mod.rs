@@ -78,7 +78,8 @@ async fn static_file(req: Request) -> Response {
 }
 async fn guard(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let api = req.uri().path().starts_with("/api/");
-    let mut response = if req.uri().path() != "/up"
+    // Only API calls are limited; static assets are cheap and a page load fetches several of them.
+    let mut response = if api
         && !state
             .requests
             .check(runtime::client_ip(&req, state.config.trust_proxy_headers))

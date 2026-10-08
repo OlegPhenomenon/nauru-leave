@@ -45,6 +45,8 @@ impl Fixture {
             smtp_url: None,
             backup_key_file: None,
             trust_proxy_headers: false,
+            requests_per_sec: 30,
+            sandbox_creations_per_hour: 5,
         };
         let state = AppState::new(config).await.unwrap();
         let router = http::router(state.clone());
