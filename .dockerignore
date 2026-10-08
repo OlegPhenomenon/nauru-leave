@@ -1,0 +1,12 @@
+.git
+**/target
+**/node_modules
+**/data
+frontend/dist
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.backup

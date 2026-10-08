@@ -30,6 +30,10 @@ pub enum DomainError {
     RateLimited,
     #[error("idempotency key was reused with a different request body")]
     IdempotencyKeyReused,
+    /// Import commit refused: any invalid row aborts the whole batch
+    /// (all-or-nothing, DESIGN §9).
+    #[error("{0}")]
+    ImportInvalid(String),
     #[error("demo is full, try later")]
     DemoFull,
     #[error("internal error: {0}")]
@@ -52,6 +56,7 @@ impl DomainError {
             Self::PastDatesNeedHrCorrection => "past_dates_need_hr_correction",
             Self::RateLimited => "rate_limited",
             Self::IdempotencyKeyReused => "idempotency_key_reused",
+            Self::ImportInvalid(_) => "import_invalid",
             Self::DemoFull => "demo_full",
             Self::Internal(_) => "internal",
         }
@@ -62,7 +67,10 @@ impl DomainError {
             Self::Unauthenticated => 401,
             Self::Forbidden(_) | Self::SelfApprovalForbidden => 403,
             Self::NotFound(_) => 404,
-            Self::StaleVersion | Self::ChangePending | Self::Overlap(_) => 409,
+            Self::StaleVersion
+            | Self::ChangePending
+            | Self::Overlap(_)
+            | Self::ImportInvalid(_) => 409,
             Self::Validation(_)
             | Self::InsufficientBalance(_)
             | Self::NoSchedule { .. }
@@ -121,6 +129,12 @@ impl From<time::error::Parse> for DomainError {
 
 impl From<serde_json::Error> for DomainError {
     fn from(e: serde_json::Error) -> Self {
+        Self::Internal(anyhow::Error::new(e))
+    }
+}
+
+impl From<csv::Error> for DomainError {
+    fn from(e: csv::Error) -> Self {
         Self::Internal(anyhow::Error::new(e))
     }
 }

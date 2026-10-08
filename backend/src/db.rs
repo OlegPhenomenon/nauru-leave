@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, TransactionBehavior};
 
 use crate::{DomainError, Res};
 
@@ -42,11 +42,13 @@ pub fn schema_version(conn: &Connection) -> Res<u32> {
     if !has_settings {
         return Ok(0);
     }
-    let v: String = conn.query_row(
-        "SELECT value FROM settings WHERE key='schema_version'",
-        [],
-        |r| r.get(0),
-    ).unwrap_or_else(|_| "0".to_string());
+    let v: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key='schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| "0".to_string());
     v.parse::<u32>()
         .map_err(|e| DomainError::Internal(anyhow::anyhow!("bad schema_version: {e}")))
 }
@@ -85,10 +87,13 @@ pub fn migrate(conn: &Connection) -> Res<u32> {
 
 /// Run `f` inside `BEGIN IMMEDIATE` ... `COMMIT`; rollback on error.
 /// All mutating domain operations must go through this.
-pub fn write_tx<T>(
-    conn: &mut Connection,
-    f: impl FnOnce(&Transaction) -> Res<T>,
-) -> Res<T> {
+pub fn write_tx<T>(conn: &mut Connection, f: impl FnOnce(&Connection) -> Res<T>) -> Res<T> {
+    if !conn.is_autocommit() {
+        let savepoint = conn.savepoint()?;
+        let value = f(&savepoint)?;
+        savepoint.commit()?;
+        return Ok(value);
+    }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     match f(&tx) {
         Ok(v) => {
@@ -98,6 +103,25 @@ pub fn write_tx<T>(
         Err(e) => {
             let _ = tx.rollback();
             Err(e)
+        }
+    }
+}
+
+/// Compose existing domain writers and an HTTP receipt in one transaction.
+/// Each nested writer uses a savepoint, so any failure rolls back the action and receipt.
+pub fn atomic<T>(conn: &mut Connection, f: impl FnOnce(&mut Connection) -> Res<T>) -> Res<T> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match f(conn) {
+        Ok(value) => {
+            if let Err(e) = conn.execute_batch("COMMIT") {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.into());
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
         }
     }
 }

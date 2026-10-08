@@ -6,7 +6,11 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "nauru-leave", version, about = "Nauru Leave Desk — domain core")]
+#[command(
+    name = "nauru-leave",
+    version,
+    about = "Nauru Leave Desk — domain core"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -14,6 +18,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Run the HTTP server and background jobs (configuration: NLD_* environment).
+    Serve,
+    /// Process due notifications and expired sandboxes once.
+    RunJobsOnce,
     /// Apply pending migrations to a database file.
     Migrate {
         /// SQLite database path.
@@ -32,22 +40,22 @@ enum Cmd {
     /// Encrypted backup of the database + attachment files.
     Backup {
         #[arg(long)]
-        db: PathBuf,
+        db: Option<PathBuf>,
         #[arg(long)]
-        files_dir: PathBuf,
+        files_dir: Option<PathBuf>,
         /// 32-byte key file (see gen-backup-key).
-        #[arg(long)]
+        #[arg(long, env = "NLD_BACKUP_KEY_FILE")]
         key_file: PathBuf,
         #[arg(long)]
         out: PathBuf,
     },
     /// Restore a backup into a data dir (main.sqlite + files/).
     Restore {
-        #[arg(long, name = "in")]
+        #[arg(long = "in", alias = "input")]
         input: PathBuf,
-        #[arg(long)]
+        #[arg(long, env = "NLD_BACKUP_KEY_FILE")]
         key_file: PathBuf,
-        #[arg(long)]
+        #[arg(long, env = "NLD_DATA_DIR", default_value = "data")]
         data_dir: PathBuf,
     },
     /// Generate a new 32-byte backup key file.
@@ -57,14 +65,15 @@ enum Cmd {
     },
 }
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    match run(Cli::parse()) {
+    match run(Cli::parse()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error[{}]: {}", e.code(), e.message());
@@ -73,15 +82,28 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> nauru_leave::Res<()> {
+async fn run(cli: Cli) -> nauru_leave::Res<()> {
     match cli.cmd {
+        Cmd::Serve => {
+            return nauru_leave::http::serve(nauru_leave::http::Config::from_env()?).await
+        }
+        Cmd::RunJobsOnce => {
+            nauru_leave::http::AppState::new(nauru_leave::http::Config::from_env()?)
+                .await?
+                .jobs(true)
+                .await?;
+        }
         Cmd::Migrate { db } => {
             if let Some(dir) = db.parent() {
                 std::fs::create_dir_all(dir)?;
             }
             let conn = nauru_leave::db::open(&db)?;
             let n = nauru_leave::db::migrate(&conn)?;
-            println!("migrated {} (schema now at {})", n, nauru_leave::db::schema_version(&conn)?);
+            println!(
+                "migrated {} (schema now at {})",
+                n,
+                nauru_leave::db::schema_version(&conn)?
+            );
         }
         Cmd::SeedTemplate { out, files_dir } => {
             if let Some(dir) = out.parent() {
@@ -92,19 +114,34 @@ fn run(cli: Cli) -> nauru_leave::Res<()> {
                     .map(|p| p.join("files"))
                     .unwrap_or_else(|| PathBuf::from("files"))
             });
-            let mut conn = nauru_leave::db::open(&out)?;
-            nauru_leave::db::migrate(&conn)?;
-            nauru_leave::seed::seed_template(&mut conn, &files_dir)?;
+            nauru_leave::seed::build_template(&out, &files_dir)?;
             println!("seeded demo template: {}", out.display());
         }
-        Cmd::Backup { db, files_dir, key_file, out } => {
+        Cmd::Backup {
+            db,
+            files_dir,
+            key_file,
+            out,
+        } => {
             let key = nauru_leave::backup::read_key(&key_file)?;
-            nauru_leave::backup::backup(&db, &files_dir, &key, &out)?;
+            let data = std::env::var_os("NLD_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("data"));
+            nauru_leave::backup::backup(
+                &db.unwrap_or_else(|| data.join("main.sqlite")),
+                &files_dir.unwrap_or_else(|| data.join("files/main")),
+                &key,
+                &out,
+            )?;
             println!("backup written: {}", out.display());
         }
-        Cmd::Restore { input, key_file, data_dir } => {
+        Cmd::Restore {
+            input,
+            key_file,
+            data_dir,
+        } => {
             let key = nauru_leave::backup::read_key(&key_file)?;
-            nauru_leave::backup::restore(&input, &key, &data_dir)?;
+            nauru_leave::backup::restore_main(&input, &key, &data_dir)?;
             println!("restored into {}", data_dir.display());
         }
         Cmd::GenBackupKey { out } => {

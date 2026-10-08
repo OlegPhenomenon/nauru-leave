@@ -838,7 +838,7 @@ fn surviving_alloc(
 }
 
 /// Teammates (same org unit today) with absences overlapping [start, end].
-fn team_overlap(
+pub fn team_overlap(
     conn: &Connection,
     employee_id: i64,
     start: Date,
@@ -2030,6 +2030,9 @@ pub fn comment(
              VALUES (?1,?2,'comment',?3,?4)",
             params![req.id, actor.user_id, body, now_ts],
         )?;
+        audit::log(tx, &now_ts, Some(actor.user_id), None, "request.comment", "request",
+            Some(req.id), serde_json::json!({}))?;
+        notify::record_change(tx, clock, actor.user_id, "request.comment")?;
         Ok(())
     })
 }
@@ -2109,6 +2112,7 @@ pub fn upload_attachment(
             Some(id),
             serde_json::json!({"request_id": request_id, "scan_status": scan_status}),
         )?;
+        notify::record_change(tx, clock, actor.user_id, "attachment.upload")?;
         Ok(id)
     });
     if result.is_err() {

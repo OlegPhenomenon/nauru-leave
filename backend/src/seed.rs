@@ -448,3 +448,21 @@ endobj
 5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
 trailer<</Root 1 0 R>>
 ";
+
+/// Publish only a completely seeded, closed and checkpointed template.
+pub fn build_template(path: &Path, files: &Path) -> Res<()> {
+    let temporary = path.with_extension("building.sqlite");
+    if temporary.exists() {
+        std::fs::remove_file(&temporary)?;
+    }
+    if files.exists() {
+        std::fs::remove_dir_all(files)?;
+    }
+    let mut conn = crate::db::open(&temporary)?;
+    crate::db::migrate(&conn)?;
+    seed_template(&mut conn, files)?;
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;")?;
+    drop(conn);
+    std::fs::rename(temporary, path)?;
+    Ok(())
+}

@@ -70,10 +70,7 @@ pub struct Recipient {
 
 /// Recipient for the request's employee: their user, else just the email
 /// (e.g. a no-login employee).
-pub fn recipient_for_employee(
-    conn: &Connection,
-    employee_id: i64,
-) -> Res<Option<Recipient>> {
+pub fn recipient_for_employee(conn: &Connection, employee_id: i64) -> Res<Option<Recipient>> {
     let row = conn
         .query_row(
             "SELECT e.email, u.id, u.email FROM employees e
@@ -91,7 +88,10 @@ pub fn recipient_for_employee(
         .optional()?;
     Ok(row.and_then(|(emp_email, uid, user_email)| {
         let email = user_email.or(emp_email)?;
-        Some(Recipient { user_id: uid, email })
+        Some(Recipient {
+            user_id: uid,
+            email,
+        })
     }))
 }
 
@@ -104,7 +104,10 @@ pub fn recipient_for_user(conn: &Connection, user_id: i64) -> Res<Option<Recipie
             |r| r.get::<_, String>(0),
         )
         .optional()?
-        .map(|email| Recipient { user_id: Some(user_id), email }))
+        .map(|email| Recipient {
+            user_id: Some(user_id),
+            email,
+        }))
 }
 
 // ------------------------------------------------------------------ delivery
@@ -113,6 +116,9 @@ pub fn recipient_for_user(conn: &Connection, user_id: i64) -> Res<Option<Recipie
 pub trait Transport {
     /// Deliver `n`. Called inside the delivery transaction.
     fn deliver(&self, conn: &Connection, n: &Notification) -> Res<()>;
+    fn external(&self) -> bool {
+        false
+    }
 }
 
 /// Demo transport: inserts into `mailbox`; any address ending
@@ -153,30 +159,36 @@ pub fn deliver_due(
     transport: &dyn Transport,
     now: OffsetDateTime,
 ) -> Res<usize> {
-    crate::db::write_tx(conn, |tx| {
-        let mut st = tx.prepare(
-            "SELECT id, recipient_user_id, to_email, subject, body, link_path, status, attempts
+    let mut st = conn.prepare(
+        "SELECT id, recipient_user_id, to_email, subject, body, link_path, status, attempts
              FROM notifications
              WHERE status IN ('queued','failed') AND next_attempt_at<=?1
              ORDER BY id",
-        )?;
-        let due: Vec<Notification> = st
-            .query_map([now_rfc3339(now)], |r| {
-                Ok(Notification {
-                    id: r.get(0)?,
-                    recipient_user_id: r.get(1)?,
-                    to_email: r.get(2)?,
-                    subject: r.get(3)?,
-                    body: r.get(4)?,
-                    link_path: r.get(5)?,
-                    status: r.get(6)?,
-                    attempts: r.get(7)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let n_done = due.len();
-        for n in due {
-            match transport.deliver(tx, &n) {
+    )?;
+    let due: Vec<Notification> = st
+        .query_map([now_rfc3339(now)], |r| {
+            Ok(Notification {
+                id: r.get(0)?,
+                recipient_user_id: r.get(1)?,
+                to_email: r.get(2)?,
+                subject: r.get(3)?,
+                body: r.get(4)?,
+                link_path: r.get(5)?,
+                status: r.get(6)?,
+                attempts: r.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(st);
+    let n_done = due.len();
+    for n in due {
+        let external_result = if transport.external() {
+            Some(transport.deliver(conn, &n))
+        } else {
+            None
+        };
+        crate::db::write_tx(conn, |tx| {
+            match external_result.unwrap_or_else(|| transport.deliver(tx, &n)) {
                 Ok(()) => {
                     tx.execute(
                         "UPDATE notifications SET status='sent', sent_at=?2, attempts=attempts+1
@@ -203,9 +215,10 @@ pub fn deliver_due(
                     }
                 }
             }
-        }
-        Ok(n_done)
-    })
+            Ok(())
+        })?;
+    }
+    Ok(n_done)
 }
 
 /// Manual retry from Operations: re-queue with a fresh attempt budget.
@@ -246,4 +259,70 @@ pub fn retry(
         )?;
         Ok(())
     })
+}
+
+/// Rustls SMTP transport. Network delivery happens outside write transactions.
+pub struct SmtpTransport {
+    client: lettre::SmtpTransport,
+    from: lettre::message::Mailbox,
+    public_url: String,
+}
+impl SmtpTransport {
+    pub fn new(url: &str, public_url: &str) -> Res<Self> {
+        let parsed = lettre::SmtpTransport::from_url(url)
+            .map_err(|e| DomainError::Internal(anyhow::anyhow!("SMTP configuration: {e}")))?;
+        let from: lettre::message::Mailbox = std::env::var("NLD_SMTP_FROM")
+            .unwrap_or_else(|_| "Nauru Leave Desk <noreply@nauru.example>".into())
+            .parse()
+            .map_err(|e| DomainError::Internal(anyhow::anyhow!("SMTP sender: {e}")))?;
+        Ok(Self {
+            client: parsed
+                .timeout(Some(std::time::Duration::from_secs(15)))
+                .build(),
+            from,
+            public_url: public_url.into(),
+        })
+    }
+}
+impl Transport for SmtpTransport {
+    fn external(&self) -> bool {
+        true
+    }
+    fn deliver(&self, _conn: &Connection, n: &Notification) -> Res<()> {
+        use lettre::Transport;
+        let message = lettre::Message::builder()
+            .from(self.from.clone())
+            .to(n
+                .to_email
+                .parse()
+                .map_err(|e| DomainError::Internal(anyhow::anyhow!("recipient: {e}")))?)
+            .subject(&n.subject)
+            .body(format!("{}\n\n{}{}", n.body, self.public_url, n.link_path))
+            .map_err(|e| DomainError::Internal(e.into()))?;
+        self.client
+            .send(&message)
+            .map_err(|e| DomainError::Internal(e.into()))?;
+        Ok(())
+    }
+}
+/// Minimal outbox event for administrative changes that have no request recipient.
+/// Call inside the same transaction as the audited change.
+pub fn record_change(conn: &Connection, clock: &Clock, user_id: i64, event: &str) -> Res<()> {
+    if let Some(recipient) = recipient_for_user(conn, user_id)? {
+        enqueue(
+            conn,
+            &clock.now_ts(),
+            &format!("record:{event}:{}", uuid::Uuid::new_v4()),
+            0,
+            0,
+            &recipient,
+            "Nauru Leave Desk record updated",
+            "A record was updated. Open Nauru Leave Desk to review it.",
+        )?;
+        conn.execute(
+            "UPDATE notifications SET link_path='/' WHERE id=last_insert_rowid()",
+            [],
+        )?;
+    }
+    Ok(())
 }

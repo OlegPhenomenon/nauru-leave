@@ -89,7 +89,9 @@ pub fn compute_days(
             exception_id,
             explanation,
         });
-        d = d.next_day().ok_or_else(|| DomainError::validation("date overflow"))?;
+        d = d
+            .next_day()
+            .ok_or_else(|| DomainError::validation("date overflow"))?;
     }
 
     // Reject a range that contains no working time at all.
@@ -97,6 +99,26 @@ pub fn compute_days(
         return Err(DomainError::validation("range contains no working days"));
     }
     Ok(out)
+}
+
+/// (schedule_version_id, schedule_name, weekday minutes) for `d` —
+/// what the *current* schedule says. Used by the schedule-drift report to
+/// compare against frozen request days.
+pub fn scheduled_on(
+    conn: &Connection,
+    employee_id: i64,
+    d: Date,
+) -> Res<(Option<i64>, String, i64)> {
+    let (version, name, minutes) = schedule_on(conn, employee_id, d)?;
+    let (_, _, minutes) = apply_exception(conn, version, d, minutes)?;
+    Ok((version, name, minutes))
+}
+
+/// Current schedule/exception identifiers and minutes, compared with a frozen day snapshot.
+pub fn snapshot_on(conn: &Connection, employee_id: i64, d: Date) -> Res<(Option<i64>, Option<i64>, i64)> {
+    let (version, _, minutes)=schedule_on(conn, employee_id, d)?;
+    let (exception, _, minutes)=apply_exception(conn, version, d, minutes)?;
+    Ok((version,exception,minutes))
 }
 
 /// (schedule_version_id, schedule_name, weekday minutes) for `d`.
@@ -172,7 +194,13 @@ fn apply_exception(
              WHERE date=?1 AND (schedule_id=?2 OR schedule_id IS NULL)
              ORDER BY (schedule_id IS NULL), id LIMIT 1",
             params![model::date_s(&d), schedule_id],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            },
         )
         .ok();
     match row {
@@ -308,7 +336,15 @@ pub fn compute_checked(
     end_part: Part,
     exclude: &[i64],
 ) -> Res<Vec<ComputedDay>> {
-    let days = compute_days(conn, employee_id, leave_type_id, start, end, start_part, end_part)?;
+    let days = compute_days(
+        conn,
+        employee_id,
+        leave_type_id,
+        start,
+        end,
+        start_part,
+        end_part,
+    )?;
     if let Some(hit) = find_overlap(conn, employee_id, &days, exclude)? {
         return Err(DomainError::Overlap(format!(
             "part '{}' on {} (request {})",

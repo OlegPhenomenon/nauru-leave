@@ -49,7 +49,9 @@ fn decrypt(key: &[u8; 32], blob: &[u8]) -> Res<Vec<u8>> {
         return Err(DomainError::validation("backup file too short"));
     }
     let cipher = XChaCha20Poly1305::new(key.into());
-    let nonce: &XNonce = blob[..24].try_into().map_err(|_| DomainError::validation("bad nonce"))?;
+    let nonce: &XNonce = blob[..24]
+        .try_into()
+        .map_err(|_| DomainError::validation("bad nonce"))?;
     cipher
         .decrypt(nonce, &blob[24..])
         .map_err(|_| DomainError::validation("backup decryption failed (bad key or file)"))
@@ -64,10 +66,7 @@ pub fn backup(db_path: &Path, files_dir: &Path, key: &[u8; 32], out: &Path) -> R
     let result = (|| -> Res<()> {
         {
             let conn = crate::db::open(db_path)?;
-            conn.execute(
-                "VACUUM INTO ?1",
-                [scratch.to_string_lossy().to_string()],
-            )?;
+            conn.execute("VACUUM INTO ?1", [scratch.to_string_lossy().to_string()])?;
         }
         // tar in memory: demo datasets are small; keeps the format trivial
         let mut tar_buf: Vec<u8> = Vec::new();
@@ -105,6 +104,39 @@ pub fn restore(archive: &Path, key: &[u8; 32], target_dir: &Path) -> Res<()> {
     let db = target_dir.join("db.sqlite");
     if db.exists() {
         std::fs::rename(&db, target_dir.join("main.sqlite"))?;
+    }
+    Ok(())
+}
+
+/// Server-layout restore: legacy archives contain files/<key>, while serve uses files/main/<key>.
+pub fn restore_main(archive: &Path, key: &[u8; 32], target: &Path) -> Res<()> {
+    if target.exists() && std::fs::read_dir(target)?.next().is_some() {
+        return Err(DomainError::validation(
+            "restore needs an empty data directory",
+        ));
+    }
+    restore(archive, key, target)?;
+    let files = target.join("files");
+    if files.exists() && !files.join("main").exists() {
+        let temporary = target.join("restored-files");
+        std::fs::rename(&files, &temporary)?;
+        std::fs::create_dir_all(&files)?;
+        std::fs::rename(temporary, files.join("main"))?;
+    } else {
+        std::fs::create_dir_all(files.join("main"))?;
+    }
+    let conn = crate::db::open(&target.join("main.sqlite"))?;
+    let keys = crate::presentation::rows(&conn, "SELECT storage_key FROM attachments", &[])?
+        .into_iter()
+        .filter_map(|v| v["storage_key"].as_str().map(str::to_owned))
+        .collect::<std::collections::HashSet<_>>();
+    for entry in std::fs::read_dir(files.join("main"))? {
+        let entry = entry?;
+        if entry.file_type()?.is_file()
+            && !keys.contains(&entry.file_name().to_string_lossy().to_string())
+        {
+            std::fs::remove_file(entry.path())?;
+        }
     }
     Ok(())
 }

@@ -49,6 +49,13 @@ interface BalanceSummary {                      // per leave type, all periods c
   ledger_minutes: number; reserved_minutes: number; available_minutes: number;
   approved_upcoming_minutes: number; taken_minutes: number;   // reporting indicators (dates), not deductions
   minutes_per_day: number; accounts: AccountBalance[];
+  policy: PolicyVersion | null;
+}
+interface PolicyVersion {
+  id: number; valid_from: string; annual_entitlement_min: number;
+  accrual_mode: string; advance_publish_months: number; carryover_allowed: boolean;
+  carryover_expiry_months: number | null; allow_negative: boolean;
+  status: 'demo_fictional'|'unverified'|'verified'; explanation: string;
 }
 interface LedgerEntry {
   id: number; account_id: number; period_year: number; minutes: number;
@@ -123,6 +130,7 @@ interface Preview {
   balance_after: { period_year: number; available_before: number; available_after: number }[];
   route: { kind: StepKind; who: string; problem: string | null }[];
   warnings: Warning[]; errors: { code: string; message: string }[];   // errors block submit
+  policy: PolicyVersion | null;
 }
 ```
 
@@ -222,7 +230,8 @@ when viewer may not open the request.
 | POST | `/api/leave-types/:id/policies` | new `PolicyVersion` `{ valid_from, annual_entitlement_min, accrual_mode, advance_publish_months, carryover_allowed, carryover_expiry_months, allow_negative, explanation }` |
 | POST | `/api/policies/:id/verify` | hr marks rule verified (production requirement) |
 | GET/POST | `/api/schedules`, `/api/schedules/:id/versions` | |
-| GET/POST/DELETE | `/api/calendar-exceptions` | holidays; response includes `affected_future_requests` |
+| GET/POST | `/api/calendar-exceptions` | holidays; POST response includes `affected_future_requests` |
+| DELETE | `/api/calendar-exceptions/:id` | delete holiday; response includes `affected_future_requests` |
 | GET/POST/PUT | `/api/users`, `/api/users/:id` | tech_admin: `{ email, display_name, active, employee_id? }`; deactivate revokes sessions |
 | POST/DELETE | `/api/users/:id/roles`, `/api/role-grants/:id` | tech_admin; cannot grant self final_approver/adjustment_approver |
 | GET/POST | `/api/delegations` | `{ from_user_id, to_user_id, scope, valid_from, valid_to, reason }` (self or hr/tech_admin) |
@@ -240,3 +249,29 @@ when viewer may not open the request.
 `GET /api/requests/:id/card` → `RequestDetail` subset; frontend route `/requests/:id/print` renders a print stylesheet
 with: number, employee, dates per day, revision, every decision (actor, acting-for, authority, time), footer
 "Record of decision in Nauru Leave Desk — not a government electronic signature."
+
+## Deviations and implementation clarifications
+
+- Bootstrap mutations (`/api/demo/start`, `/api/demo/login`, `/api/auth/login`, `/api/auth/totp`) require a matching
+  `Origin` (or same-origin `Referer`); they cannot require a CSRF token before a complete session exists.
+  `/api/demo/reset` also requires the session CSRF token when the sandbox has a valid complete session. Every other
+  mutation requires both the session token and the origin check. This supports the existing persona-switch flow.
+- Session cookies are Secure in production and on HTTPS demos. Local HTTP demos omit Secure. Cookies remain
+  HttpOnly, SameSite=Lax, host-only. Production is intended to run behind HTTPS.
+- The calendar exception DELETE path is `/api/calendar-exceptions/:id`, as used by the frontend. Schedule versions
+  support GET as well as POST at `/api/schedules/:id/versions`.
+- Balance summaries and request previews include `policy` so the client can display its status and explanation.
+  Demo policies remain `demo_fictional` with “Fictional demo rule — not Nauru law”; verifying a fictional demo
+  policy is refused. No government integration is present; transfer exports are generic CSV.
+- Report JSON uses `{items,total}` with `limit`/`offset`; absences also includes `total_days` and `total_minutes`
+  calculated over all authorized filtered rows before pagination. Durations remain integer minutes. CSV includes
+  all authorized filtered rows. Sensitive absence types are labelled `Away`; transfer CSV uses `RESTRICTED`.
+- Multipart uploads accept one `file` per request. Attachments are limited to 1 MiB in demo / 2 MiB in production,
+  five per leave request, twenty stored attachments per demo sandbox (including seeded files), and 10 MiB per
+  sandbox. Imports accept one UTF-8 CSV up to 8 MiB. See DESIGN §9 for file-level historical import modes.
+- `POST /api/accruals/run` accepts optional `month` for monthly policies. Service-wide settings, accrual and period
+  closure require service-wide HR; directory changes and import/export rows respect the actor's organizational scope.
+- Idempotency replay preserves the saved response and re-checks current access, including medical redaction.
+- The CSP permits existing React inline style attributes through `style-src-attr 'unsafe-inline'`; scripts and
+  stylesheet sources remain restricted to self. Password and TOTP enrollment are outside this HTTP contract;
+  production accounts require operator provisioning (see `OPEN_ISSUES.md`).

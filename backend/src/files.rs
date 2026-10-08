@@ -43,11 +43,16 @@ impl FileStore {
     /// Callers must store the file BEFORE committing the DB row (§10).
     pub fn put(&self, bytes: &[u8]) -> Res<String> {
         let key = uuid::Uuid::new_v4().to_string();
-        std::fs::write(self.dir.join(&key), bytes)?;
+        use std::io::Write;
+        let mut file=std::fs::OpenOptions::new().write(true).create_new(true).open(self.dir.join(&key))?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        #[cfg(unix)] std::fs::File::open(&self.dir)?.sync_all()?;
         Ok(key)
     }
 
     pub fn get(&self, key: &str) -> Res<Vec<u8>> {
+        if uuid::Uuid::parse_str(key).is_err(){return Err(crate::DomainError::validation("invalid storage key"));}
         Ok(std::fs::read(self.dir.join(key))?)
     }
 

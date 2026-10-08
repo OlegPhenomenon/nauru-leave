@@ -57,12 +57,7 @@ impl Actor {
     }
 
     /// Does the actor hold `role` covering `unit_id` (scope NULL = all)?
-    pub fn role_in_scope(
-        &self,
-        conn: &Connection,
-        role: &str,
-        unit_id: Option<i64>,
-    ) -> Res<bool> {
+    pub fn role_in_scope(&self, conn: &Connection, role: &str, unit_id: Option<i64>) -> Res<bool> {
         for g in &self.roles {
             if g.role == role && model::unit_in_scope(conn, g.scope_org_unit_id, unit_id)? {
                 return Ok(true);
@@ -96,8 +91,8 @@ impl Actor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     ViewRequest,
-    CreateDraft,      // own request
-    CreatePaper,      // on behalf of another employee
+    CreateDraft, // own request
+    CreatePaper, // on behalf of another employee
     EditDraft,
     DeleteDraft,
     Submit,
@@ -110,26 +105,38 @@ pub enum Action {
     Comment,
     UploadAttachment,
     DownloadAttachment,
+    ViewAttachment,
     ReassignStep,
     ConfirmActual,
     ProposeAdjustment,
     DecideAdjustment,
     RunAccrual,
     ClosePeriod,
-    ViewBalances,     // another employee's balances
+    ViewBalances, // another employee's balances
     TransferEmployee,
     ManageDelegations,
     RetryNotification,
     ViewAudit,
+    ManageSettings,
+    ManagePeople,
+    ManageUsers,
+    ViewOperations,
+    ManageImportsExports,
 }
 
 /// What an action operates on.
 pub enum Resource<'a> {
     Request(&'a RequestCtx),
     /// A step of a request (decide / reassign).
-    Step { request: &'a RequestCtx, step: &'a Step },
+    Step {
+        request: &'a RequestCtx,
+        step: &'a Step,
+    },
     Attachment(&'a AttachmentCtx),
-    Employee { employee_id: i64, org_unit_id: Option<i64> },
+    Employee {
+        employee_id: i64,
+        org_unit_id: Option<i64>,
+    },
     Global,
 }
 
@@ -164,23 +171,48 @@ pub enum ViewLevel {
     Restricted,
 }
 
-pub fn require(
-    conn: &Connection,
-    actor: &Actor,
-    action: Action,
-    res: &Resource,
-) -> Res<()> {
+pub fn require(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> Res<()> {
     can(conn, actor, action, res)
 }
 
 /// The gate. Returns Err(Forbidden/SelfApprovalForbidden) when denied.
-pub fn can(
-    conn: &Connection,
-    actor: &Actor,
-    action: Action,
-    res: &Resource,
-) -> Res<()> {
+pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> Res<()> {
     match action {
+        Action::ManageSettings => {
+            if actor.role_in_scope(conn, "hr", None)? {
+                Ok(())
+            } else {
+                Err(DomainError::forbidden("needs service-wide hr scope"))
+            }
+        }
+        Action::ManageImportsExports => {
+            if actor.has_role("hr") {Ok(())} else {Err(DomainError::forbidden("needs hr role"))}
+        }
+        Action::ManagePeople => {
+            let unit = match res {
+                Resource::Employee { org_unit_id, .. } => *org_unit_id,
+                _ => None,
+            };
+            if actor.role_in_scope(conn, "hr", unit)? {
+                Ok(())
+            } else {
+                Err(DomainError::forbidden("needs hr scope"))
+            }
+        }
+        Action::ManageUsers => {
+            if actor.has_role("tech_admin") {
+                Ok(())
+            } else {
+                Err(DomainError::forbidden("needs tech_admin"))
+            }
+        }
+        Action::ViewOperations => {
+            if actor.has_role("hr") || actor.has_role("tech_admin") {
+                Ok(())
+            } else {
+                Err(DomainError::forbidden("needs hr or tech_admin"))
+            }
+        }
         Action::ViewRequest => view_level(conn, actor, req_of(res)).map(|_| ()),
         Action::CreateDraft => {
             if actor.employee_id.is_some() {
@@ -190,7 +222,11 @@ pub fn can(
             }
         }
         Action::CreatePaper => {
-            let Resource::Employee { employee_id: _, org_unit_id } = res else {
+            let Resource::Employee {
+                employee_id: _,
+                org_unit_id,
+            } = res
+            else {
                 unreachable!()
             };
             if actor.role_in_scope(conn, "hr", *org_unit_id)? {
@@ -199,9 +235,16 @@ pub fn can(
                 Err(DomainError::forbidden("paper entry needs hr scope"))
             }
         }
-        Action::EditDraft | Action::DeleteDraft | Action::Submit | Action::Withdraw
-        | Action::Respond | Action::Revise | Action::Amend | Action::CancelRequest
-        | Action::Comment | Action::UploadAttachment => {
+        Action::EditDraft
+        | Action::DeleteDraft
+        | Action::Submit
+        | Action::Withdraw
+        | Action::Respond
+        | Action::Revise
+        | Action::Amend
+        | Action::CancelRequest
+        | Action::Comment
+        | Action::UploadAttachment => {
             let req = req_of(res);
             // owner, the person who entered a paper request, or hr in scope
             if actor.employee_id == Some(req.employee_id)
@@ -219,6 +262,14 @@ pub fn can(
             }
             _ => unreachable!(),
         },
+        Action::ViewAttachment => match res {
+            Resource::Attachment(a) => {
+                if a.sensitivity=="medical" {
+                    if actor.employee_id==Some(a.request.employee_id) || actor.user_id==a.uploaded_by || actor.role_in_scope(conn,"hr_medical",a.request.org_unit_id)? {Ok(())}else{Err(DomainError::forbidden("medical file"))}
+                } else {view_level(conn,actor,&a.request).map(|_|())}
+            }
+            _=>unreachable!(),
+        },
         Action::DownloadAttachment => match res {
             Resource::Attachment(a) => {
                 if a.scan_status == "quarantined" {
@@ -227,9 +278,7 @@ pub fn can(
                 if a.sensitivity == "medical" {
                     let owner = actor.employee_id == Some(a.request.employee_id)
                         || actor.user_id == a.uploaded_by;
-                    if owner
-                        || actor.role_in_scope(conn, "hr_medical", a.request.org_unit_id)?
-                    {
+                    if owner || actor.role_in_scope(conn, "hr_medical", a.request.org_unit_id)? {
                         Ok(())
                     } else {
                         Err(DomainError::forbidden("medical file"))
@@ -283,14 +332,17 @@ pub fn can(
             _ => unreachable!(),
         },
         Action::RunAccrual | Action::ClosePeriod => {
-            if actor.has_role("hr") {
+            if actor.role_in_scope(conn,"hr",None)? {
                 Ok(())
             } else {
                 Err(DomainError::forbidden("needs hr role"))
             }
         }
         Action::ViewBalances => match res {
-            Resource::Employee { employee_id, org_unit_id } => {
+            Resource::Employee {
+                employee_id,
+                org_unit_id,
+            } => {
                 if actor.employee_id == Some(*employee_id)
                     || actor.any_role_in_scope(
                         conn,
@@ -323,7 +375,7 @@ pub fn can(
             }
         }
         Action::ViewAudit => {
-            if actor.any_role_in_scope(conn, &["hr", "auditor", "tech_admin"], None)? {
+            if actor.has_role("hr") || actor.has_role("auditor") || actor.has_role("tech_admin") {
                 Ok(())
             } else {
                 Err(DomainError::forbidden("no audit access"))
@@ -387,7 +439,9 @@ pub fn view_level(conn: &Connection, actor: &Actor, req: &RequestCtx) -> Res<Vie
 fn manages_via_delegation(conn: &Connection, actor: &Actor, req: &RequestCtx) -> Res<bool> {
     let mgr = model::manager_at(conn, req.employee_id, actor.today)?;
     let Some(mgr_emp) = mgr else { return Ok(false) };
-    let Some(mgr_user) = mgr_emp.user_id else { return Ok(false) };
+    let Some(mgr_user) = mgr_emp.user_id else {
+        return Ok(false);
+    };
     Ok(model::has_delegation(
         conn,
         mgr_user,
@@ -467,7 +521,10 @@ fn direct_authority(
             return Ok(None);
         }
         let label = assignee_label(conn, req, step, who)?;
-        return Ok(Some(Authority { acting_for_user_id: None, label }));
+        return Ok(Some(Authority {
+            acting_for_user_id: None,
+            label,
+        }));
     }
     // unassigned step
     match step.kind {
@@ -495,8 +552,7 @@ fn direct_authority(
             Ok(None)
         }
         StepKind::FinalDecision => {
-            if role_in_scope_for(conn, who, &["final_approver"], req.org_unit_id, actor.today)?
-            {
+            if role_in_scope_for(conn, who, &["final_approver"], req.org_unit_id, actor.today)? {
                 return Ok(Some(Authority {
                     acting_for_user_id: None,
                     label: "final_approver".to_string(),
