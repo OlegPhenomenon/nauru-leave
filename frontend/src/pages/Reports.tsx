@@ -129,6 +129,11 @@ export default function Reports() {
     return `${d.slice(0, 7)}-${String(last).padStart(2, '0')}`;
   }
 
+  function unitName(id: number | null | undefined) {
+    if (!id) return 'the whole service';
+    return unitsQ.data?.find((u) => u.id === id)?.name ?? `unit #${id}`;
+  }
+
   async function createExport() {
     setExpBusy(true);
     setExpMsg(null);
@@ -139,7 +144,7 @@ export default function Reports() {
         opKeys.current.forIntent('export'),
       );
       opKeys.current.reset('export');
-      const scope = r.org_unit?.name ?? 'the whole service';
+      const scope = unitName(r.org_unit_id);
       setExpMsg(
         `Export #${r.id} created for ${scope} — ${r.row_count} rows, sha256 ${r.sha256.slice(0, 12)}…`,
       );
@@ -330,7 +335,7 @@ export default function Reports() {
                     <td>
                       {x.from} – {x.to}
                     </td>
-                    <td className="small">{x.org_unit?.name ?? 'Whole service'}</td>
+                    <td className="small">{x.org_unit_id ? unitName(x.org_unit_id) : 'Whole service'}</td>
                     <td className="num">{x.row_count}</td>
                     <td className="mono small" title={x.sha256}>
                       {x.sha256.slice(0, 16)}…

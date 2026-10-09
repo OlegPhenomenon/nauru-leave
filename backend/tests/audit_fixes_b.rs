@@ -960,3 +960,37 @@ async fn p01_demo_keeps_built_in_scan() {
     );
     assert_eq!(c.upload(&path, "bad.txt", b"plain text", &[]).await.0, 422);
 }
+
+// Regression: the UI's Apply/Reject sends `note: ""`; an empty decision note
+// must not be rejected by the endpoint.
+#[tokio::test]
+async fn adjustment_decide_accepts_an_empty_note() {
+    let f = Fixture::new(Mode::Demo).await;
+    let mut c = f.client();
+    c.start().await;
+    c.login("Maria Santos").await;
+    let adj = c
+        .ok(
+            "POST",
+            "/api/adjustments",
+            json!({"employee_id":8,"leave_type_id":1,"period_year":2026,"minutes":60,"reason":"decide-note","basis_document":"doc-1"}),
+        )
+        .await;
+    c.login("David Hale").await;
+    c.ok(
+        "POST",
+        &format!("/api/adjustments/{}/decide", adj["id"].as_i64().unwrap()),
+        json!({"decision":"apply","note":""}),
+    )
+    .await;
+    let conn = connection(&f, &c);
+    assert_eq!(
+        conn.query_row(
+            "SELECT status FROM adjustments WHERE id=?1",
+            [adj["id"].as_i64().unwrap()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "applied"
+    );
+}

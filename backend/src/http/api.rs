@@ -1039,7 +1039,7 @@ fn write(
                 a,
                 id,
                 decision == "apply",
-                admin::text(v, "note")?,
+                admin::optional(v, "note").unwrap_or(""),
             )?;
             Ok(json!({"id":id}))
         }

@@ -562,7 +562,7 @@ export interface ExportBatch {
   from: string;
   to: string;
   // null = whole service; otherwise the export only covers this unit.
-  org_unit?: { id: number; name: string } | null;
+  org_unit_id?: number | null;
   row_count: number;
   sha256: string;
   created_at: string;

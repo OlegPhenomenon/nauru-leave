@@ -58,8 +58,11 @@ export default function Settings() {
 const EMPTY_TF = { code: '', name: '', sensitive: false, active: true };
 
 function emptyPolicyForm(t?: LeaveType | null) {
-  // Prefill a new version from the latest existing one (or the type's
-  // in-force flags) so reopening shows the saved values, incl. null ↔ radio.
+  // Prefill a new version from the latest existing one so reopening shows the
+  // saved values, incl. null ↔ radio. The type-level flags serialise to false
+  // for a type with no policy yet, so they must not be inherited as defaults —
+  // a first version falls back to the schema defaults (paid, uses balance,
+  // half days allowed).
   const pv = t?.policies?.[t.policies.length - 1] ?? t?.policy ?? null;
   return {
     valid_from: '',
@@ -72,11 +75,11 @@ function emptyPolicyForm(t?: LeaveType | null) {
     carryover_limit: (pv?.carryover_limit_min == null ? 'none' : 'days') as 'none' | 'days',
     carryover_limit_days: minutesToDays(pv?.carryover_limit_min ?? null, STANDARD_DAY_MINUTES) ?? 0,
     allow_negative: pv?.allow_negative ?? false,
-    paid: pv?.paid ?? t?.paid ?? true,
-    uses_balance: pv?.uses_balance ?? t?.uses_balance ?? true,
-    allow_half_day: pv?.allow_half_day ?? t?.allow_half_day ?? true,
-    requires_attachment: pv?.requires_attachment ?? t?.requires_attachment ?? false,
-    min_notice_days: pv?.min_notice_days ?? t?.min_notice_days ?? 0,
+    paid: pv?.paid ?? true,
+    uses_balance: pv?.uses_balance ?? true,
+    allow_half_day: pv?.allow_half_day ?? true,
+    requires_attachment: pv?.requires_attachment ?? false,
+    min_notice_days: pv?.min_notice_days ?? 0,
     explanation: '',
   };
 }
