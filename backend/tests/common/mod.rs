@@ -142,57 +142,13 @@ impl W {
         }
 
         // leave types + policies (valid from 2025)
-        let annual = people::create_leave_type(
-            c,
-            "ANNUAL",
-            "Annual leave",
-            false,
-            true,
-            true,
-            true,
-            false,
-            5,
-        )
-        .unwrap();
-        let sick =
-            people::create_leave_type(c, "SICK", "Sick leave", true, true, true, true, false, 0)
-                .unwrap();
-        let family = people::create_leave_type(
-            c,
-            "FAMILY",
-            "Family responsibility leave",
-            false,
-            true,
-            true,
-            true,
-            false,
-            0,
-        )
-        .unwrap();
-        let unpaid = people::create_leave_type(
-            c,
-            "UNPAID",
-            "Unpaid leave",
-            false,
-            false,
-            false,
-            false,
-            false,
-            10,
-        )
-        .unwrap();
-        let carry = people::create_leave_type(
-            c,
-            "CARRY",
-            "Carryover with expiry (test)",
-            false,
-            true,
-            true,
-            true,
-            false,
-            0,
-        )
-        .unwrap();
+        let annual = people::create_leave_type(c, "ANNUAL", "Annual leave", false).unwrap();
+        let sick = people::create_leave_type(c, "SICK", "Sick leave", true).unwrap();
+        let family =
+            people::create_leave_type(c, "FAMILY", "Family responsibility leave", false).unwrap();
+        let unpaid = people::create_leave_type(c, "UNPAID", "Unpaid leave", false).unwrap();
+        let carry =
+            people::create_leave_type(c, "CARRY", "Carryover with expiry (test)", false).unwrap();
         people::create_policy(
             c,
             annual,
@@ -273,6 +229,13 @@ impl W {
             NOW,
         )
         .unwrap();
+
+        c.execute(
+            "UPDATE policy_versions SET min_notice_days=5 WHERE leave_type_id=?1",
+            [annual],
+        )
+        .unwrap();
+        c.execute("UPDATE policy_versions SET paid=0,uses_balance=0,allow_half_day=0,min_notice_days=10 WHERE leave_type_id=?1",[unpaid]).unwrap();
 
         // people — managers created before their reports
         let mk = |sid: &str, name: &str, unit: i64, mgr: Option<i64>, sched: i64| -> (i64, i64) {

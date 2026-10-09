@@ -26,7 +26,7 @@ responsible HR officer before real use."
 ## Виды отпусков
 | code | name | sensitive | uses_balance | half-day | attachment | notice | политика |
 |---|---|---|---|---|---|---|---|
-| ANNUAL | Annual leave | 0 | 1 | 1 | 0 | 5 дней (warning) | annual_upfront 9600 мин/год, advance_publish 3 мес., перенос да, без сгорания |
+| ANNUAL | Annual leave | 0 | 1 | 1 | 0 | 5 дней (warning) | annual_upfront 9600 мин/год, advance_publish 3 мес., перенос да, вымышленный лимит 10 дней (4800 мин), никогда не истекает |
 | SICK | Sick leave | 1 | 1 | 1 | 0 | 0 | annual_upfront 4800 мин/год, перенос нет |
 | FAMILY | Family responsibility leave | 0 | 1 | 1 | 0 | 0 | annual_upfront 2400 мин/год, перенос нет |
 | UNPAID | Unpaid leave | 0 | 0 | 0 | 0 | 10 | none |

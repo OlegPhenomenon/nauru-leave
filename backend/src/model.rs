@@ -233,6 +233,12 @@ pub struct LeaveType {
 
 #[derive(Clone, Debug)]
 pub struct Policy {
+    pub carryover_limit_min: Option<i64>,
+    pub paid: bool,
+    pub uses_balance: bool,
+    pub allow_half_day: bool,
+    pub requires_attachment: bool,
+    pub min_notice_days: i64,
     pub id: i64,
     pub leave_type_id: i64,
     pub valid_from: Date,
@@ -429,8 +435,7 @@ fn bool_i(v: i64) -> bool {
 
 pub fn load_leave_type(conn: &Connection, id: i64) -> Res<LeaveType> {
     conn.query_row(
-        "SELECT id, code, name, sensitive, paid, uses_balance, allow_half_day,
-                requires_attachment, min_notice_days, active FROM leave_types WHERE id=?1",
+        "SELECT id,code,name,sensitive,active FROM leave_types WHERE id=?1",
         [id],
         |r| {
             Ok(LeaveType {
@@ -438,12 +443,12 @@ pub fn load_leave_type(conn: &Connection, id: i64) -> Res<LeaveType> {
                 code: r.get(1)?,
                 name: r.get(2)?,
                 sensitive: bool_i(r.get(3)?),
-                paid: bool_i(r.get(4)?),
-                uses_balance: bool_i(r.get(5)?),
-                allow_half_day: bool_i(r.get(6)?),
-                requires_attachment: bool_i(r.get(7)?),
-                min_notice_days: r.get(8)?,
-                active: bool_i(r.get(9)?),
+                paid: true,
+                uses_balance: true,
+                allow_half_day: true,
+                requires_attachment: false,
+                min_notice_days: 0,
+                active: bool_i(r.get(4)?),
             })
         },
     )
@@ -451,34 +456,66 @@ pub fn load_leave_type(conn: &Connection, id: i64) -> Res<LeaveType> {
     .ok_or_else(|| DomainError::not_found(format!("leave type {id}")))
 }
 
-/// Policy version effective on `on` (latest valid_from <= on; falls back to
-/// the earliest version so early dates still have a rule).
+/// Latest policy that has actually entered into force.
 pub fn policy_for(conn: &Connection, leave_type_id: i64, on: Date) -> Res<Option<Policy>> {
-    let row = conn
-        .query_row(
-            "SELECT id, leave_type_id, valid_from, annual_entitlement_min, accrual_mode,
-                    advance_publish_months, carryover_allowed, carryover_expiry_months,
-                    allow_negative, status
-             FROM policy_versions
-             WHERE leave_type_id=?1 AND valid_from<=?2
-             ORDER BY valid_from DESC, id DESC LIMIT 1",
-            params![leave_type_id, date_s(&on)],
-            map_policy,
-        )
-        .optional()?;
-    if row.is_some() {
-        return Ok(row);
-    }
     conn.query_row(
         "SELECT id, leave_type_id, valid_from, annual_entitlement_min, accrual_mode,
                 advance_publish_months, carryover_allowed, carryover_expiry_months,
-                allow_negative, status
-         FROM policy_versions WHERE leave_type_id=?1 ORDER BY valid_from, id LIMIT 1",
-        [leave_type_id],
-        map_policy,
-    )
-    .optional()
-    .map_err(Into::into)
+                allow_negative, status,carryover_limit_min,paid,uses_balance,allow_half_day,requires_attachment,min_notice_days
+         FROM policy_versions WHERE leave_type_id=?1 AND valid_from<=?2
+         ORDER BY valid_from DESC,id DESC LIMIT 1",
+        params![leave_type_id,date_s(&on)],map_policy,
+    ).optional().map_err(Into::into)
+}
+
+pub fn leave_type_on(conn: &Connection, id: i64, on: Date) -> Res<LeaveType> {
+    let mut t = load_leave_type(conn, id)?;
+    let p = policy_for(conn, id, on)?.ok_or_else(|| DomainError::NoPolicy(t.code.clone()))?;
+    t.paid = p.paid;
+    t.uses_balance = p.uses_balance;
+    t.allow_half_day = p.allow_half_day;
+    t.requires_attachment = p.requires_attachment;
+    t.min_notice_days = p.min_notice_days;
+    Ok(t)
+}
+
+/// Conditions saved at submission; sensitivity may only become more restrictive.
+pub fn revision_leave_type(conn: &Connection, revision_id: i64) -> Res<LeaveType> {
+    let r = load_revision(conn, revision_id)?;
+    let mut t = load_leave_type(conn, r.leave_type_id)?;
+    let snapshot: Option<String> = conn.query_row(
+        "SELECT policy_snapshot FROM request_revisions WHERE id=?1",
+        [revision_id],
+        |r| r.get(0),
+    )?;
+    if let Some(s) = snapshot {
+        let v: serde_json::Value = serde_json::from_str(&s)?;
+        t.paid = v["paid"].as_bool().unwrap_or(t.paid);
+        t.uses_balance = v["uses_balance"].as_bool().unwrap_or(t.uses_balance);
+        t.allow_half_day = v["allow_half_day"].as_bool().unwrap_or(t.allow_half_day);
+        t.requires_attachment = v["requires_attachment"]
+            .as_bool()
+            .unwrap_or(t.requires_attachment);
+        t.sensitive |= v["sensitive"].as_bool().unwrap_or(false);
+        t.min_notice_days = v["min_notice_days"].as_i64().unwrap_or(t.min_notice_days);
+    }
+    Ok(t)
+}
+
+pub fn snapshot_policy(conn: &Connection, revision_id: i64, on: Date) -> Res<()> {
+    let r = load_revision(conn, revision_id)?;
+    let t = leave_type_on(conn, r.leave_type_id, on)?;
+    let p = policy_for(conn, t.id, on)?.ok_or_else(|| DomainError::NoPolicy(t.code.clone()))?;
+    let snapshot = serde_json::json!({"paid":t.paid,"uses_balance":t.uses_balance,"allow_half_day":t.allow_half_day,"requires_attachment":t.requires_attachment,"sensitive":t.sensitive,"min_notice_days":t.min_notice_days,"annual_entitlement_min":p.annual_entitlement_min,"accrual_mode":p.accrual_mode,"advance_publish_months":p.advance_publish_months,"carryover_allowed":p.carryover_allowed,"carryover_expiry_months":p.carryover_expiry_months,"carryover_limit_min":p.carryover_limit_min,"allow_negative":p.allow_negative,"status":p.status});
+    conn.execute(
+        "UPDATE request_revisions SET policy_version_id=?2,policy_snapshot=?3 WHERE id=?1",
+        params![revision_id, p.id, snapshot.to_string()],
+    )?;
+    Ok(())
+}
+
+pub fn policy_by_id(conn: &Connection, id: i64) -> Res<Policy> {
+    conn.query_row("SELECT id,leave_type_id,valid_from,annual_entitlement_min,accrual_mode,advance_publish_months,carryover_allowed,carryover_expiry_months,allow_negative,status,carryover_limit_min,paid,uses_balance,allow_half_day,requires_attachment,min_notice_days FROM policy_versions WHERE id=?1",[id],map_policy).optional()?.ok_or_else(||DomainError::not_found("policy"))
 }
 
 fn map_policy(r: &rusqlite::Row) -> rusqlite::Result<Policy> {
@@ -495,6 +532,12 @@ fn map_policy(r: &rusqlite::Row) -> rusqlite::Result<Policy> {
         carryover_expiry_months: r.get(7)?,
         allow_negative: bool_i(r.get(8)?),
         status: r.get(9)?,
+        carryover_limit_min: r.get(10)?,
+        paid: bool_i(r.get(11)?),
+        uses_balance: bool_i(r.get(12)?),
+        allow_half_day: bool_i(r.get(13)?),
+        requires_attachment: bool_i(r.get(14)?),
+        min_notice_days: r.get(15)?,
     })
 }
 
@@ -576,11 +619,7 @@ pub fn unit_of(conn: &Connection, employee_id: i64, date: Date) -> Res<Option<i6
 }
 
 /// Employee ids directly managed by `manager_employee_id` on `date`.
-pub fn direct_reports(
-    conn: &Connection,
-    manager_employee_id: i64,
-    date: Date,
-) -> Res<Vec<i64>> {
+pub fn direct_reports(conn: &Connection, manager_employee_id: i64, date: Date) -> Res<Vec<i64>> {
     let mut st = conn.prepare(
         "SELECT employee_id FROM employment_assignments
          WHERE manager_employee_id=?1 AND valid_from<=?2
@@ -605,11 +644,9 @@ pub fn unit_in_scope(conn: &Connection, scope: Option<i64>, unit_id: Option<i64>
                     return Ok(true);
                 }
                 cur = match conn
-                    .query_row(
-                        "SELECT parent_id FROM org_units WHERE id=?1",
-                        [cur],
-                        |r| r.get::<_, Option<i64>>(0),
-                    )
+                    .query_row("SELECT parent_id FROM org_units WHERE id=?1", [cur], |r| {
+                        r.get::<_, Option<i64>>(0)
+                    })
                     .optional()?
                 {
                     Some(Some(p)) => p,
@@ -696,7 +733,11 @@ pub fn load_request(conn: &Connection, id: i64) -> Res<LeaveRequest> {
                 number: r.get(1)?,
                 employee_id: r.get(2)?,
                 kind: RequestKind::parse(&r.get::<_, String>(3)?).map_err(|_| {
-                    rusqlite::Error::InvalidColumnType(3, "kind".into(), rusqlite::types::Type::Text)
+                    rusqlite::Error::InvalidColumnType(
+                        3,
+                        "kind".into(),
+                        rusqlite::types::Type::Text,
+                    )
                 })?,
                 parent_request_id: r.get(4)?,
                 previous_request_id: r.get(5)?,
@@ -743,10 +784,18 @@ pub fn load_revision(conn: &Connection, id: i64) -> Res<Revision> {
                 start_date: parse_date(&r.get::<_, String>(4)?).unwrap(),
                 end_date: parse_date(&r.get::<_, String>(5)?).unwrap(),
                 start_part: Part::parse(&r.get::<_, String>(6)?).map_err(|_| {
-                    rusqlite::Error::InvalidColumnType(6, "part".into(), rusqlite::types::Type::Text)
+                    rusqlite::Error::InvalidColumnType(
+                        6,
+                        "part".into(),
+                        rusqlite::types::Type::Text,
+                    )
                 })?,
                 end_part: Part::parse(&r.get::<_, String>(7)?).map_err(|_| {
-                    rusqlite::Error::InvalidColumnType(7, "part".into(), rusqlite::types::Type::Text)
+                    rusqlite::Error::InvalidColumnType(
+                        7,
+                        "part".into(),
+                        rusqlite::types::Type::Text,
+                    )
                 })?,
                 note: r.get(8)?,
                 change_reason: r.get(9)?,
@@ -809,8 +858,13 @@ pub fn allocation_totals(
         "SELECT account_id, SUM(minutes) FROM revision_allocations
          WHERE revision_id=?1 GROUP BY account_id",
     )?;
-    let rows = st.query_map([revision_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
-    Ok(rows.collect::<rusqlite::Result<Vec<(i64, i64)>>>()?.into_iter().collect())
+    let rows = st.query_map([revision_id], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    Ok(rows
+        .collect::<rusqlite::Result<Vec<(i64, i64)>>>()?
+        .into_iter()
+        .collect())
 }
 
 pub fn steps_of(conn: &Connection, request_id: i64) -> Res<Vec<Step>> {
@@ -926,8 +980,7 @@ pub fn family_ids(conn: &Connection, request_id: i64) -> Res<Vec<i64>> {
     let req = load_request(conn, request_id)?;
     let root = req.parent_request_id.unwrap_or(req.id);
     let mut ids = vec![root];
-    let mut st =
-        conn.prepare("SELECT id FROM leave_requests WHERE parent_request_id=?1")?;
+    let mut st = conn.prepare("SELECT id FROM leave_requests WHERE parent_request_id=?1")?;
     let rows = st.query_map([root], |r| r.get::<_, i64>(0))?;
     for r in rows {
         ids.push(r?);

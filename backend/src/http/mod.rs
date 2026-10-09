@@ -236,7 +236,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("/api/schedules", "GET|POST"),
     ("/api/schedules/{id}/versions", "GET|POST"),
     ("/api/calendar-exceptions", "GET|POST"),
-    ("/api/calendar-exceptions/{id}", "DELETE"),
+    ("/api/calendar-exceptions/{id}/revoke", "POST"),
     ("/api/users", "GET|POST"),
     ("/api/users/{id}", "PUT"),
     ("/api/users/{id}/roles", "POST"),

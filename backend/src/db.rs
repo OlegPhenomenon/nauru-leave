@@ -9,7 +9,13 @@ use crate::{DomainError, Res};
 
 /// Embedded migrations, in order. Each file runs once, recorded in
 /// `settings.schema_version` (count of applied migrations).
-static MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
+static MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init", include_str!("../migrations/0001_init.sql")),
+    (
+        "0002_audit_fixes",
+        include_str!("../migrations/0002_audit_fixes.sql"),
+    ),
+];
 
 /// Open (or create) a database file with the required pragmas.
 pub fn open(path: &Path) -> Res<Connection> {
@@ -61,21 +67,38 @@ pub fn migrate(conn: &Connection) -> Res<u32> {
         if idx < current {
             continue;
         }
+        let rebuild = *name == "0002_audit_fixes";
+        if rebuild {
+            conn.pragma_update(None, "foreign_keys", "OFF")?;
+        }
         conn.execute_batch("BEGIN IMMEDIATE;")?;
-        let result = conn.execute_batch(sql);
+        let result = (|| -> Res<()> {
+            conn.execute_batch(sql)?;
+            if rebuild {
+                crate::imports_exports::migrate_export_snapshots(conn)?;
+                if conn.prepare("PRAGMA foreign_key_check")?.exists([])? {
+                    return Err(DomainError::validation(
+                        "migration foreign key check failed",
+                    ));
+                }
+            }
+            conn.execute("INSERT INTO settings(key,value) VALUES('schema_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[&(idx+1).to_string()])?;
+            conn.execute_batch("COMMIT")?;
+            Ok(())
+        })();
         match result {
             Ok(()) => {
-                conn.execute(
-                    "INSERT INTO settings(key, value) VALUES('schema_version', ?1)
-                     ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    [&(idx + 1).to_string()],
-                )?;
-                conn.execute_batch("COMMIT;")?;
+                if rebuild {
+                    conn.pragma_update(None, "foreign_keys", "ON")?;
+                }
                 applied += 1;
                 tracing::info!(migration = name, "applied");
             }
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK;");
+                if rebuild {
+                    conn.pragma_update(None, "foreign_keys", "ON")?;
+                }
                 return Err(DomainError::Internal(anyhow::anyhow!(
                     "migration {name} failed: {e}"
                 )));

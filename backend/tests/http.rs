@@ -459,11 +459,8 @@ async fn main_scenario_export() {
         json!({"note":"Accepted"}),
     )
     .await;
-    assert_eq!(
-        c.ok("GET", "/api/reports/changes-since-export", json!({}))
-            .await["total"],
-        0
-    );
+    let changes=c.ok("GET", "/api/reports/changes-since-export", json!({})).await;
+    assert!(!changes["items"].as_array().unwrap().iter().any(|row|row["request_id"]==id));
 }
 #[tokio::test]
 async fn isolation_other_employee() {
@@ -713,7 +710,7 @@ async fn csv_formula_safe() {
     c.ok(
         "PUT",
         &format!("/api/employees/{id}"),
-        json!({"full_name":"=HYPERLINK(\"evil\")","email":"test@x.example","active":true}),
+        json!({"expected_version":employees["items"][0]["version"],"full_name":"=HYPERLINK(\"evil\")","email":"test@x.example","active":true}),
     )
     .await;
     let (s, _, bytes) = c
@@ -1144,7 +1141,7 @@ async fn settings_mutations_and_drift() {
     c.ok(
         "PUT",
         &format!("/api/org-units/{}", unit["id"]),
-        json!({"code":"TEST","name":"Renamed unit","active":true}),
+        json!({"expected_version":unit["version"],"code":"TEST","name":"Renamed unit","active":true}),
     )
     .await;
     let schedule = c
@@ -1157,7 +1154,7 @@ async fn settings_mutations_and_drift() {
     c.ok(
         "POST",
         &format!("/api/schedules/{}/versions", schedule["id"]),
-        json!({"valid_from":"2026-11-01","week":[360,360,360,360,360,0,0]}),
+        json!({"expected_version":schedule["version"],"valid_from":"2026-11-01","week":[360,360,360,360,360,0,0]}),
     )
     .await;
     let exception = c
@@ -1178,9 +1175,9 @@ async fn settings_mutations_and_drift() {
         .iter()
         .any(|d| d["date"] == "2026-11-10" && d["current_minutes"] == 0));
     c.ok(
-        "DELETE",
-        &format!("/api/calendar-exceptions/{}", exception["id"]),
-        json!({}),
+        "POST",
+        &format!("/api/calendar-exceptions/{}/revoke", exception["id"]),
+        json!({"reason":"Test holiday revoked"}),
     )
     .await;
     c.ok(

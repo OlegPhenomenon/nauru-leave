@@ -233,7 +233,7 @@ fn production_init_refuses_demo_data_and_is_idempotent() {
         );
     }
     let conn = nauru_leave::db::open(&dir.join("main.sqlite")).unwrap();
-    assert_eq!(nauru_leave::db::schema_version(&conn).unwrap(), 1);
+    assert_eq!(nauru_leave::db::schema_version(&conn).unwrap(), 2);
     conn.execute("UPDATE settings SET value='demo' WHERE key='mode'", [])
         .unwrap();
     assert!(!cli(&dir, &["user", "list"], None).status.success());

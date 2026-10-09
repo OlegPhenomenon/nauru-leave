@@ -171,33 +171,10 @@ pub fn create_calendar_exception(
     )?)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn create_leave_type(
-    conn: &Connection,
-    code: &str,
-    name: &str,
-    sensitive: bool,
-    paid: bool,
-    uses_balance: bool,
-    allow_half_day: bool,
-    requires_attachment: bool,
-    min_notice_days: i64,
-) -> Res<i64> {
+pub fn create_leave_type(conn: &Connection, code: &str, name: &str, sensitive: bool) -> Res<i64> {
     Ok(conn.query_row(
-        "INSERT INTO leave_types
-         (code, name, sensitive, paid, uses_balance, allow_half_day,
-          requires_attachment, min_notice_days, active)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1) RETURNING id",
-        params![
-            code,
-            name,
-            sensitive as i64,
-            paid as i64,
-            uses_balance as i64,
-            allow_half_day as i64,
-            requires_attachment as i64,
-            min_notice_days
-        ],
+        "INSERT INTO leave_types(code,name,sensitive,active) VALUES(?1,?2,?3,1) RETURNING id",
+        params![code, name, sensitive],
         |r| r.get(0),
     )?)
 }
@@ -218,12 +195,23 @@ pub fn create_policy(
     created_by: Option<i64>,
     now_ts: &str,
 ) -> Res<i64> {
+    let previous = crate::model::policy_for(conn, leave_type_id, valid_from)?;
+    let (paid, uses_balance, allow_half_day, requires_attachment, notice) =
+        previous.map_or((true, true, true, false, 0), |p| {
+            (
+                p.paid,
+                p.uses_balance,
+                p.allow_half_day,
+                p.requires_attachment,
+                p.min_notice_days,
+            )
+        });
     Ok(conn.query_row(
         "INSERT INTO policy_versions
          (leave_type_id, valid_from, annual_entitlement_min, accrual_mode,
           advance_publish_months, carryover_allowed, carryover_expiry_months,
-          allow_negative, explanation, status, created_by, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) RETURNING id",
+          allow_negative, explanation, status, created_by, created_at,paid,uses_balance,allow_half_day,requires_attachment,min_notice_days)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17) RETURNING id",
         params![
             leave_type_id,
             date_s(&valid_from),
@@ -236,7 +224,7 @@ pub fn create_policy(
             explanation,
             status,
             created_by,
-            now_ts
+            now_ts,paid,uses_balance,allow_half_day,requires_attachment,notice
         ],
         |r| r.get(0),
     )?)

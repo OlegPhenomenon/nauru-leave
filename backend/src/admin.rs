@@ -7,7 +7,7 @@ use crate::{
     model::{self, date_s},
     notify, people, presentation as view, queries, DomainError, Res,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use time::Date;
 pub fn text<'a>(v: &'a Value, k: &str) -> Res<&'a str> {
@@ -40,6 +40,15 @@ fn boolean(v: &Value, k: &str, default: bool) -> Res<bool> {
             .ok_or_else(|| DomainError::validation(format!("{k} must be boolean")))
     }
 }
+pub fn nullable_integer(v: &Value, key: &str) -> Res<Option<i64>> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| DomainError::validation(format!("{key} must be an integer or null"))),
+    }
+}
 fn week(v: &Value) -> Res<[i64; 7]> {
     let mut week = [0; 7];
     for (i, key) in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -65,6 +74,33 @@ fn affected(conn: &Connection, employee: Option<i64>, from: Date) -> Res<Value> 
     .into_iter()
     .map(|(id, number)| json!({"id":id,"number":number}))
     .collect::<Vec<_>>()))
+}
+/// Compare the resource version inside the caller's write transaction.
+pub fn check_setting_version(conn: &Connection, table: &str, id: i64, body: &Value) -> Res<()> {
+    if ![
+        "leave_types",
+        "org_units",
+        "employees",
+        "users",
+        "schedules",
+        "schedule_versions",
+    ]
+    .contains(&table)
+    {
+        return Err(DomainError::validation("invalid setting"));
+    }
+    let actual = conn
+        .query_row(
+            &format!("SELECT version FROM {table} WHERE id=?1"),
+            [id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .ok_or_else(|| DomainError::not_found(table))?;
+    if integer(body, "expected_version")? != actual {
+        return Err(DomainError::StaleVersion);
+    }
+    Ok(())
 }
 pub fn mutate(
     conn: &mut Connection,
@@ -97,7 +133,18 @@ pub fn mutate(
             Resource::Global
         };
         authz::require(tx, actor, action, &resource)?;
-        let result = match (path[0], method, id, path.get(2).copied()) {
+        let version_table = match (path[0], method, path.get(2).copied()) {
+            ("leave-types", "PUT", _) => Some("leave_types"),
+            ("org-units", "PUT", _) => Some("org_units"),
+            ("employees", "PUT", _) | ("employees", "POST", Some("schedule")) => Some("employees"),
+            ("users", "PUT", _) => Some("users"),
+            ("schedules", "POST", Some("versions")) => Some("schedules"),
+            _ => None,
+        };
+        if let (Some(table), Some(id)) = (version_table, id) {
+            check_setting_version(tx, table, id, body)?;
+        }
+        let mut result = match (path[0], method, id, path.get(2).copied()) {
             ("org-units", "POST", None, _) => {
                 json!({"id":people::create_org_unit(tx,text(body,"code")?,text(body,"name")?,body["parent_id"].as_i64())?})
             }
@@ -156,25 +203,26 @@ pub fn mutate(
                 json!({"id":id,"affected_future_requests":affected(tx,Some(id),from)?})
             }
             ("leave-types", "POST", None, _) => {
-                let notice = body["min_notice_days"].as_i64().unwrap_or(0);
-                if notice < 0 {
-                    return Err(DomainError::validation("notice cannot be negative"));
-                }
-                json!({"id":people::create_leave_type(tx,text(body,"code")?,text(body,"name")?,boolean(body,"sensitive",false)?,boolean(body,"paid",true)?,boolean(body,"uses_balance",true)?,boolean(body,"allow_half_day",true)?,boolean(body,"requires_attachment",false)?,notice)?})
+                json!({"id":people::create_leave_type(tx, text(body,"code")?, text(body,"name")?, boolean(body,"sensitive",false)?)?})
             }
             ("leave-types", "PUT", Some(id), _) => {
                 model::load_leave_type(tx, id)?;
-                let notice = body["min_notice_days"].as_i64().unwrap_or(0);
-                if notice < 0 {
-                    return Err(DomainError::validation("notice cannot be negative"));
-                }
-                tx.execute("UPDATE leave_types SET code=?2,name=?3,sensitive=?4,paid=?5,uses_balance=?6,allow_half_day=?7,requires_attachment=?8,min_notice_days=?9,active=?10 WHERE id=?1",params![id,text(body,"code")?,text(body,"name")?,boolean(body,"sensitive",false)?,boolean(body,"paid",true)?,boolean(body,"uses_balance",true)?,boolean(body,"allow_half_day",true)?,boolean(body,"requires_attachment",false)?,notice,boolean(body,"active",true)?])?;
+                tx.execute(
+                    "UPDATE leave_types SET code=?2,name=?3,sensitive=?4,active=?5 WHERE id=?1",
+                    params![
+                        id,
+                        text(body, "code")?,
+                        text(body, "name")?,
+                        boolean(body, "sensitive", false)?,
+                        boolean(body, "active", true)?
+                    ],
+                )?;
                 json!({"id":id})
             }
             ("leave-types", "POST", Some(id), Some("policies")) => {
                 let entitlement = integer(body, "annual_entitlement_min")?;
                 let advance = integer(body, "advance_publish_months")?;
-                let expiry = body["carryover_expiry_months"].as_i64();
+                let expiry = nullable_integer(body, "carryover_expiry_months")?;
                 if entitlement < 0 || advance < 0 || expiry.is_some_and(|i| i < 0) {
                     return Err(DomainError::validation(
                         "policy quantities cannot be negative",
@@ -190,6 +238,7 @@ pub fn mutate(
                 } else {
                     explanation.into()
                 };
+                let current = model::policy_for(tx, id, date(body, "valid_from")?)?;
                 let policy = people::create_policy(
                     tx,
                     id,
@@ -209,7 +258,50 @@ pub fn mutate(
                     Some(actor.user_id),
                     &now,
                 )?;
-                rows_one(tx, "SELECT * FROM policy_versions WHERE id=?1", policy)?
+                let t = model::load_leave_type(tx, id)?;
+                let limit = nullable_integer(body, "carryover_limit_min")?;
+                if limit.is_some_and(|i| i < 0) {
+                    return Err(DomainError::validation(
+                        "carryover limit cannot be negative",
+                    ));
+                }
+                let notice = body["min_notice_days"].as_i64().unwrap_or_else(|| {
+                    current
+                        .as_ref()
+                        .map_or(t.min_notice_days, |p| p.min_notice_days)
+                });
+                if notice < 0 {
+                    return Err(DomainError::validation("notice cannot be negative"));
+                }
+                tx.execute("UPDATE policy_versions SET carryover_limit_min=?2,paid=?3,uses_balance=?4,allow_half_day=?5,requires_attachment=?6,min_notice_days=?7 WHERE id=?1",params![policy,limit,boolean(body,"paid",current.as_ref().map_or(t.paid,|p|p.paid))?,boolean(body,"uses_balance",current.as_ref().map_or(t.uses_balance,|p|p.uses_balance))?,boolean(body,"allow_half_day",current.as_ref().map_or(t.allow_half_day,|p|p.allow_half_day))?,boolean(body,"requires_attachment",current.as_ref().map_or(t.requires_attachment,|p|p.requires_attachment))?,notice])?;
+                let mut result = rows_one(tx, "SELECT * FROM policy_versions WHERE id=?1", policy)?;
+                for key in [
+                    "paid",
+                    "uses_balance",
+                    "allow_half_day",
+                    "requires_attachment",
+                    "carryover_allowed",
+                    "allow_negative",
+                ] {
+                    result[key] = json!(result[key].as_i64() == Some(1));
+                }
+                result["in_force"] =
+                    json!(model::policy_for(tx, id, today)?.is_some_and(|p| p.id == policy));
+                let from = date(body, "valid_from")?.max(today);
+                result["affected_future_requests"] =
+                    json!(queries::affected_future_requests(tx, None, from)?
+                        .into_iter()
+                        .filter(|(request, _)| model::load_request(tx, *request)
+                            .and_then(|r| model::load_revision(
+                                tx,
+                                r.effective_revision_id
+                                    .or(r.current_revision_id)
+                                    .ok_or_else(|| DomainError::not_found("revision"))?
+                            ))
+                            .is_ok_and(|r| r.leave_type_id == id))
+                        .map(|(id, number)| json!({"id":id,"number":number}))
+                        .collect::<Vec<_>>());
+                result
             }
             ("policies", "POST", Some(id), Some("verify")) => {
                 if mode == Mode::Demo {
@@ -264,7 +356,7 @@ pub fn mutate(
                 }
                 let schedule = body["schedule_id"].as_i64();
                 let n: i64 = tx.query_row(
-                    "SELECT COUNT(*) FROM calendar_exceptions WHERE date=?1 AND schedule_id IS ?2",
+                    "SELECT COUNT(*) FROM calendar_exceptions WHERE revoked_at IS NULL AND date=?1 AND schedule_id IS ?2",
                     params![date_s(&d), schedule],
                     |r| r.get(0),
                 )?;
@@ -281,7 +373,7 @@ pub fn mutate(
                 )?;
                 json!({"id":id,"affected_future_requests":affected(tx,None,d)?})
             }
-            ("calendar-exceptions", "DELETE", Some(id), _) => {
+            ("calendar-exceptions", "POST", Some(id), Some("revoke")) => {
                 let d: String = tx
                     .query_row(
                         "SELECT date FROM calendar_exceptions WHERE id=?1",
@@ -289,7 +381,11 @@ pub fn mutate(
                         |r| r.get(0),
                     )
                     .map_err(|_| DomainError::not_found("calendar exception"))?;
-                tx.execute("DELETE FROM calendar_exceptions WHERE id=?1", [id])?;
+                let reason = text(body, "reason")?;
+                if reason.trim().is_empty() {
+                    return Err(DomainError::validation("reason required"));
+                }
+                tx.execute("UPDATE calendar_exceptions SET revoked_at=?2,revoked_by=?3,reason=?4 WHERE id=?1 AND revoked_at IS NULL",params![id,now,actor.user_id,reason])?;
                 json!({"affected_future_requests":affected(tx,None,model::parse_date(&d)?)?})
             }
             ("users", "POST", None, _) => {
@@ -380,6 +476,28 @@ pub fn mutate(
             }
             _ => return Err(DomainError::not_found("settings action")),
         };
+        if let (Some(table), Some(id)) = (version_table, id) {
+            tx.execute(
+                &format!("UPDATE {table} SET version=version+1 WHERE id=?1"),
+                [id],
+            )?;
+            result["version"] = json!(tx.query_row(
+                &format!("SELECT version FROM {table} WHERE id=?1"),
+                [id],
+                |r| r.get::<_, i64>(0)
+            )?);
+        } else if [
+            "org-units",
+            "employees",
+            "leave-types",
+            "users",
+            "schedules",
+        ]
+        .contains(&path[0])
+            && id.is_none()
+        {
+            result["version"] = json!(1);
+        }
         let entity = path[0].trim_end_matches('s');
         let object = result["id"].as_i64().or(id);
         audit::log(

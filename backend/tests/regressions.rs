@@ -356,7 +356,7 @@ fn amend_and_revise_validate_type_range_and_attachment() {
                 _ => {
                     w.conn
                         .execute(
-                            "UPDATE leave_types SET requires_attachment=1 WHERE id=?1",
+                            "UPDATE policy_versions SET requires_attachment=1 WHERE leave_type_id=?1",
                             [w.sick],
                         )
                         .unwrap();

@@ -310,6 +310,7 @@ fn dispatch(
     }
     let database = database?;
     let mut conn = db::open(&database.path)?;
+    db::migrate(&conn)?;
     let clock = config.clock();
     if path == "config" {
         return Ok(Output::json(app_config(
@@ -715,17 +716,43 @@ fn write(
                     version()?,
                 )?,
                 ("POST", Some("actual")) => {
-                    requests::actual_period(
+                    let worked = v
+                        .get("worked_dates")
+                        .map(|v| {
+                            v.as_array()
+                                .ok_or_else(|| {
+                                    DomainError::validation("worked_dates must be an array")
+                                })
+                                .and_then(|values| {
+                                    values
+                                        .iter()
+                                        .map(|v| {
+                                            v.as_str()
+                                                .ok_or_else(|| {
+                                                    DomainError::validation(
+                                                        "worked_dates must contain dates",
+                                                    )
+                                                })
+                                                .and_then(model::parse_date)
+                                        })
+                                        .collect::<Res<Vec<_>>>()
+                                })
+                        })
+                        .transpose()?;
+                    let ids = requests::actual_period(
                         conn,
                         clock,
                         a,
                         id,
                         admin::text(v, "action")?,
                         admin::text(v, "note")?,
-                        v["minutes_delta"].as_i64(),
+                        worked.as_deref(),
                         admin::optional(v, "basis_document"),
                         version()?,
                     )?;
+                    let mut detail = view::detail(conn, a, id)?;
+                    detail["adjustment_ids"] = json!(ids);
+                    return Ok(detail);
                 }
                 _ => return Err(DomainError::not_found("request action")),
             }
@@ -789,7 +816,7 @@ fn write(
                 a,
                 admin::integer(v, "leave_type_id")?,
                 admin::period_year(v)?,
-                v["month"].as_i64(),
+                admin::nullable_integer(v, "month")?,
             )?;
             Ok(json!({"posted":r.posted,"skipped_existing":r.skipped_existing}))
         }
@@ -797,12 +824,13 @@ fn write(
             json!({"posted":ledger::close_period(conn,clock,a,admin::integer(v,"leave_type_id")?,admin::period_year(v)?)?}),
         ),
         ("exports", None, _) => {
-            let r = ie::create_export(
+            let r = ie::create_export_scoped(
                 conn,
                 clock,
                 a,
                 admin::date(v, "from")?,
                 admin::date(v, "to")?,
+                admin::nullable_integer(v, "org_unit_id")?,
             )?;
             Ok(export_record(r))
         }
@@ -840,7 +868,7 @@ fn write(
     }
 }
 fn export_record(r: ie::ExportRecord) -> Value {
-    json!({"id":r.id,"from":r.period_from,"to":r.period_to,"row_count":r.row_count,"sha256":r.sha256,"created_at":r.created_at,"transferred_at":r.transferred_at,"transferred_by":r.transferred_by})
+    json!({"org_unit_id":r.org_unit_id,"id":r.id,"from":r.period_from,"to":r.period_to,"row_count":r.row_count,"sha256":r.sha256,"created_at":r.created_at,"transferred_at":r.transferred_at,"transferred_by":r.transferred_by})
 }
 fn read(
     conn: &Connection,
@@ -956,7 +984,7 @@ fn read(
         ("org-units", _, _) => {
             let mut out = view::rows(
                 conn,
-                "SELECT id,code,name,parent_id,active FROM org_units ORDER BY name",
+                "SELECT id,code,name,parent_id,active,version FROM org_units ORDER BY name",
                 &[],
             )?;
             for v in &mut out {
@@ -1089,7 +1117,7 @@ fn read(
             paginate(versions, q)?
         }
         ("schedules", _, _) => {
-            let mut rows = view::rows(conn, "SELECT id,name FROM schedules ORDER BY id", &[])?;
+            let mut rows = view::rows(conn, "SELECT id,name,version FROM schedules ORDER BY id", &[])?;
             for s in &mut rows {
                 let id = s["id"].as_i64().unwrap();
                 let mut versions = view::rows(
@@ -1115,7 +1143,7 @@ fn read(
         ("calendar-exceptions", _, _) => paginate(
             view::rows(
                 conn,
-                "SELECT id,date,name,minutes,schedule_id FROM calendar_exceptions ORDER BY date",
+                "SELECT id,date,name,minutes,schedule_id,revoked_at,revoked_by,reason FROM calendar_exceptions ORDER BY date",
                 &[],
             )?,
             q,
@@ -1124,7 +1152,7 @@ fn read(
             authz::require(conn, a, Action::ManageUsers, &Resource::Global)?;
             let mut out = view::rows(
                 conn,
-                "SELECT id,email,display_name,active FROM users ORDER BY id",
+                "SELECT id,email,display_name,active,version FROM users ORDER BY id",
                 &[],
             )?;
             for u in &mut out {
@@ -1226,12 +1254,12 @@ fn employee_item(conn: &Connection, a: &Actor, id: i64) -> Res<Value> {
     let mut v = view::employee(conn, id, a.today)?;
     let fields = view::rows(
         conn,
-        "SELECT email,start_date,end_date,active,user_id FROM employees WHERE id=?1",
+        "SELECT email,start_date,end_date,active,user_id,version FROM employees WHERE id=?1",
         &[&id],
     )?
     .pop()
     .ok_or_else(|| DomainError::not_found("employee"))?;
-    for key in ["email", "start_date", "end_date"] {
+    for key in ["email", "start_date", "end_date", "version"] {
         v[key] = fields[key].clone();
     }
     v["active"] = json!(fields["active"] == 1);
@@ -1374,7 +1402,7 @@ fn report(
             .collect()),
         "changes-since-export" => {
             let mut out = Vec::new();
-            for r in ie::changes_since_export(conn)? {
+            for r in ie::changes_since_export_scoped(conn, qid(q, "org_unit_id")?)? {
                 let sid = r["employee_service_id"].as_str().unwrap_or("");
                 let id: i64 =
                     conn.query_row("SELECT id FROM employees WHERE service_id=?1", [sid], |r| {

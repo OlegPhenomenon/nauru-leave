@@ -36,10 +36,33 @@ pub fn compute_days(
     start_part: Part,
     end_part: Part,
 ) -> Res<Vec<ComputedDay>> {
+    compute_days_on(
+        conn,
+        employee_id,
+        leave_type_id,
+        start,
+        end,
+        start_part,
+        end_part,
+        start,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compute_days_on(
+    conn: &Connection,
+    employee_id: i64,
+    leave_type_id: i64,
+    start: Date,
+    end: Date,
+    start_part: Part,
+    end_part: Part,
+    on: Date,
+) -> Res<Vec<ComputedDay>> {
     if end < start {
         return Err(DomainError::validation("end_date before start_date"));
     }
-    let lt = model::load_leave_type(conn, leave_type_id)?;
+    let lt = model::leave_type_on(conn, leave_type_id, on)?;
 
     let mut out = Vec::new();
     let mut d = start;
@@ -195,7 +218,7 @@ fn apply_exception(
     let row = conn
         .query_row(
             "SELECT id, name, minutes FROM calendar_exceptions
-             WHERE date=?1 AND (schedule_id=?2 OR schedule_id IS NULL)
+             WHERE revoked_at IS NULL AND date=?1 AND (schedule_id=?2 OR schedule_id IS NULL)
              ORDER BY (schedule_id IS NULL), id LIMIT 1",
             params![model::date_s(&d), schedule_id],
             |r| {
@@ -343,7 +366,7 @@ pub fn compute_checked(
     end_part: Part,
     exclude: &[i64],
 ) -> Res<Vec<ComputedDay>> {
-    let days = compute_days(
+    compute_checked_on(
         conn,
         employee_id,
         leave_type_id,
@@ -351,6 +374,32 @@ pub fn compute_checked(
         end,
         start_part,
         end_part,
+        exclude,
+        start,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compute_checked_on(
+    conn: &Connection,
+    employee_id: i64,
+    leave_type_id: i64,
+    start: Date,
+    end: Date,
+    start_part: Part,
+    end_part: Part,
+    exclude: &[i64],
+    on: Date,
+) -> Res<Vec<ComputedDay>> {
+    let days = compute_days_on(
+        conn,
+        employee_id,
+        leave_type_id,
+        start,
+        end,
+        start_part,
+        end_part,
+        on,
     )?;
     if let Some(hit) = find_overlap(conn, employee_id, &days, exclude)? {
         return Err(DomainError::Overlap(format!(

@@ -191,9 +191,7 @@ pub fn request_ctx(conn: &Connection, req: &LeaveRequest, today: Date) -> Res<Re
         req.current_revision_id
     };
     let sensitive = match revision_id {
-        Some(r) => {
-            model::load_leave_type(conn, model::load_revision(conn, r)?.leave_type_id)?.sensitive
-        }
+        Some(r) => model::revision_leave_type(conn, r)?.sensitive,
         None => false,
     };
     Ok(RequestCtx {
@@ -314,6 +312,7 @@ fn validate_change_input(
     conn: &Connection,
     attachment_request: i64,
     input: &ReviseInput,
+    today: Date,
 ) -> Res<()> {
     validate_range(
         conn,
@@ -323,7 +322,7 @@ fn validate_change_input(
         input.start_part,
         input.end_part,
     )?;
-    let lt = model::load_leave_type(conn, input.leave_type_id)?;
+    let lt = model::leave_type_on(conn, input.leave_type_id, today)?;
     if lt.requires_attachment {
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM attachments WHERE request_id=?1 OR request_id=(SELECT parent_request_id FROM leave_requests WHERE id=?1)", [attachment_request], |r| r.get(0))?;
         if count == 0 {
@@ -434,10 +433,19 @@ fn create_reservations(
     revision_id: i64,
     totals: &BTreeMap<i64, i64>,
     now_ts: &str,
+    today: Date,
 ) -> Res<()> {
     for (acc, minutes) in totals {
         if *minutes > 0 {
-            ledger::create_reservation(conn, request_id, revision_id, *acc, *minutes, now_ts)?;
+            ledger::create_reservation(
+                conn,
+                request_id,
+                revision_id,
+                *acc,
+                *minutes,
+                now_ts,
+                today,
+            )?;
         }
     }
     Ok(())
@@ -841,7 +849,7 @@ fn preview_in(
             }
             exclude.push(parent_id);
         }
-        match calendar::compute_days(
+        match calendar::compute_days_on(
             conn,
             employee_id,
             input.leave_type_id,
@@ -849,6 +857,7 @@ fn preview_in(
             input.end_date,
             input.start_part,
             input.end_part,
+            today,
         ) {
             Ok(d) => {
                 days = d;
@@ -909,7 +918,7 @@ fn preview_in(
             }
         }
         // warnings
-        let lt = model::load_leave_type(conn, input.leave_type_id)?;
+        let lt = model::leave_type_on(conn, input.leave_type_id, today)?;
         if lt.min_notice_days > 0
             && input.start_date < today + time::Duration::days(lt.min_notice_days)
         {
@@ -1127,7 +1136,7 @@ pub fn submit(
         authz::require(tx, actor, Action::Submit, &Resource::Request(&ctx))?;
         let rev = model::load_revision(tx, req.current_revision_id.unwrap())?;
 
-        let days = calendar::compute_checked(
+        let days = calendar::compute_checked_on(
             tx,
             req.employee_id,
             rev.leave_type_id,
@@ -1136,8 +1145,9 @@ pub fn submit(
             rev.start_part,
             rev.end_part,
             &[req.id],
+            today,
         )?;
-        let lt = model::load_leave_type(tx, rev.leave_type_id)?;
+        let lt = model::leave_type_on(tx, rev.leave_type_id, today)?;
         if lt.requires_attachment {
             let n: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM attachments WHERE request_id=?1",
@@ -1159,9 +1169,10 @@ pub fn submit(
             today,
             &BTreeMap::new(),
         )?;
+        model::snapshot_policy(tx, rev.id, today)?;
         let day_ids = store_days(tx, rev.id, &days)?;
         store_allocations(tx, rev.id, &day_ids, &allocs)?;
-        create_reservations(tx, req.id, rev.id, &alloc_totals(&allocs), &now_ts)?;
+        create_reservations(tx, req.id, rev.id, &alloc_totals(&allocs), &now_ts, today)?;
         let total: i64 = days.iter().map(|d| d.minutes).sum();
         tx.execute(
             "UPDATE request_revisions SET submitted_at=?2, total_minutes=?3 WHERE id=?1",
@@ -1362,7 +1373,7 @@ pub fn decide(
                 match outcome {
                     "approve" => apply_final_approval(tx, actor, &req, &step, today, &now_ts)?,
                     "reject" => {
-                        release_and_close(tx, &req, "rejected", &now_ts)?;
+                        release_and_close(tx, &req, "rejected", &now_ts, today)?;
                         tx.execute(
                             "UPDATE leave_requests SET status='rejected' WHERE id=?1",
                             [req.id],
@@ -1437,8 +1448,14 @@ pub fn decide(
     })
 }
 
-fn release_and_close(conn: &Connection, req: &LeaveRequest, reason: &str, now_ts: &str) -> Res<()> {
-    ledger::release_reservations(conn, req.id, reason, now_ts)?;
+fn release_and_close(
+    conn: &Connection,
+    req: &LeaveRequest,
+    reason: &str,
+    now_ts: &str,
+    today: Date,
+) -> Res<()> {
+    ledger::release_reservations(conn, req.id, reason, now_ts, today)?;
     conn.execute(
         "UPDATE approval_steps SET status='closed' WHERE request_id=?1 AND status IN ('pending','waiting')",
         [req.id],
@@ -1487,7 +1504,7 @@ fn apply_final_approval(
                     now_ts,
                 )?;
             }
-            ledger::release_reservations(conn, req.id, "approved", now_ts)?;
+            ledger::release_reservations(conn, req.id, "approved", now_ts, today)?;
             conn.execute(
                 "UPDATE leave_requests SET status='approved', effective_revision_id=?2 WHERE id=?1",
                 params![req.id, step.revision_id],
@@ -1596,7 +1613,7 @@ fn apply_change_approval(
             )?;
         }
     }
-    ledger::release_reservations(conn, change.id, "approved", now_ts)?;
+    ledger::release_reservations(conn, change.id, "approved", now_ts, today)?;
     conn.execute(
         "UPDATE leave_requests SET status='approved' WHERE id=?1",
         [change.id],
@@ -1719,12 +1736,12 @@ fn revise_in(
             "cancellation responses must be text-only",
         ));
     }
-    validate_change_input(conn, req.id, ch)?;
+    validate_change_input(conn, req.id, ch, today)?;
     let mut exclude = vec![req.id];
     if let Some(parent) = req.parent_request_id {
         exclude.push(parent);
     }
-    let days = calendar::compute_checked(
+    let days = calendar::compute_checked_on(
         conn,
         req.employee_id,
         ch.leave_type_id,
@@ -1733,6 +1750,7 @@ fn revise_in(
         ch.start_part,
         ch.end_part,
         &exclude,
+        today,
     )?;
     // an amendment revises against the parent's effective minutes as capacity
     let mut extra: BTreeMap<i64, i64> = BTreeMap::new();
@@ -1754,7 +1772,7 @@ fn revise_in(
             today,
         )?;
     }
-    ledger::release_reservations(conn, req.id, "superseded", now_ts)?;
+    ledger::release_reservations(conn, req.id, "superseded", now_ts, today)?;
     let allocs = ledger::allocate(
         conn,
         req.employee_id,
@@ -1790,6 +1808,7 @@ fn revise_in(
         ],
         |r| r.get(0),
     )?;
+    model::snapshot_policy(conn, new_rev, today)?;
     let day_ids = store_days(conn, new_rev, &days)?;
     store_allocations(conn, new_rev, &day_ids, &allocs)?;
     // supersede old reservations + steps, then create the fresh reservation set
@@ -1814,7 +1833,7 @@ fn revise_in(
     } else {
         alloc_totals(&allocs)
     };
-    create_reservations(conn, req.id, new_rev, &reserve_totals, now_ts)?;
+    create_reservations(conn, req.id, new_rev, &reserve_totals, now_ts, today)?;
     conn.execute(
         "UPDATE leave_requests SET current_revision_id=?2, status='submitted' WHERE id=?1",
         params![req.id, new_rev],
@@ -1857,7 +1876,7 @@ pub fn withdraw(
         model::check_version(&req, expected_version)?;
         let ctx = request_ctx(tx, &req, today)?;
         authz::require(tx, actor, Action::Withdraw, &Resource::Request(&ctx))?;
-        release_and_close(tx, &req, "withdrawn", &now_ts)?;
+        release_and_close(tx, &req, "withdrawn", &now_ts, today)?;
         tx.execute(
             "UPDATE leave_requests SET status='withdrawn' WHERE id=?1",
             [req.id],
@@ -1917,8 +1936,8 @@ pub fn amend(
         check_changeable_parent(tx, actor, &parent, expected_version, today, Action::Amend)?;
         let eff = parent.effective_revision_id.unwrap();
         let eff_totals = model::allocation_totals(tx, eff)?;
-        validate_change_input(tx, parent.id, input)?;
-        let days = calendar::compute_checked(
+        validate_change_input(tx, parent.id, input, today)?;
+        let days = calendar::compute_checked_on(
             tx,
             parent.employee_id,
             input.leave_type_id,
@@ -1927,6 +1946,7 @@ pub fn amend(
             input.start_part,
             input.end_part,
             &[parent.id],
+            today,
         )?;
         validate_past_change(tx, eff, input.leave_type_id, &days, today)?;
         let allocs = ledger::allocate(
@@ -1954,6 +1974,7 @@ pub fn amend(
             [child_id],
             |r| r.get(0),
         )?;
+        model::snapshot_policy(tx, rev_id, today)?;
         let day_ids = store_days(tx, rev_id, &days)?;
         store_allocations(tx, rev_id, &day_ids, &allocs)?;
         // positive delta per account -> reservation
@@ -1962,7 +1983,7 @@ pub fn amend(
             *delta.entry(*acc).or_default() -= m;
         }
         delta.retain(|_, m| *m > 0);
-        create_reservations(tx, child_id, rev_id, &delta, &now_ts)?;
+        create_reservations(tx, child_id, rev_id, &delta, &now_ts, today)?;
         create_route(tx, child_id, rev_id, parent.employee_id, today, &now_ts)?;
         model::bump_version(tx, parent.id, &now_ts)?;
         audit::log(
@@ -2090,6 +2111,7 @@ pub fn cancel(
             [child_id],
             |r| r.get(0),
         )?;
+        tx.execute("UPDATE request_revisions SET policy_version_id=(SELECT policy_version_id FROM request_revisions WHERE id=?2),policy_snapshot=(SELECT policy_snapshot FROM request_revisions WHERE id=?2) WHERE id=?1",params![rev_id,eff_id])?;
         // copy the effective day rows; cancelled days become part='none'/0
         let mut old_to_new_day: BTreeMap<i64, i64> = BTreeMap::new();
         for d in &eff_days {
@@ -2454,10 +2476,10 @@ pub fn actual_period(
     request_id: i64,
     action: &str, // 'confirm' | 'propose_adjustment'
     note: &str,
-    minutes_delta: Option<i64>,
+    worked_dates: Option<&[Date]>,
     basis_document: Option<&str>,
     expected_version: i64,
-) -> Res<Option<i64>> {
+) -> Res<Vec<i64>> {
     let today = clock.today(conn)?;
     let now_ts = clock.now_ts();
     crate::db::write_tx(conn, |tx| {
@@ -2494,28 +2516,76 @@ pub fn actual_period(
                     serde_json::json!({"note": note}),
                 )?;
                 model::bump_version(tx, req.id, &now_ts)?;
-                Ok(None)
-            }
-            "propose_adjustment" => {
-                let delta = minutes_delta
-                    .ok_or_else(|| DomainError::validation("minutes_delta required"))?;
-                let basis = basis_document
-                    .ok_or_else(|| DomainError::validation("basis_document required"))?;
-                let lt = model::load_leave_type(tx, eff.leave_type_id)?;
-                // adjustment lands on the period-year of the leave start
-                let year = eff.start_date.year() as i64;
-                let id = ledger::propose_adjustment_in(
+                notify_employee(
                     tx,
-                    actor,
-                    req.employee_id,
-                    lt.id,
-                    year,
-                    delta,
-                    &format!("Actual-period correction {}: {}", req.number, note),
-                    basis,
-                    Some(req.id),
+                    &req,
+                    eff.id,
+                    "actual.confirm",
+                    &subject_for(&req.number),
+                    "The actual leave period was confirmed.",
                     &now_ts,
                 )?;
+                Ok(Vec::new())
+            }
+            "propose_adjustment" => {
+                let worked = worked_dates
+                    .filter(|dates| !dates.is_empty())
+                    .ok_or_else(|| DomainError::validation("worked_dates required"))?;
+                let basis = basis_document
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| DomainError::validation("basis_document required"))?;
+                let dates: std::collections::BTreeSet<Date> = worked.iter().copied().collect();
+                if dates.len() != worked.len() {
+                    return Err(DomainError::validation("worked_dates must be unique"));
+                }
+                let days = model::revision_days(tx, eff.id)?;
+                for date in &dates {
+                    if !days.iter().any(|day| day.date == *date && day.minutes > 0) {
+                        return Err(DomainError::validation(
+                            "worked_dates must be working leave days in the in-force revision",
+                        ));
+                    }
+                }
+                let mut amounts: BTreeMap<i64, i64> = BTreeMap::new();
+                for alloc in model::revision_allocations(tx, eff.id)? {
+                    if days
+                        .iter()
+                        .any(|day| day.id == alloc.day_id && dates.contains(&day.date))
+                    {
+                        *amounts.entry(alloc.account_id).or_default() += alloc.minutes;
+                    }
+                }
+                if amounts.values().sum::<i64>()
+                    != days
+                        .iter()
+                        .filter(|day| dates.contains(&day.date))
+                        .map(|day| day.minutes)
+                        .sum::<i64>()
+                {
+                    return Err(DomainError::validation(
+                        "worked days have no balance allocation to return",
+                    ));
+                }
+                let mut ids = Vec::new();
+                for (account, minutes) in amounts {
+                    let (leave_type, year): (i64, i64) = tx.query_row(
+                        "SELECT leave_type_id,period_year FROM leave_accounts WHERE id=?1",
+                        [account],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?;
+                    ids.push(ledger::propose_adjustment_in(
+                        tx,
+                        actor,
+                        req.employee_id,
+                        leave_type,
+                        year,
+                        minutes,
+                        &format!("Actual-period correction {}: {}", req.number, note),
+                        basis,
+                        Some(req.id),
+                        &now_ts,
+                    )?);
+                }
                 audit::log(
                     tx,
                     &now_ts,
@@ -2524,10 +2594,19 @@ pub fn actual_period(
                     "request.propose_actual_adjustment",
                     "request",
                     Some(req.id),
-                    serde_json::json!({"adjustment_id": id, "delta": delta}),
+                    serde_json::json!({"adjustment_ids":ids,"worked_dates":dates.iter().map(date_s).collect::<Vec<_>>()}),
                 )?;
                 model::bump_version(tx, req.id, &now_ts)?;
-                Ok(Some(id))
+                notify_employee(
+                    tx,
+                    &req,
+                    eff.id,
+                    "actual.correction",
+                    &subject_for(&req.number),
+                    "An actual-period correction was proposed.",
+                    &now_ts,
+                )?;
+                Ok(ids)
             }
             _ => Err(DomainError::validation(
                 "action must be confirm|propose_adjustment",

@@ -70,8 +70,31 @@ pub fn me(conn: &Connection, actor: &Actor, session: &crate::sessions::Session) 
 }
 pub fn leave_type(conn: &Connection, id: i64, today: Date) -> Res<Value> {
     let t = model::load_leave_type(conn, id)?;
+    let p = model::policy_for(conn, id, today)?;
+    let mut policies = rows(
+        conn,
+        "SELECT * FROM policy_versions WHERE leave_type_id=?1 ORDER BY valid_from,id",
+        &[&id],
+    )?;
+    for v in &mut policies {
+        v["in_force"] = json!(p.as_ref().is_some_and(|p| Some(p.id) == v["id"].as_i64()));
+        for key in [
+            "paid",
+            "uses_balance",
+            "allow_half_day",
+            "requires_attachment",
+            "allow_negative",
+            "carryover_allowed",
+        ] {
+            v[key] = json!(v[key].as_i64() == Some(1));
+        }
+    }
+    let version: i64 =
+        conn.query_row("SELECT version FROM leave_types WHERE id=?1", [id], |r| {
+            r.get(0)
+        })?;
     Ok(
-        json!({"id":id,"code":t.code,"name":t.name,"sensitive":t.sensitive,"paid":t.paid,"uses_balance":t.uses_balance,"allow_half_day":t.allow_half_day,"requires_attachment":t.requires_attachment,"min_notice_days":t.min_notice_days,"active":t.active,"policy":queries::policy_ref(conn,id,today)?}),
+        json!({"id":id,"code":t.code,"name":t.name,"sensitive":t.sensitive,"paid":p.as_ref().is_some_and(|p|p.paid),"uses_balance":p.as_ref().is_some_and(|p|p.uses_balance),"allow_half_day":p.as_ref().is_some_and(|p|p.allow_half_day),"requires_attachment":p.as_ref().is_some_and(|p|p.requires_attachment),"min_notice_days":p.as_ref().map_or(0,|p|p.min_notice_days),"active":t.active,"version":version,"policy":queries::policy_ref(conn,id,today)?,"policies":policies}),
     )
 }
 pub fn summary(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
@@ -84,7 +107,7 @@ pub fn summary(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
             .or(req.current_revision_id)
             .ok_or_else(|| DomainError::not_found("revision"))?,
     )?;
-    let t = model::load_leave_type(conn, rev.leave_type_id)?;
+    let t = model::revision_leave_type(conn, rev.id)?;
     let pending = requests::pending_step(conn, id)?;
     let next = if req.status == RequestStatus::NeedsInformation {
         Some("Answer the question".to_string())
@@ -140,7 +163,7 @@ pub fn step(conn: &Connection, s: &model::Step) -> Res<Value> {
 }
 fn revision(conn: &Connection, id: i64, restricted: bool) -> Res<Value> {
     let r = model::load_revision(conn, id)?;
-    let t = model::load_leave_type(conn, r.leave_type_id)?;
+    let t = model::revision_leave_type(conn, r.id)?;
     let created: String = conn.query_row(
         "SELECT created_at FROM request_revisions WHERE id=?1",
         [id],
@@ -151,8 +174,20 @@ fn revision(conn: &Connection, id: i64, restricted: bool) -> Res<Value> {
         let alloc=rows(conn,"SELECT ra.account_id,la.period_year,ra.minutes FROM revision_allocations ra JOIN leave_accounts la ON la.id=ra.account_id WHERE ra.day_id=?1",&[&d.id])?.into_iter().map(|mut v|{v["carryover"]=json!(v["period_year"].as_i64()!=Some(d.period_year));v}).collect::<Vec<_>>();
         days.push(json!({"date":date_s(&d.date),"part":d.part.as_str(),"scheduled_minutes":d.scheduled_minutes,"minutes":d.minutes,"period_year":d.period_year,"explanation":d.explanation,"allocations":alloc}));
     }
+    let provenance = rows(
+        conn,
+        "SELECT policy_version_id,policy_snapshot FROM request_revisions WHERE id=?1",
+        &[&id],
+    )?
+    .pop()
+    .ok_or_else(|| DomainError::not_found("revision"))?;
+    let snapshot = provenance["policy_snapshot"]
+        .as_str()
+        .map(serde_json::from_str::<Value>)
+        .transpose()?
+        .unwrap_or(Value::Null);
     Ok(
-        json!({"id":id,"rev_no":r.rev_no,"leave_type":if restricted{Value::Null}else{json!({"id":t.id,"code":t.code,"name":t.name,"sensitive":t.sensitive})},"start_date":date_s(&r.start_date),"end_date":date_s(&r.end_date),"start_part":r.start_part,"end_part":r.end_part,"note":if restricted{None}else{r.note},"change_reason":if restricted{None}else{r.change_reason},"total_minutes":r.total_minutes,"created_by":user(conn,Some(r.created_by))?,"created_at":created,"submitted_at":r.submitted_at,"days":days}),
+        json!({"request":{"id":r.request_id,"number":model::load_request(conn,r.request_id)?.number},"policy_version_id":if restricted {Value::Null}else{provenance["policy_version_id"].clone()},"policy_snapshot":if restricted {Value::Null}else{snapshot},"id":id,"rev_no":r.rev_no,"leave_type":if restricted{Value::Null}else{json!({"id":t.id,"code":t.code,"name":t.name,"sensitive":t.sensitive})},"start_date":date_s(&r.start_date),"end_date":date_s(&r.end_date),"start_part":r.start_part,"end_part":r.end_part,"note":if restricted{None}else{r.note},"change_reason":if restricted{None}else{r.change_reason},"total_minutes":r.total_minutes,"created_by":user(conn,Some(r.created_by))?,"created_at":created,"submitted_at":r.submitted_at,"days":days}),
     )
 }
 pub fn attachment(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
@@ -286,6 +321,17 @@ pub fn detail(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
     let req = model::load_request(conn, id)?;
     let ctx = requests::request_ctx(conn, &req, actor.today)?;
     let restricted = authz::view_level(conn, actor, &ctx)? == ViewLevel::Restricted;
+    let revision_restricted = |i: i64| -> Res<bool> {
+        let mut revision_ctx = ctx.clone();
+        revision_ctx.sensitive_type = model::revision_leave_type(conn, i)?.sensitive;
+        Ok(restricted
+            || !matches!(
+                authz::view_level(conn, actor, &revision_ctx),
+                Ok(ViewLevel::Full)
+            ))
+    };
+    let render_revision = |i: i64| -> Res<Value> { revision(conn, i, revision_restricted(i)?) };
+
     let link = |id: Option<i64>| -> Res<Value> {
         match id {
             None => Ok(Value::Null),
@@ -312,31 +358,44 @@ pub fn detail(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
     .collect::<Vec<_>>());
     v["entered_by"] = user(conn, Some(req.entered_by_user_id))?;
     v["paper_received_date"] = json!(req.paper_received_date.map(|d| date_s(&d)));
-    v["current_revision"] = revision(
-        conn,
+    v["current_revision"] = render_revision(
         req.current_revision_id
             .ok_or_else(|| DomainError::not_found("revision"))?,
-        restricted,
     )?;
     v["effective_revision"] = req
         .effective_revision_id
-        .map(|i| revision(conn, i, restricted))
+        .map(render_revision)
         .transpose()?
         .unwrap_or(Value::Null);
+    v["in_force_revision"] = if req.kind == model::RequestKind::Leave {
+        v["effective_revision"].clone()
+    } else {
+        Value::Null
+    };
+    v["parent_in_force_revision"] = if let Some(parent) = req.parent_request_id {
+        let p = model::load_request(conn, parent)?;
+        p.effective_revision_id
+            .map(render_revision)
+            .transpose()?
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
     v["revisions"] = json!(ids(
         conn,
-        "SELECT id FROM request_revisions WHERE request_id=?1 ORDER BY rev_no",
+        "SELECT rr.id FROM request_revisions rr JOIN leave_requests lr ON lr.id=rr.request_id WHERE lr.id=?1 OR lr.parent_request_id=?1 ORDER BY rr.id",
         &[&id]
     )?
     .into_iter()
-    .map(|i| revision(conn, i, restricted))
+    .map(render_revision)
     .collect::<Res<Vec<_>>>()?);
     let steps = model::steps_of(conn, id)?;
     v["steps"] = json!(steps
         .iter()
         .map(|s| step(conn, s))
         .collect::<Res<Vec<_>>>()?);
-    let decisions=model::decisions_of(conn,id)?.iter().map(|d|Ok(json!({"id":d.id,"step_id":d.step_id,"step_kind":model::load_step(conn,d.step_id)?.kind.as_str(),"revision_no":model::load_revision(conn,d.revision_id)?.rev_no,"actor":user(conn,Some(d.actor_user_id))?,"acting_for":user(conn,d.acting_for_user_id)?,"authority":d.authority,"outcome":d.outcome,"reason":if restricted{None}else{d.reason.clone()},"basis_document":if restricted{None}else{d.basis_document.clone()},"created_at":d.created_at}))).collect::<Res<Vec<_>>>()?;
+    let family=ids(conn,"SELECT id FROM leave_requests WHERE id=?1 OR (parent_request_id=?1 AND status='approved') ORDER BY id",&[&id])?;
+    let decisions=family.into_iter().map(|i|model::decisions_of(conn,i)).collect::<Res<Vec<_>>>()?.into_iter().flatten().collect::<Vec<_>>().iter().map(|d|Ok(json!({"request":link(Some(model::load_revision(conn,d.revision_id)?.request_id))?,"revision_id":d.revision_id,"id":d.id,"step_id":d.step_id,"step_kind":model::load_step(conn,d.step_id)?.kind.as_str(),"revision_no":model::load_revision(conn,d.revision_id)?.rev_no,"actor":user(conn,Some(d.actor_user_id))?,"acting_for":user(conn,d.acting_for_user_id)?,"authority":d.authority,"outcome":d.outcome,"reason":if revision_restricted(d.revision_id)?{None}else{d.reason.clone()},"basis_document":if revision_restricted(d.revision_id)?{None}else{d.basis_document.clone()},"created_at":d.created_at}))).collect::<Res<Vec<_>>>()?;
     v["decisions"] = json!(decisions);
     let messages = if restricted {
         vec![]
@@ -352,7 +411,11 @@ pub fn detail(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
     .into_iter()
     .map(|i| attachment(conn, actor, i))
     .collect::<Res<Vec<_>>>()?);
-    let t = model::load_revision(conn, req.current_revision_id.unwrap())?.leave_type_id;
+    let state_revision = req
+        .effective_revision_id
+        .or(req.current_revision_id)
+        .unwrap();
+    let t = model::load_revision(conn, state_revision)?.leave_type_id;
     v["reservations"] = serde_json::to_value(
         queries::reservations_of(conn, req.employee_id, t)?
             .into_iter()
@@ -443,11 +506,23 @@ pub fn detail(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
     if let Some(w) = requests::team_overlap(
         conn,
         req.employee_id,
-        model::load_revision(conn, req.current_revision_id.unwrap())?.start_date,
-        model::load_revision(conn, req.current_revision_id.unwrap())?.end_date,
+        model::load_revision(conn, state_revision)?.start_date,
+        model::load_revision(conn, state_revision)?.end_date,
         actor.today,
     )? {
         warnings.push(serde_json::to_value(w)?);
+    }
+    let state = model::load_revision(conn, state_revision)?;
+    let saved: Option<i64> = conn.query_row(
+        "SELECT policy_version_id FROM request_revisions WHERE id=?1",
+        [state_revision],
+        |r| r.get(0),
+    )?;
+    if state.end_date >= actor.today
+        && state.submitted_at.is_some()
+        && model::policy_for(conn, state.leave_type_id, actor.today)?.map(|p| p.id) != saved
+    {
+        warnings.push(json!({"code":"policy_changed","message":"The policy changed after submission; the saved conditions remain in force until an explicit revision."}));
     }
     v["warnings"] = json!(warnings);
     v["audit"] = json!(audit_rows(conn, actor, Some("request"), Some(id), None)?);
@@ -550,18 +625,52 @@ pub fn redact_cached(conn: &Connection, actor: &Actor, value: &mut Value) -> Res
         .ok_or_else(|| DomainError::validation("invalid cached request"))?;
     let req = model::load_request(conn, id)?;
     let ctx = requests::request_ctx(conn, &req, actor.today)?;
-    if authz::view_level(conn, actor, &ctx)? == ViewLevel::Restricted {
+    let current_restricted = authz::view_level(conn, actor, &ctx)? == ViewLevel::Restricted;
+    let revision_restricted = |revision: i64| -> Res<bool> {
+        let mut saved_ctx = ctx.clone();
+        saved_ctx.sensitive_type = model::revision_leave_type(conn, revision)?.sensitive;
+        Ok(!matches!(
+            authz::view_level(conn, actor, &saved_ctx),
+            Ok(ViewLevel::Full)
+        ))
+    };
+    let saved_state = value["in_force_revision"]["id"]
+        .as_i64()
+        .or(value["effective_revision"]["id"].as_i64())
+        .or(value["current_revision"]["id"].as_i64());
+    let saved_restricted = saved_state
+        .map(revision_restricted)
+        .transpose()?
+        .unwrap_or(false);
+    if current_restricted || saved_restricted {
         value["leave_type_name"] = json!("Leave (details restricted)");
-        for key in ["current_revision", "effective_revision"] {
+        for key in [
+            "current_revision",
+            "effective_revision",
+            "in_force_revision",
+            "parent_in_force_revision",
+        ] {
             if value[key].is_object() {
-                for field in ["leave_type", "note", "change_reason"] {
+                for field in [
+                    "leave_type",
+                    "note",
+                    "change_reason",
+                    "policy_version_id",
+                    "policy_snapshot",
+                ] {
                     value[key][field] = Value::Null;
                 }
             }
         }
         if let Some(revisions) = value["revisions"].as_array_mut() {
             for revision in revisions {
-                for field in ["leave_type", "note", "change_reason"] {
+                for field in [
+                    "leave_type",
+                    "note",
+                    "change_reason",
+                    "policy_version_id",
+                    "policy_snapshot",
+                ] {
                     revision[field] = Value::Null;
                 }
             }
@@ -581,6 +690,67 @@ pub fn redact_cached(conn: &Connection, actor: &Actor, value: &mut Value) -> Res
         if let Some(events) = value["audit"].as_array_mut() {
             for event in events {
                 event["details"] = json!({"restricted":true});
+            }
+        }
+    }
+    // A receipt may contain previously visible history even when its header is
+    // currently non-sensitive. Re-check each saved revision independently.
+    for key in [
+        "current_revision",
+        "effective_revision",
+        "in_force_revision",
+        "parent_in_force_revision",
+    ] {
+        if value[key]["id"]
+            .as_i64()
+            .map(revision_restricted)
+            .transpose()?
+            .unwrap_or(false)
+        {
+            for field in [
+                "leave_type",
+                "note",
+                "change_reason",
+                "policy_version_id",
+                "policy_snapshot",
+            ] {
+                value[key][field] = Value::Null;
+            }
+        }
+    }
+    if let Some(revisions) = value["revisions"].as_array_mut() {
+        for revision in revisions {
+            if revision["id"]
+                .as_i64()
+                .map(revision_restricted)
+                .transpose()?
+                .unwrap_or(false)
+            {
+                for field in [
+                    "leave_type",
+                    "note",
+                    "change_reason",
+                    "policy_version_id",
+                    "policy_snapshot",
+                ] {
+                    revision[field] = Value::Null;
+                }
+            }
+        }
+    }
+    if let Some(decisions) = value["decisions"].as_array_mut() {
+        for decision in decisions {
+            let revision = decision["revision_id"].as_i64().or(decision["step_id"]
+                .as_i64()
+                .map(|id| model::load_step(conn, id).map(|s| s.revision_id))
+                .transpose()?);
+            if revision
+                .map(revision_restricted)
+                .transpose()?
+                .unwrap_or(false)
+            {
+                decision["reason"] = Value::Null;
+                decision["basis_document"] = Value::Null;
             }
         }
     }

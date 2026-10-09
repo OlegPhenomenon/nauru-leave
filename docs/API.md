@@ -54,7 +54,10 @@ interface BalanceSummary {                      // per leave type, all periods c
 interface PolicyVersion {
   id: number; valid_from: string; annual_entitlement_min: number;
   accrual_mode: string; advance_publish_months: number; carryover_allowed: boolean;
-  carryover_expiry_months: number | null; allow_negative: boolean;
+  carryover_expiry_months: number | null; // null = never; 0 = next 1 January
+  carryover_limit_min: number | null; // null = unlimited
+  paid: boolean; uses_balance: boolean; allow_half_day: boolean;
+  requires_attachment: boolean; min_notice_days: number; allow_negative: boolean;
   status: 'demo_fictional'|'unverified'|'verified'; explanation: string;
 }
 interface LedgerEntry {
@@ -71,6 +74,8 @@ interface DayRow {
   allocations: { account_id: number; period_year: number; minutes: number; carryover: boolean }[];
 }
 interface Revision {
+  request: { id: number; number: string }; // owning request, including amendment history
+  policy_version_id: number | null; policy_snapshot: Record<string, unknown> | null;
   id: number; rev_no: number; leave_type: { id: number; code: string; name: string; sensitive: boolean } | null; // null when restricted
   start_date: string; end_date: string; start_part: Part; end_part: Part;
   note: string | null; change_reason: string | null; total_minutes: number;
@@ -85,6 +90,7 @@ interface Step {
 }
 interface Decision {
   id: number; step_id: number; step_kind: StepKind; revision_no: number;
+  revision_id: number; request: { id: number; number: string } | null;
   actor: UserRef; acting_for: UserRef | null; authority: string;
   outcome: Outcome; reason: string | null; basis_document: string | null; created_at: string;
 }
@@ -108,6 +114,8 @@ interface RequestDetail extends RequestSummary {
   previous_request: { id: number; number: string } | null;
   entered_by: UserRef; paper_received_date: string | null;
   current_revision: Revision; effective_revision: Revision | null; revisions: Revision[];
+  in_force_revision: Revision | null; parent_in_force_revision: Revision | null;
+  adjustment_ids?: number[];
   steps: Step[]; decisions: Decision[]; messages: Message[];
   attachments: (AttachmentMeta | { id: number; restricted: true })[];
   reservations: Reservation[]; ledger_entries: LedgerEntry[];
@@ -157,7 +165,7 @@ The demo-only endpoints return 404 in production.
 ### My leave & requests
 | Method | Path | Body → Response |
 |---|---|---|
-| GET | `/api/leave-types` | → `{ id, code, name, sensitive, paid, uses_balance, allow_half_day, requires_attachment, min_notice_days, active, policy: PolicyVersion }[]` |
+| GET | `/api/leave-types` | → `{ id, code, name, sensitive, paid, uses_balance, allow_half_day, requires_attachment, min_notice_days, active, version, policy: PolicyVersion | null, policies: (PolicyVersion & {in_force: boolean})[] }[]` |
 | GET | `/api/balances/me` | → `BalanceSummary[]` |
 | GET | `/api/balances/:employee_id` | → `BalanceSummary[]` (self, manager: no; hr/auditor in scope) |
 | GET | `/api/balances/:employee_id/explain?leave_type_id=` | → `{ entries: LedgerEntry[], reservations: Reservation[], summary: BalanceSummary }` |
@@ -175,7 +183,7 @@ The demo-only endpoints return 404 in production.
 | POST | `/api/requests/:id/amend` | `{ expected_version, leave_type_id, start_date, end_date, start_part, end_part, change_reason }` → `RequestDetail` (the new amendment request) |
 | POST | `/api/requests/:id/cancel` | `{ expected_version, from_date, to_date, change_reason }` (whole range = full cancel) → `RequestDetail` (new cancellation request) |
 | POST | `/api/requests/:id/reassign` | `{ expected_version, step_id, assignee_user_id }` → `RequestDetail` (hr) |
-| POST | `/api/requests/:id/actual` | `{ expected_version, action: 'confirm'|'propose_adjustment', note, minutes_delta?, basis_document? }` → `RequestDetail` (hr; after period ended) |
+| POST | `/api/requests/:id/actual` | `{ expected_version, action: 'confirm'|'propose_adjustment', note, worked_dates?: string[], basis_document? }` → `RequestDetail` with `adjustment_ids` (hr; after period ended; worked dates and a basis document required for proposals; returns go to original paying accounts and need a second approver) |
 | POST | `/api/requests/:id/attachments` | multipart `file`, `sensitivity` → `AttachmentMeta` |
 | GET | `/api/attachments/:id` | → file bytes (permission-checked each time) |
 | GET | `/api/approvals` | → `{ items: (RequestSummary & { step: Step; acting_for: UserRef | null; warnings: Warning[] })[], problems: (RequestSummary & { problem: string })[] }` (problems for hr: unassigned steps) |
@@ -194,9 +202,9 @@ when viewer may not open the request.
 | GET | `/api/employees?q=&org_unit_id=&include_inactive=` | `EmployeeRef & { email, start_date, end_date, active, manager: EmployeeRef|null, schedule: {id,name}|null, has_login: boolean }` |
 | POST | `/api/employees` | `{ service_id, full_name, email?, start_date, org_unit_id, manager_employee_id?, schedule_id }` |
 | GET | `/api/employees/:id` | detail + `assignments[]`, `schedules[]`, `user`, `balances` (if allowed) |
-| PUT | `/api/employees/:id` | `{ full_name, email, end_date, active }` (deactivate never deletes requests) |
+| PUT | `/api/employees/:id` | `{ expected_version, full_name, email, end_date, active }` (deactivate never deletes requests) |
 | POST | `/api/employees/:id/transfer` | `{ org_unit_id, manager_employee_id, valid_from, reassign_open_steps: boolean }` |
-| POST | `/api/employees/:id/schedule` | `{ schedule_id, valid_from }` → also returns `affected_future_requests[]` |
+| POST | `/api/employees/:id/schedule` | `{ expected_version, schedule_id, valid_from }` → also returns `affected_future_requests[]` |
 
 ### Balances & adjustments (L04, L11)
 | Method | Path | Notes |
@@ -205,8 +213,8 @@ when viewer may not open the request.
 | POST | `/api/adjustments` | `{ employee_id, leave_type_id, period_year, minutes, reason, basis_document }` → proposed |
 | GET | `/api/adjustments?status=` | list with old/new values `{ ..., balance_before, balance_after_if_applied, proposed_by, decided_by }` |
 | POST | `/api/adjustments/:id/decide` | `{ decision: 'apply'|'reject', note }` (adjustment_approver ≠ proposer) |
-| POST | `/api/accruals/run` | `{ leave_type_id, period_year }` → `{ posted: n, skipped_existing: n }` (idempotent) |
-| POST | `/api/periods/close` | `{ leave_type_id, period_year }` → expiry entries per policy, idempotent |
+| POST | `/api/accruals/run` | `{ leave_type_id, period_year, month? }` → `{ posted: n, skipped_existing: n }` (idempotent) |
+| POST | `/api/periods/close` | `{ leave_type_id, period_year }` → `{ posted }`; expire excess above the carry-over limit when closing, then the remaining unreserved balance at expiry; idempotent |
 
 ### Reports & export (L10, L12)
 | Method | Path | Notes |
@@ -214,9 +222,9 @@ when viewer may not open the request.
 | GET | `/api/reports/balances?date=&org_unit_id=&format=json|csv` | balance at date |
 | GET | `/api/reports/absences?from=&to=&org_unit_id=&format=` | approved absences, counts + hours, rows link to request |
 | GET | `/api/reports/pending?format=` | requests awaiting action with age |
-| GET | `/api/reports/changes-since-export?format=` | approved changes after the last transfer export |
+| GET | `/api/reports/changes-since-export?org_unit_id=&format=` | new, changed and removed approved days compared with saved rows of the most recent transferred export covering each employee/date |
 | GET | `/api/reports/schedule-drift` | future approved/pending days whose frozen schedule differs from current |
-| POST | `/api/exports` | `{ from, to }` → `{ id, row_count, sha256, created_at }` |
+| POST | `/api/exports` | `{ from, to, org_unit_id? }` → `{ id, from, to, org_unit_id, row_count, sha256, created_at }`; stores exact rows and employee scope |
 | GET | `/api/exports` / `/api/exports/:id/download` | CSV, formula-safe |
 | POST | `/api/exports/:id/mark-transferred` | `{ note }` |
 | POST | `/api/imports/preview` | multipart `file`, `kind`, `mode?` → `{ batch_id, rows: { line, data, errors: string[] }[], rows_total, rows_valid }` |
@@ -227,11 +235,11 @@ when viewer may not open the request.
 | Method | Path | Notes |
 |---|---|---|
 | POST/PUT | `/api/leave-types`, `/api/leave-types/:id` | hr |
-| POST | `/api/leave-types/:id/policies` | new `PolicyVersion` `{ valid_from, annual_entitlement_min, accrual_mode, advance_publish_months, carryover_allowed, carryover_expiry_months, allow_negative, explanation }` |
+| POST | `/api/leave-types/:id/policies` | returns the new `PolicyVersion` and `affected_future_requests`; request detail warns when its saved policy differs from the policy now in force. Body: `{ valid_from, annual_entitlement_min, accrual_mode, advance_publish_months, carryover_allowed, carryover_expiry_months, carryover_limit_min, paid, uses_balance, allow_half_day, requires_attachment, min_notice_days, allow_negative, explanation }` |
 | POST | `/api/policies/:id/verify` | hr marks rule verified (production requirement) |
 | GET/POST | `/api/schedules`, `/api/schedules/:id/versions` | |
 | GET/POST | `/api/calendar-exceptions` | holidays; POST response includes `affected_future_requests` |
-| DELETE | `/api/calendar-exceptions/:id` | delete holiday; response includes `affected_future_requests` |
+| POST | `/api/calendar-exceptions/:id/revoke` | `{ reason }`; retains frozen day references, excludes exception from new calculations; response includes `affected_future_requests` |
 | GET/POST/PUT | `/api/users`, `/api/users/:id` | tech_admin: `{ email, display_name, active, employee_id? }`; deactivate revokes sessions |
 | POST/DELETE | `/api/users/:id/roles`, `/api/role-grants/:id` | tech_admin; cannot grant self final_approver/adjustment_approver |
 | GET/POST | `/api/delegations` | `{ from_user_id, to_user_id, scope, valid_from, valid_to, reason }` (self or hr/tech_admin) |
@@ -258,7 +266,7 @@ with: number, employee, dates per day, revision, every decision (actor, acting-f
   mutation requires both the session token and the origin check. This supports the existing persona-switch flow.
 - Session cookies are Secure in production and on HTTPS demos. Local HTTP demos omit Secure. Cookies remain
   HttpOnly, SameSite=Lax, host-only. Production is intended to run behind HTTPS.
-- The calendar exception DELETE path is `/api/calendar-exceptions/:id`, as used by the frontend. Schedule versions
+- Calendar exceptions are revoked with a reason; the list includes `revoked_at`, `revoked_by`, and `reason`. Schedule versions
   support GET as well as POST at `/api/schedules/:id/versions`.
 - Balance summaries and request previews include `policy` so the client can display its status and explanation.
   Demo policies remain `demo_fictional` with “Fictional demo rule — not Nauru law”; verifying a fictional demo
@@ -269,9 +277,15 @@ with: number, employee, dates per day, revision, every decision (actor, acting-f
 - Multipart uploads accept one `file` per request. Attachments are limited to 1 MiB in demo / 2 MiB in production,
   five per leave request, twenty stored attachments per demo sandbox (including seeded files), and 10 MiB per
   sandbox. Imports accept one UTF-8 CSV up to 8 MiB. See DESIGN §9 for file-level historical import modes.
-- `POST /api/accruals/run` accepts optional `month` for monthly policies. Service-wide settings, accrual and period
+- `POST /api/accruals/run` requires integer `month` (1–12) for monthly policies and rejects it for annual policies. Accrual fact keys do not contain the policy id; legacy keys also prevent duplicates. Service-wide settings, accrual and period
   closure require service-wide HR; directory changes and import/export rows respect the actor's organizational scope.
 - Idempotency replay preserves the saved response and re-checks current access, including medical redaction.
 - The CSP permits existing React inline style attributes through `style-src-attr 'unsafe-inline'`; scripts and
   stylesheet sources remain restricted to self. Password and TOTP enrollment are outside this HTTP contract;
   production accounts require operator provisioning (see `OPEN_ISSUES.md`).
+
+- Settings updates to leave types, units, employees and users, employee schedule changes, and new schedule versions require `expected_version`; stale forms receive 409 `stale_version`. Lists and mutation responses include `version` (schedule version creation returns the schedule's updated version). Leave-type updates change identity/presentation; dated policy versions change business conditions.
+- Submitted revisions preserve `policy_version_id` and `policy_snapshot`; future policy versions are never used for submission or preview before their effective date (`no_policy`, 422, if none is in force). Sensitivity remains restrictive for saved material.
+- Leave summaries, calendar, reports and printable data use the effective revision. Detail keeps the request's own `current_revision` and history, adds `in_force_revision` and `parent_in_force_revision`, and links approved amendment/cancellation decisions to their originating requests. Fully cancelled leave has zero effective minutes and retains its dates as history.
+- Date-specific balances use `reserved_on <= date` and `released_on > date` (or no release). Absence reports keep inactive employees and use assignments on each absence day; access is checked with current permissions.
+- On upgrade, old reservation dates are inferred from their saved timestamps; older business clock values cannot be recovered. Legacy export rows are recovered from CSV, with employee scope reconstructed from the creator's dated HR grants. Existing revision minutes and carry-over expiry values are preserved.

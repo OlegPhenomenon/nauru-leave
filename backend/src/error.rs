@@ -24,6 +24,8 @@ pub enum DomainError {
     InsufficientBalance(String),
     #[error("no work schedule for employee {employee_id} on {date}")]
     NoSchedule { employee_id: i64, date: String },
+    #[error("no policy in force for {0}")]
+    NoPolicy(String),
     #[error("past dates need an HR correction, not a cancellation")]
     PastDatesNeedHrCorrection,
     #[error("rate limited")]
@@ -53,6 +55,7 @@ impl DomainError {
             Self::Validation(_) => "validation",
             Self::InsufficientBalance(_) => "insufficient_balance",
             Self::NoSchedule { .. } => "no_schedule",
+            Self::NoPolicy(_) => "no_policy",
             Self::PastDatesNeedHrCorrection => "past_dates_need_hr_correction",
             Self::RateLimited => "rate_limited",
             Self::IdempotencyKeyReused => "idempotency_key_reused",
@@ -74,6 +77,7 @@ impl DomainError {
             Self::Validation(_)
             | Self::InsufficientBalance(_)
             | Self::NoSchedule { .. }
+            | Self::NoPolicy(_)
             | Self::PastDatesNeedHrCorrection
             | Self::IdempotencyKeyReused => 422,
             Self::RateLimited => 429,

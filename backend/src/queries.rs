@@ -110,6 +110,12 @@ pub struct PolicyRef {
     pub advance_publish_months: i64,
     pub carryover_allowed: bool,
     pub carryover_expiry_months: Option<i64>,
+    pub carryover_limit_min: Option<i64>,
+    pub paid: bool,
+    pub uses_balance: bool,
+    pub allow_half_day: bool,
+    pub requires_attachment: bool,
+    pub min_notice_days: i64,
     pub allow_negative: bool,
     pub status: String,
     pub explanation: String,
@@ -132,6 +138,12 @@ pub fn policy_ref(conn: &Connection, leave_type_id: i64, on: Date) -> Res<Option
         advance_publish_months: p.advance_publish_months,
         carryover_allowed: p.carryover_allowed,
         carryover_expiry_months: p.carryover_expiry_months,
+        carryover_limit_min: p.carryover_limit_min,
+        paid: p.paid,
+        uses_balance: p.uses_balance,
+        allow_half_day: p.allow_half_day,
+        requires_attachment: p.requires_attachment,
+        min_notice_days: p.min_notice_days,
         allow_negative: p.allow_negative,
         status: p.status,
         explanation,
@@ -146,16 +158,14 @@ pub fn balance_summaries(
     today: Date,
 ) -> Res<Vec<BalanceSummaryRow>> {
     let mpd = minutes_per_day(conn, employee_id, today)?;
-    let mut st = conn.prepare(
-        "SELECT id, code, name, uses_balance FROM leave_types WHERE active=1 ORDER BY code",
-    )?;
-    let types: Vec<(i64, String, String, bool)> = st
-        .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0))
-        })?
+    let mut st =
+        conn.prepare("SELECT id, code, name FROM leave_types WHERE active=1 ORDER BY code")?;
+    let types: Vec<(i64, String, String)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut out = Vec::new();
-    for (lt_id, code, name, uses_balance) in types {
+    for (lt_id, code, name) in types {
+        let uses_balance = model::policy_for(conn, lt_id, today)?.is_some_and(|p| p.uses_balance);
         let mut accounts = Vec::new();
         let (mut led, mut resv, mut av) = (0i64, 0i64, 0i64);
         for b in ledger::balance_summary(conn, employee_id, lt_id, today)? {
@@ -340,9 +350,9 @@ pub fn absence_days(
 ) -> Res<Vec<Absence>> {
     let mut st = conn.prepare(
         "SELECT lr.employee_id, rd.date, rd.part, lr.status,
-                lt.sensitive, lr.id, lt.name, lt.code
+                (lt.sensitive OR COALESCE(json_extract(rr.policy_snapshot,'$.sensitive'),0)), lr.id, lt.name, lt.code
          FROM leave_requests lr
-         JOIN employees e ON e.id = lr.employee_id AND e.active=1
+         JOIN employees e ON e.id = lr.employee_id
          JOIN request_revisions rr ON rr.id =
              CASE WHEN lr.status='approved' OR lr.status='cancelled'
                   THEN lr.effective_revision_id ELSE lr.current_revision_id END
@@ -354,27 +364,21 @@ pub fn absence_days(
            AND (?3 IS NULL OR EXISTS (
                  SELECT 1 FROM employment_assignments ea
                  WHERE ea.employee_id = lr.employee_id AND ea.org_unit_id = ?3
-                   AND ea.valid_from <= ?4 AND (ea.valid_to IS NULL OR ea.valid_to >= ?4)))
+                   AND ea.valid_from <= rd.date AND (ea.valid_to IS NULL OR ea.valid_to >= rd.date)))
          ORDER BY lr.employee_id, rd.date",
     )?;
-    let rows = st.query_map(
-        params![date_s(&from), date_s(&to), org_unit_id, {
-            // assignment validity checked on the *day* would be prettier; use `to` bound
-            date_s(&to)
-        }],
-        |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, String>(6)?,
-                r.get::<_, String>(7)?,
-            ))
-        },
-    )?;
+    let rows = st.query_map(params![date_s(&from), date_s(&to), org_unit_id], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?,
+        ))
+    })?;
     let mut out = Vec::new();
     for r in rows {
         let (emp, d, part, status, sens, rid, lt_name, lt_code) = r?;
@@ -417,7 +421,7 @@ pub fn schedule_drift(conn: &Connection, today: Date) -> Res<Vec<DriftRow>> {
                 e.id, e.full_name,rd.schedule_version_id,rd.exception_id
          FROM request_days rd
          JOIN request_revisions rr ON rr.id = rd.revision_id
-         JOIN leave_requests lr ON lr.id = rr.request_id
+         JOIN leave_requests lr ON (lr.effective_revision_id=rr.id AND lr.kind='leave') OR (lr.current_revision_id=rr.id AND lr.status IN ('submitted','needs_information','under_review'))
          JOIN employees e ON e.id = lr.employee_id
          WHERE rd.date >= ?1
            AND ((lr.status IN ('submitted','needs_information','under_review') AND rr.id=lr.current_revision_id)

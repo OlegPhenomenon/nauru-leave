@@ -105,10 +105,10 @@ pub fn seed_template(conn: &mut Connection, files_dir: &Path) -> Res<()> {
     // ------------------------------------------------------------- leave types + policies
     const EXPLANATION: &str = "Fictional demo rule — not Nauru law. \
         Must be confirmed by the responsible HR officer before real use.";
-    let annual = people::create_leave_type(conn, "ANNUAL", "Annual leave", false, true, true, true, false, 5)?;
-    let sick = people::create_leave_type(conn, "SICK", "Sick leave", true, true, true, true, false, 0)?;
-    let family = people::create_leave_type(conn, "FAMILY", "Family responsibility leave", false, true, true, true, false, 0)?;
-    let unpaid = people::create_leave_type(conn, "UNPAID", "Unpaid leave", false, false, false, false, false, 10)?;
+    let annual = people::create_leave_type(conn, "ANNUAL", "Annual leave", false)?;
+    let sick = people::create_leave_type(conn, "SICK", "Sick leave", true)?;
+    let family = people::create_leave_type(conn, "FAMILY", "Family responsibility leave", false)?;
+    let unpaid = people::create_leave_type(conn, "UNPAID", "Unpaid leave", false)?;
     for (lt, entitlement, carryover, accrual) in [
         (annual, 9600, true, "annual_upfront"),
         (sick, 4800, false, "annual_upfront"),
@@ -120,6 +120,9 @@ pub fn seed_template(conn: &mut Connection, files_dir: &Path) -> Res<()> {
             false, EXPLANATION, "demo_fictional", None, now_ts,
         )?;
     }
+
+    conn.execute("UPDATE policy_versions SET carryover_limit_min=4800,min_notice_days=5 WHERE leave_type_id=?1",[annual])?;
+    conn.execute("UPDATE policy_versions SET paid=0,uses_balance=0,allow_half_day=0,min_notice_days=10 WHERE leave_type_id=?1",[unpaid])?;
 
     // ------------------------------------------------------------- people
     let mk = |conn: &Connection, sid: &str, name: &str, unit: i64, mgr: Option<i64>, sched: i64| -> Res<(i64, i64)> {

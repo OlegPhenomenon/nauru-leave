@@ -958,6 +958,9 @@ pub fn list_imports(conn: &Connection) -> Res<Vec<serde_json::Value>> {
 /// period — the payroll-facing handover. Sensitive leave-type codes are
 /// masked as 'RESTRICTED'.
 pub struct TransferRow {
+    pub employee_id: i64,
+    pub request_id: i64,
+    pub revision_id: i64,
     pub employee_service_id: String,
     pub request_number: String,
     pub revision_no: i64,
@@ -970,8 +973,8 @@ pub struct TransferRow {
 
 pub fn transfer_rows(conn: &Connection, from: Date, to: Date) -> Res<Vec<TransferRow>> {
     let mut st = conn.prepare(
-        "SELECT e.service_id, lr.number, rr.rev_no, lt.code, lt.sensitive,
-                rd.date, rd.minutes, rd.period_year, rr.id
+        "SELECT e.service_id, lr.number, rr.rev_no, lt.code, (lt.sensitive OR COALESCE(json_extract(rr.policy_snapshot,'$.sensitive'),0)),
+                rd.date, rd.minutes, rd.period_year, rr.id,e.id,lr.id
          FROM leave_requests lr
          JOIN employees e ON e.id = lr.employee_id
          JOIN request_revisions rr ON rr.id = lr.effective_revision_id
@@ -992,11 +995,25 @@ pub fn transfer_rows(conn: &Connection, from: Date, to: Date) -> Res<Vec<Transfe
             r.get::<_, i64>(6)?,
             r.get::<_, i64>(7)?,
             r.get::<_, i64>(8)?,
+            r.get::<_, i64>(9)?,
+            r.get::<_, i64>(10)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (sid, number, rev_no, lt_code, sensitive, date, minutes, year, rev_id) = row?;
+        let (
+            sid,
+            number,
+            rev_no,
+            lt_code,
+            sensitive,
+            date,
+            minutes,
+            year,
+            rev_id,
+            employee_id,
+            request_id,
+        ) = row?;
         let decision_at: Option<String> = conn
             .query_row(
                 "SELECT created_at FROM decisions
@@ -1006,6 +1023,9 @@ pub fn transfer_rows(conn: &Connection, from: Date, to: Date) -> Res<Vec<Transfe
             )
             .optional()?;
         out.push(TransferRow {
+            employee_id,
+            request_id,
+            revision_id: rev_id,
             employee_service_id: sid,
             request_number: number,
             revision_no: rev_no,
@@ -1024,6 +1044,7 @@ pub fn transfer_rows(conn: &Connection, from: Date, to: Date) -> Res<Vec<Transfe
 }
 
 pub struct ExportRecord {
+    pub org_unit_id: Option<i64>,
     pub id: i64,
     pub row_count: i64,
     pub sha256: String,
@@ -1042,6 +1063,17 @@ pub fn create_export(
     from: Date,
     to: Date,
 ) -> Res<ExportRecord> {
+    create_export_scoped(conn, clock, actor, from, to, None)
+}
+
+pub fn create_export_scoped(
+    conn: &mut Connection,
+    clock: &Clock,
+    actor: &Actor,
+    from: Date,
+    to: Date,
+    org_unit_id: Option<i64>,
+) -> Res<ExportRecord> {
     let now_ts = clock.now_ts();
     crate::db::write_tx(conn, |tx| {
         authz::require(tx, actor, Action::ManageImportsExports, &Resource::Global)?;
@@ -1054,7 +1086,18 @@ pub fn create_export(
         for row in rows.drain(..) {
             let employee = employee_by_service_id(tx, &row.employee_service_id)?
                 .ok_or_else(|| DomainError::not_found("export employee"))?;
-            if actor.role_in_scope(tx, "hr", model::unit_of(tx, employee, today)?)? {
+            if actor.role_in_scope(tx, "hr", model::unit_of(tx, employee, today)?)?
+                && org_unit_id
+                    .map(|unit| {
+                        model::unit_in_scope(
+                            tx,
+                            Some(unit),
+                            model::unit_of(tx, employee, model::parse_date(&row.date)?)?,
+                        )
+                    })
+                    .transpose()?
+                    .unwrap_or(true)
+            {
                 scoped.push(row);
             }
         }
@@ -1090,8 +1133,8 @@ pub fn create_export(
         let sha = sha256_bytes(&content);
         let id: i64 = tx.query_row(
             "INSERT INTO export_batches
-             (kind, period_from, period_to, row_count, sha256, content, created_by, created_at)
-             VALUES ('approved_leave_transfer', ?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
+             (kind, period_from, period_to, row_count, sha256, content, created_by, created_at,org_unit_id)
+             VALUES ('approved_leave_transfer', ?1, ?2, ?3, ?4, ?5, ?6, ?7,?8) RETURNING id",
             params![
                 date_s(&from),
                 date_s(&to),
@@ -1099,10 +1142,30 @@ pub fn create_export(
                 sha,
                 content,
                 actor.user_id,
-                now_ts
+                now_ts,org_unit_id
             ],
             |r| r.get(0),
         )?;
+        for row in &rows {
+            tx.execute("INSERT INTO export_rows(export_id,employee_id,request_id,revision_id,date,minutes) VALUES(?1,?2,?3,?4,?5,?6)",params![id,row.employee_id,row.request_id,row.revision_id,row.date,row.minutes])?;
+        }
+        for employee in crate::presentation::ids(tx, "SELECT id FROM employees", &[])? {
+            let current_unit = model::unit_of(tx, employee, today)?;
+            // Include employees with zero exported days, so later approvals are new changes.
+            if actor.role_in_scope(tx, "hr", current_unit)? {
+                let belongs = if let Some(unit) = org_unit_id {
+                    tx.query_row("SELECT EXISTS(SELECT 1 FROM employment_assignments WHERE employee_id=?1 AND org_unit_id IN (WITH RECURSIVE units(id) AS (SELECT ?2 UNION ALL SELECT o.id FROM org_units o JOIN units u ON o.parent_id=u.id) SELECT id FROM units) AND valid_from<=?4 AND (valid_to IS NULL OR valid_to>=?3))",params![employee,unit,date_s(&from),date_s(&to)],|r|r.get::<_,bool>(0))?
+                } else {
+                    true
+                };
+                if belongs {
+                    tx.execute(
+                        "INSERT INTO export_scope(export_id,employee_id) VALUES(?1,?2)",
+                        params![id, employee],
+                    )?;
+                }
+            }
+        }
         audit::log(
             tx,
             &now_ts,
@@ -1115,6 +1178,7 @@ pub fn create_export(
         )?;
         crate::notify::record_change(tx, clock, actor.user_id, "export.create")?;
         Ok(ExportRecord {
+            org_unit_id,
             id,
             row_count: rows.len() as i64,
             sha256: sha,
@@ -1130,7 +1194,7 @@ pub fn create_export(
 pub fn list_exports(conn: &Connection) -> Res<Vec<ExportRecord>> {
     let mut st = conn.prepare(
         "SELECT id, row_count, sha256, created_at, transferred_at, transferred_by,
-                period_from, period_to
+                period_from, period_to,org_unit_id
          FROM export_batches ORDER BY id DESC",
     )?;
     let rows = st.query_map([], |r| {
@@ -1143,6 +1207,7 @@ pub fn list_exports(conn: &Connection) -> Res<Vec<ExportRecord>> {
             transferred_by: r.get(5)?,
             period_from: r.get(6)?,
             period_to: r.get(7)?,
+            org_unit_id: r.get(8)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1151,7 +1216,7 @@ pub fn list_exports(conn: &Connection) -> Res<Vec<ExportRecord>> {
 pub fn load_export(conn: &Connection, id: i64) -> Res<(ExportRecord, Vec<u8>)> {
     conn.query_row(
         "SELECT id, row_count, sha256, created_at, transferred_at, transferred_by,
-                period_from, period_to, content
+                period_from, period_to, content,org_unit_id
          FROM export_batches WHERE id=?1",
         [id],
         |r| {
@@ -1165,6 +1230,7 @@ pub fn load_export(conn: &Connection, id: i64) -> Res<(ExportRecord, Vec<u8>)> {
                     transferred_by: r.get(5)?,
                     period_from: r.get(6)?,
                     period_to: r.get(7)?,
+                    org_unit_id: r.get(9)?,
                 },
                 r.get::<_, Vec<u8>>(8)?,
             ))
@@ -1216,42 +1282,95 @@ pub fn mark_transferred(
     })
 }
 
-/// Ledger changes posted after the most recent *transferred* export
-/// (consumption/return/adjustment), for the "changes since last export" report.
+/// Recover old exports from their immutable CSV bytes without recalculating their contents.
+pub fn migrate_export_snapshots(conn: &Connection) -> Res<()> {
+    for record in list_exports(conn)? {
+        let (_, bytes) = load_export(conn, record.id)?;
+        let mut csv = csv::Reader::from_reader(bytes.as_slice());
+        for row in csv.records() {
+            let row = row?;
+            let cell = |i| row.get(i).unwrap_or("").trim_start_matches('\'');
+            let employee = employee_by_service_id(conn, cell(0))?
+                .ok_or_else(|| DomainError::validation("legacy export employee unavailable"))?;
+            let request: i64 = conn.query_row(
+                "SELECT id FROM leave_requests WHERE number=?1",
+                [cell(1)],
+                |r| r.get(0),
+            )?;
+            let revision:i64=conn.query_row("SELECT rr.id FROM request_revisions rr JOIN request_days rd ON rd.revision_id=rr.id WHERE rr.request_id IN (SELECT id FROM leave_requests WHERE id=?1 OR parent_request_id=?1) AND rr.rev_no=?2 AND rd.date=?3 AND rd.minutes=?4 AND rr.created_at<=?6 AND (?5='' OR EXISTS(SELECT 1 FROM decisions d WHERE d.revision_id=rr.id AND d.outcome='approve' AND d.created_at=?5)) ORDER BY rr.id DESC LIMIT 1",params![request,cell(2),cell(4),cell(5),cell(7),record.created_at],|r|r.get(0))?;
+            conn.execute("INSERT OR IGNORE INTO export_rows(export_id,employee_id,request_id,revision_id,date,minutes) VALUES(?1,?2,?3,?4,?5,?6)",params![record.id,employee,request,revision,cell(4),cell(5)])?;
+            conn.execute(
+                "INSERT OR IGNORE INTO export_scope(export_id,employee_id) VALUES(?1,?2)",
+                params![record.id, employee],
+            )?;
+        }
+        // Old exports had no stored organizational scope. Recover the creator's
+        // scope at creation for employees who had no rows in the file.
+        let creator: i64 = conn.query_row(
+            "SELECT created_by FROM export_batches WHERE id=?1",
+            [record.id],
+            |r| r.get(0),
+        )?;
+        let on = model::parse_date(&record.created_at[..10])?;
+        if let Ok(actor) = Actor::load(conn, creator, on) {
+            for emp in crate::presentation::ids(conn, "SELECT id FROM employees", &[])? {
+                if actor.role_in_scope(conn, "hr", model::unit_of(conn, emp, on)?)? {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO export_scope(export_id,employee_id) VALUES(?1,?2)",
+                        params![record.id, emp],
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Compare the approved day state to saved contents, never to transfer timestamps.
 pub fn changes_since_export(conn: &Connection) -> Res<Vec<serde_json::Value>> {
-    let last: Option<String> = conn.query_row(
-        "SELECT MAX(transferred_at) FROM export_batches WHERE transferred_at IS NOT NULL",
-        [],
-        |r| r.get::<_, Option<String>>(0),
-    )?;
-    let mut st = conn.prepare(
-        "SELECT le.id, e.service_id, e.full_name, lr.number, le.kind, le.minutes,
-                le.effective_date, le.created_at, la.period_year, lt.code, lt.sensitive
-         FROM ledger_entries le
-         JOIN leave_accounts la ON la.id = le.account_id
-         JOIN employees e ON e.id = la.employee_id
-         JOIN leave_types lt ON lt.id = la.leave_type_id
-         LEFT JOIN leave_requests lr ON lr.id = le.request_id
-         WHERE le.kind IN ('consumption','return','adjustment')
-           AND (?1 IS NULL OR le.created_at > ?1)
-         ORDER BY le.id",
-    )?;
-    let rows = st.query_map(params![last], |r| {
-        let sensitive: i64 = r.get(10)?;
-        Ok(serde_json::json!({
-            "id": r.get::<_, i64>(0)?,
-            "employee_service_id": r.get::<_, String>(1)?,
-            "employee": r.get::<_, String>(2)?,
-            "request_number": r.get::<_, Option<String>>(3)?,
-            "kind": r.get::<_, String>(4)?,
-            "minutes": r.get::<_, i64>(5)?,
-            "effective_date": r.get::<_, String>(6)?,
-            "created_at": r.get::<_, String>(7)?,
-            "period_year": r.get::<_, i64>(8)?,
-            "leave_type_code": if sensitive != 0 { "RESTRICTED".to_string() } else { r.get::<_, String>(9)? },
-        }))
-    })?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    changes_since_export_scoped(conn, None)
+}
+pub fn changes_since_export_scoped(
+    conn: &Connection,
+    unit: Option<i64>,
+) -> Res<Vec<serde_json::Value>> {
+    let candidates=crate::presentation::rows(conn,"SELECT lr.employee_id,lr.id AS request_id,rd.date FROM leave_requests lr JOIN request_days rd ON rd.revision_id=lr.effective_revision_id WHERE lr.kind='leave' AND lr.status IN ('approved','cancelled') AND rd.minutes>0 UNION SELECT employee_id,request_id,date FROM export_rows",&[])?;
+    let mut out = Vec::new();
+    for row in candidates {
+        let emp = row["employee_id"].as_i64().unwrap();
+        let request = row["request_id"].as_i64().unwrap();
+        let date = row["date"].as_str().unwrap();
+        if let Some(unit) = unit {
+            if !model::unit_in_scope(
+                conn,
+                Some(unit),
+                model::unit_of(conn, emp, model::parse_date(date)?)?,
+            )? {
+                continue;
+            }
+        }
+        let latest:Option<i64>=conn.query_row("SELECT b.id FROM export_batches b JOIN export_scope s ON s.export_id=b.id WHERE s.employee_id=?1 AND b.transferred_at IS NOT NULL AND b.period_from<=?2 AND b.period_to>=?2 ORDER BY b.created_at DESC,b.id DESC LIMIT 1",params![emp,date],|r|r.get(0)).optional()?;
+        let before: Option<(i64, i64)> = if let Some(export) = latest {
+            conn.query_row("SELECT revision_id,minutes FROM export_rows WHERE export_id=?1 AND request_id=?2 AND date=?3",params![export,request,date],|r|Ok((r.get(0)?,r.get(1)?))).optional()?
+        } else {
+            None
+        };
+        let after:Option<(i64,i64)>=conn.query_row("SELECT rr.id,rd.minutes FROM leave_requests lr JOIN request_revisions rr ON rr.id=lr.effective_revision_id JOIN request_days rd ON rd.revision_id=rr.id WHERE lr.id=?1 AND lr.kind='leave' AND lr.status IN ('approved','cancelled') AND rd.date=?2 AND rd.minutes>0",params![request,date],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+        if before == after {
+            continue;
+        }
+        let kind = match (before, after) {
+            (None, Some(_)) => "new",
+            (Some(_), None) => "removed",
+            _ => "changed",
+        };
+        let employee = model::load_employee(conn, emp)?;
+        let req = model::load_request(conn, request)?;
+        let revision = after.or(before).unwrap().0;
+        let t = model::revision_leave_type(conn, revision)?;
+        out.push(serde_json::json!({"employee_service_id":employee.service_id,"employee":employee.full_name,"request_id":request,"request_number":req.number,"date":date,"effective_date":date,"kind":kind,"minutes":after.map_or(0,|(_,m)|m),"previous_minutes":before.map_or(0,|(_,m)|m),"revision_id":after.map(|(r,_)|r),"previous_revision_id":before.map(|(r,_)|r),"export_id":latest,"leave_type_code":if t.sensitive {"RESTRICTED"}else{&t.code}}));
+    }
+    Ok(out)
 }
 
 // ------------------------------------------------------------------ tests
@@ -1330,7 +1449,6 @@ pub fn authorized_export(
     }
     Ok((record, bytes))
 }
-
 
 #[cfg(test)]
 mod tests {
