@@ -273,6 +273,7 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
                 void run(async () => {
                   if (sel)
                     await put(`/leave-types/${sel.id}`, {
+                      code: sel.code,
                       name: tf.name,
                       sensitive: tf.sensitive,
                       active: tf.active,
@@ -592,7 +593,7 @@ function SchedulesTab({ canEdit }: { canEdit: boolean }) {
             <button
               className="btn"
               disabled={busy || !validFrom}
-              onClick={() => void run(() => post(`/schedules/${sel.id}/versions`, { valid_from: validFrom, week }).then(() => undefined))}
+              onClick={() => void run(() => post(`/schedules/${sel.id}/versions`, { valid_from: validFrom, week, expected_version: sel.version }).then(() => undefined))}
             >
               {busy ? 'Saving…' : 'Add version'}
             </button>
@@ -670,7 +671,7 @@ function HolidaysTab({ canEdit }: { canEdit: boolean }) {
                 <td>{fmtDate(x.date)}</td>
                 <td>
                   {x.name}
-                  {x.revoke_reason ? <div className="muted small">revoked: {x.revoke_reason}</div> : null}
+                  {x.reason ? <div className="muted small">revoked: {x.reason}</div> : null}
                 </td>
                 <td className="num">{x.minutes}</td>
                 <td>
@@ -1001,6 +1002,9 @@ function UsersTab({ canEdit }: { canEdit: boolean }) {
               onClick={() =>
                 void run(() =>
                   put(`/users/${sel.id}`, {
+                    email: sel.email,
+                    display_name: sel.display_name,
+                    active: sel.active,
                     employee_id: linkEmp || null,
                     expected_version: sel.version,
                   }).then(() => undefined),

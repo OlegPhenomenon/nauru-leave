@@ -223,12 +223,12 @@ when viewer may not open the request.
 ### Reports & export (L10, L12)
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/reports/balances?date=&org_unit_id=&format=json|csv` | balance at date |
+| GET | `/api/reports/balances?date=&org_unit_id=&format=json|csv` | balance at date; employees employed on that date are included even if currently inactive |
 | GET | `/api/reports/absences?from=&to=&org_unit_id=&format=` | approved absences, counts + hours, rows link to request |
 | GET | `/api/reports/pending?format=` | requests awaiting action with age |
 | GET | `/api/reports/changes-since-export?org_unit_id=&format=` | new, changed and removed approved days compared with saved rows of the most recent transferred export covering each employee/date |
 | GET | `/api/reports/schedule-drift` | future approved/pending days whose frozen schedule differs from current |
-| POST | `/api/exports` | `{ from, to, org_unit_id? }` → `{ id, from, to, org_unit_id, row_count, sha256, created_at }`; stores exact rows and employee scope |
+| POST | `/api/exports` | `{ from, to, org_unit_id? }` → `{ id, from, to, org_unit_id, row_count, sha256, created_at }`; stores exact rows and scope; baseline selection checks the employee’s assignment on each exported day |
 | GET | `/api/exports` / `/api/exports/:id/download` | CSV, formula-safe |
 | POST | `/api/exports/:id/mark-transferred` | `{ note }` |
 | POST | `/api/imports/preview` | multipart `file`, `kind`, `mode?` → `{ batch_id, rows: { line, data, errors: string[] }[], rows_total, rows_valid }` |
@@ -241,7 +241,7 @@ when viewer may not open the request.
 | POST/PUT | `/api/leave-types`, `/api/leave-types/:id` | hr |
 | POST | `/api/leave-types/:id/policies` | returns the new `PolicyVersion` and `affected_future_requests`; request detail warns when its saved policy differs from the policy now in force. Body: `{ valid_from, annual_entitlement_min, accrual_mode, advance_publish_months, carryover_allowed, carryover_expiry_months, carryover_limit_min, paid, uses_balance, allow_half_day, requires_attachment, min_notice_days, allow_negative, explanation }` |
 | POST | `/api/policies/:id/verify` | hr marks rule verified (production requirement) |
-| GET/POST | `/api/schedules`, `/api/schedules/:id/versions` | |
+| GET/POST | `/api/schedules`, `/api/schedules/:id/versions` | schedules and versions include `version`; creating a version requires `{ expected_version, valid_from, week }` with the schedule version counter |
 | GET/POST | `/api/calendar-exceptions` | holidays; POST response includes `affected_future_requests` |
 | POST | `/api/calendar-exceptions/:id/revoke` | `{ reason }`; retains frozen day references, excludes exception from new calculations; response includes `affected_future_requests` |
 | GET/POST/PUT | `/api/users`, `/api/users/:id` | Account administration: tech_admin or HR; `{ email, display_name, active, employee_id? }`. PUT also requires `expected_version`; response includes `version`. Changing employee linkage requires HR scope on affected employees and a different actor from the target user. Deactivation revokes sessions. GET items include `allowed: {grant_roles: Role[], link_employee: boolean}`. |
@@ -300,6 +300,14 @@ with: number, employee, dates per day, revision, every decision (actor, acting-f
 
 - Settings updates to leave types, units, employees and users, employee schedule changes, and new schedule versions require `expected_version`; stale forms receive 409 `stale_version`. Lists and mutation responses include `version` (schedule version creation returns the schedule's updated version). Leave-type updates change identity/presentation; dated policy versions change business conditions.
 - Submitted revisions preserve `policy_version_id` and `policy_snapshot`; future policy versions are never used for submission or preview before their effective date (`no_policy`, 422, if none is in force). Sensitivity remains restrictive for saved material.
-- Leave summaries, calendar, reports and printable data use the effective revision. Detail keeps the request's own `current_revision` and history, adds `in_force_revision` and `parent_in_force_revision`, and links approved amendment/cancellation decisions to their originating requests. Fully cancelled leave has zero effective minutes and retains its dates as history.
-- Date-specific balances use `reserved_on <= date` and `released_on > date` (or no release). Absence reports keep inactive employees and use assignments on each absence day; access is checked with current permissions.
+- Leave summaries, calendar, reports and printable data use the effective revision. Detail keeps the request's own `current_revision` and history (own revisions plus approved child revisions; pending/rejected child proposals are excluded), adds `in_force_revision` and `parent_in_force_revision`, and links approved amendment/cancellation decisions to their originating requests. Fully cancelled leave has zero effective minutes and retains its dates as history.
+- Date-specific balances and their explanations use `reserved_on <= date` and `released_on > date` (or no release). Balance lists select employees with `start_date <= date` and no end date before it, independent of current activation; their unit filter also uses that date. Absence reports keep inactive employees and use assignments on each absence day; access is checked with current permissions.
 - On upgrade, old reservation dates are inferred from their saved timestamps; older business clock values cannot be recovered. Legacy export rows are recovered from CSV, with employee scope reconstructed from the creator's dated HR grants. Existing revision minutes and carry-over expiry values are preserved.
+
+- Accrual policy lookup uses the first day of the selected month, or January 1 for an annual run, with highest policy id breaking equal effective-date ties. An annual accrual fact covers every month of that year. Existing monthly facts prevent a later full annual credit; differences require an explicit adjustment. Legacy annual and monthly keys follow the same rules.
+- Carry-over limits apply across all requests drawing later-year days from an account: approved effective allocations and active reservation deltas share one allowance; a pending amendment’s positive carry-over delta also counts when its account total is unchanged. Amendments replace their parent's allocation rather than count it twice. Closing caps free carry-over after that usage; later releases and returns cannot make more than the remaining allowance spendable.
+- Export lists and mutation responses retain `org_unit_id` and return `transferred_by: UserRef | null`. Changes compare against the latest transferred export whose scope covers the employee's assignment on the particular day.
+- A delegation cannot have the same sender and recipient. HR cannot create a delegation from another user to itself. Active delegates need TOTP in production, including when a delegation is granted after password login. A medical role grant must be within the granter's current medical scope (whole-service grants require whole-service medical authority).
+- Scanning and file storage run outside the database dispatch lock. Recording reloads the session and actor, checks authorization and quotas, then saves the attachment and receipt atomically. Upload receipt replay requires current upload authority and returns redacted attachment metadata; it does not require medical viewing authority.
+- Migration creates an initial non-accruing policy for legacy leave types without policies, preserving their condition flags from the earliest supported date. These rules remain unverified outside demo databases.
+- Leave-type PUT includes `code`; employee-link PUT includes the user's `email`, `display_name`, `active`, `employee_id` and `expected_version`.

@@ -900,19 +900,20 @@ fn g01_limit_reservation_expiry_and_late_return() {
         ledger::close_period(&mut w.conn, &clock, &actor, w.carry, 2026).unwrap(),
         1
     );
-    assert_eq!(ledger::balance_at(&w.conn, account, w.today).unwrap(), 960);
+    // The future reservation already uses the entire carry-over allowance.
+    assert_eq!(ledger::balance_at(&w.conn, account, w.today).unwrap(), 480);
     assert_eq!(
         ledger::close_period(&mut w.conn, &clock, &actor, w.carry, 2026).unwrap(),
         0
     );
     w.approve_all(request);
-    assert_eq!(ledger::balance_at(&w.conn, account, w.today).unwrap(), 480);
+    assert_eq!(ledger::balance_at(&w.conn, account, w.today).unwrap(), 0);
     w.set_today("2027-04-01");
     let actor = w.actor(w.u_maria);
     let clock = w.clock();
     assert_eq!(
         ledger::close_period(&mut w.conn, &clock, &actor, w.carry, 2026).unwrap(),
-        1
+        0
     );
     assert_eq!(ledger::balance_at(&w.conn, account, w.today).unwrap(), 0);
     let adjustment = ledger::propose_adjustment(

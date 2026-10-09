@@ -1349,7 +1349,15 @@ pub fn changes_since_export_scoped(
                 continue;
             }
         }
-        let latest:Option<i64>=conn.query_row("SELECT b.id FROM export_batches b JOIN export_scope s ON s.export_id=b.id WHERE s.employee_id=?1 AND b.transferred_at IS NOT NULL AND b.period_from<=?2 AND b.period_to>=?2 ORDER BY b.created_at DESC,b.id DESC LIMIT 1",params![emp,date],|r|r.get(0)).optional()?;
+        let candidates = crate::presentation::rows(conn, "SELECT b.id,b.org_unit_id FROM export_batches b JOIN export_scope s ON s.export_id=b.id WHERE s.employee_id=?1 AND b.transferred_at IS NOT NULL AND b.period_from<=?2 AND b.period_to>=?2 ORDER BY b.created_at DESC,b.id DESC", &[&emp,&date])?;
+        let mut latest = None;
+        let day_unit = model::unit_of(conn, emp, model::parse_date(date)?)?;
+        for batch in candidates {
+            if model::unit_in_scope(conn, batch["org_unit_id"].as_i64(), day_unit)? {
+                latest = batch["id"].as_i64();
+                break;
+            }
+        }
         let before: Option<(i64, i64)> = if let Some(export) = latest {
             conn.query_row("SELECT revision_id,minutes FROM export_rows WHERE export_id=?1 AND request_id=?2 AND date=?3",params![export,request,date],|r|Ok((r.get(0)?,r.get(1)?))).optional()?
         } else {

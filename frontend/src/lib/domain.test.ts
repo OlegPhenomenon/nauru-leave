@@ -86,7 +86,18 @@ describe('f02_accrualPolicyForYear', () => {
   it('ignores versions that start after the asked year', () => {
     const lt = t([policy({ id: 1, valid_from: '2027-06-01', accrual_mode: 'monthly' })]);
     expect(accrualPolicyForYear(lt, 2026)).toBeNull();
-    expect(accrualPolicyForYear(lt, 2027)?.accrual_mode).toBe('monthly');
+    expect(accrualPolicyForYear(lt, 2027)).toBeNull();
+  });
+
+  it('selects January 1 and highest id on ties during a midyear mode change', () => {
+    const lt = t([policy({ id: 1 }), policy({ id: 2, accrual_mode: 'monthly' }), policy({ id: 3, valid_from: '2027-07-01', accrual_mode: 'none' })]);
+    expect(accrualPolicyForYear(lt, 2027)?.id).toBe(2);
+  });
+
+  it('checks the selected month on its first day', () => {
+    const lt = t([policy({ id: 1, accrual_mode: 'monthly' }), policy({ id: 2, valid_from: '2027-07-01', accrual_mode: 'annual_upfront' })]);
+    expect(accrualPolicyForYear(lt, 2027, 6)?.accrual_mode).toBe('monthly');
+    expect(accrualPolicyForYear(lt, 2027, 7)?.accrual_mode).toBe('annual_upfront');
   });
 
   it('falls back to the single in-force policy when policies[] is absent', () => {

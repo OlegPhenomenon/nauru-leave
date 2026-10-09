@@ -383,7 +383,7 @@ pub fn detail(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
     };
     v["revisions"] = json!(ids(
         conn,
-        "SELECT rr.id FROM request_revisions rr JOIN leave_requests lr ON lr.id=rr.request_id WHERE lr.id=?1 OR lr.parent_request_id=?1 ORDER BY rr.id",
+        "SELECT rr.id FROM request_revisions rr JOIN leave_requests lr ON lr.id=rr.request_id WHERE lr.id=?1 OR (lr.parent_request_id=?1 AND lr.status='approved') ORDER BY rr.id",
         &[&id]
     )?
     .into_iter()

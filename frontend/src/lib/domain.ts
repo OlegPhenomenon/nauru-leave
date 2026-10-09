@@ -18,19 +18,20 @@ export function inForceRevision(d: {
 
 /**
  * The policy version that applies to an accrual run for `periodYear`: the
- * latest version whose `valid_from` falls inside or before that year. Versions
- * that only start later are ignored (they are not in force for the period).
+ * version in force on January 1 (or on the selected month's first day).
+ * Ties use the highest id, matching the server's policy lookup.
  * Returns null when no version can apply — the server then answers no_policy.
  */
 export function accrualPolicyForYear(
   type: Pick<LeaveType, 'policy'> & { policies?: PolicyVersion[] },
   periodYear: number,
+  month = 1,
 ): PolicyVersion | null {
   const versions = type.policies?.length ? type.policies : type.policy ? [type.policy] : [];
-  const yearEnd = `${periodYear}-12-31`;
+  const periodStart = `${periodYear}-${String(month).padStart(2, '0')}-01`;
   let best: PolicyVersion | null = null;
   for (const v of versions) {
-    if (v.valid_from <= yearEnd && (!best || v.valid_from > best.valid_from)) best = v;
+    if (v.valid_from <= periodStart && (!best || v.valid_from > best.valid_from || (v.valid_from === best.valid_from && v.id > best.id))) best = v;
   }
   return best;
 }

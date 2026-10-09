@@ -412,10 +412,16 @@ pub fn mutate(
             ("users", "PUT", Some(id), _) => {
                 model::load_user(tx, id)?;
                 if body.get("employee_id").is_some() {
-                    let old: Option<i64> = tx.query_row("SELECT id FROM employees WHERE user_id=?1", [id], |r| r.get(0)).ok();
+                    let old: Option<i64> = tx
+                        .query_row("SELECT id FROM employees WHERE user_id=?1", [id], |r| {
+                            r.get(0)
+                        })
+                        .ok();
                     let new = body["employee_id"].as_i64();
                     if old != new {
-                        for employee in old.into_iter().chain(new) { authz::require_employee_link(tx, actor, id, employee)?; }
+                        for employee in old.into_iter().chain(new) {
+                            authz::require_employee_link(tx, actor, id, employee)?;
+                        }
                     }
                 }
                 let active = boolean(body, "active", true)?;
@@ -460,6 +466,13 @@ pub fn mutate(
                     return Err(DomainError::validation("invalid role"));
                 }
                 authz::require_role_administration(tx, actor, id, role)?;
+                if role == "hr_medical"
+                    && !actor.role_in_scope(tx, "hr_medical", body["scope_org_unit_id"].as_i64())?
+                {
+                    return Err(DomainError::forbidden(
+                        "medical grants must stay within your medical scope",
+                    ));
+                }
                 let from = optional(body, "valid_from")
                     .map(model::parse_date)
                     .transpose()?
@@ -473,7 +486,13 @@ pub fn mutate(
                 json!({"id":people::grant_role(tx,id,role,body["scope_org_unit_id"].as_i64(),from,to,Some(actor.user_id),&now)?})
             }
             ("role-grants", "DELETE", Some(id), _) => {
-                let (user, role): (i64, String) = tx.query_row("SELECT user_id,role FROM role_grants WHERE id=?1", [id], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|_| DomainError::not_found("role grant"))?;
+                let (user, role): (i64, String) = tx
+                    .query_row(
+                        "SELECT user_id,role FROM role_grants WHERE id=?1",
+                        [id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(|_| DomainError::not_found("role grant"))?;
                 authz::require_role_administration(tx, actor, user, &role)?;
                 if tx.execute("DELETE FROM role_grants WHERE id=?1", [id])? == 0 {
                     return Err(DomainError::not_found("role grant"));

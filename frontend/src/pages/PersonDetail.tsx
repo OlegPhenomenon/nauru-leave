@@ -373,7 +373,7 @@ export default function PersonDetail() {
                 void run(async () => {
                   const r = await post<{ affected_future_requests?: { id: number; number: string }[] }>(
                     `/employees/${e.id}/schedule`,
-                    { schedule_id: sched.schedule_id, valid_from: sched.valid_from },
+                    { schedule_id: sched.schedule_id, valid_from: sched.valid_from, expected_version: e.version },
                   );
                   setAffected(r.affected_future_requests ?? []);
                 })

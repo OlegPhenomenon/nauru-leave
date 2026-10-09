@@ -288,9 +288,14 @@ pub fn create_delegation(
         if valid_to < valid_from {
             return Err(DomainError::validation("valid_to before valid_from"));
         }
-        if actor.user_id != from_user_id
-            && !actor.role_in_scope(tx, "hr", None)?
+        if from_user_id == to_user_id
+            || (to_user_id == actor.user_id && from_user_id != actor.user_id)
         {
+            return Err(DomainError::forbidden(
+                "cannot delegate authority to yourself",
+            ));
+        }
+        if actor.user_id != from_user_id && !actor.role_in_scope(tx, "hr", None)? {
             return Err(DomainError::forbidden(
                 "only the delegator or service-wide HR may create a delegation",
             ));

@@ -1341,7 +1341,7 @@ export default function RequestDetail() {
               disabled={busy || (actualAction === 'propose_adjustment' && !workedDates.length)}
               onClick={() =>
                 void run(async () => {
-                  const r = await post<RD & { created_adjustment_ids?: number[]; adjustments?: number[] }>(
+                  const r = await post<RD & { adjustment_ids?: number[] }>(
                     `/requests/${d.id}/actual`,
                     {
                       expected_version: d.version,
@@ -1353,7 +1353,7 @@ export default function RequestDetail() {
                     },
                     opKey,
                   );
-                  const ids = r.created_adjustment_ids ?? r.adjustments;
+                  const ids = r.adjustment_ids;
                   setNotice(
                     actualAction === 'propose_adjustment'
                       ? `Proposed ${ids?.length ? `${ids.length} ` : ''}correction${ids && ids.length > 1 ? 's' : ''}${

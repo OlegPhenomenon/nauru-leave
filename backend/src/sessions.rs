@@ -21,7 +21,8 @@ pub fn load(conn: &Connection, token: &str, full: bool) -> Res<Session> {
     let session=conn.query_row("SELECT s.user_id,s.csrf_token,s.totp_ok FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?1 AND s.revoked_at IS NULL AND s.expires_at>?2 AND u.active=1",params![hash(token),timestamp(OffsetDateTime::now_utc())],|r|Ok(Session{user_id:r.get(0)?,csrf_token:r.get(1)?,totp_ok:r.get::<_,i64>(2)?!=0,hash:hash(token)})).optional()?.ok_or(DomainError::Unauthenticated)?;
     if full && !session.totp_ok {
         let actor = Actor::load(conn, session.user_id, OffsetDateTime::now_utc().date())?;
-        if !actor.roles.is_empty() || !actor.manages.is_empty() {
+        if !actor.roles.is_empty() || !actor.manages.is_empty() || !actor.delegations_in.is_empty()
+        {
             return Err(DomainError::Unauthenticated);
         }
     }
@@ -37,7 +38,8 @@ pub fn create(
     let csrf = hex::encode(rand::random::<[u8; 32]>());
     let now = OffsetDateTime::now_utc();
     let actor = Actor::load(conn, user_id, now.date())?;
-    let complete = totp_ok || (actor.roles.is_empty() && actor.manages.is_empty());
+    let complete = totp_ok
+        || (actor.roles.is_empty() && actor.manages.is_empty() && actor.delegations_in.is_empty());
     db::write_tx(conn, |tx| {
         model::load_user(tx, user_id).and_then(|u| {
             if u.active {
@@ -111,7 +113,8 @@ pub fn password_login(
         return Err(DomainError::Unauthenticated);
     }
     let actor = Actor::load(conn, uid, clock.today(conn)?)?;
-    let needs_totp = !actor.roles.is_empty() || !actor.manages.is_empty();
+    let needs_totp =
+        !actor.roles.is_empty() || !actor.manages.is_empty() || !actor.delegations_in.is_empty();
     let token = db::atomic(conn, |conn| {
         if !needs_totp {
             conn.execute(

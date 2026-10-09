@@ -835,6 +835,7 @@ fn preview_in(
         let employee_id = employee_id.ok_or_else(|| DomainError::forbidden("no employee"))?;
         let mut exclude: Vec<i64> = Vec::new();
         let mut extra: BTreeMap<i64, i64> = BTreeMap::new();
+        let mut credit_revision = None;
         if let Some(parent_id) = amend_of {
             let parent = model::load_request(conn, parent_id)?;
             let ctx = request_ctx(conn, &parent, today)?;
@@ -846,6 +847,7 @@ fn preview_in(
             }
             if let Some(eff) = parent.effective_revision_id {
                 extra = model::allocation_totals(conn, eff)?;
+                credit_revision = Some(eff);
             }
             exclude.push(parent_id);
         }
@@ -879,13 +881,14 @@ fn preview_in(
                     ),
                 }),
                 None => {
-                    match ledger::allocate(
+                    match ledger::allocate_with_credit(
                         conn,
                         employee_id,
                         input.leave_type_id,
                         &days,
                         today,
                         &extra,
+                        credit_revision,
                     ) {
                         Ok(allocs) => {
                             // balance_after per touched account/year
@@ -1754,11 +1757,13 @@ fn revise_in(
     )?;
     // an amendment revises against the parent's effective minutes as capacity
     let mut extra: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut credit_revision = None;
     if req.kind == RequestKind::Amendment {
         if let Some(parent_id) = req.parent_request_id {
             let parent = model::load_request(conn, parent_id)?;
             if let Some(eff) = parent.effective_revision_id {
                 extra = model::allocation_totals(conn, eff)?;
+                credit_revision = Some(eff);
             }
         }
     }
@@ -1773,13 +1778,14 @@ fn revise_in(
         )?;
     }
     ledger::release_reservations(conn, req.id, "superseded", now_ts, today)?;
-    let allocs = ledger::allocate(
+    let allocs = ledger::allocate_with_credit(
         conn,
         req.employee_id,
         ch.leave_type_id,
         &days,
         today,
         &extra,
+        credit_revision,
     )?;
     let rev_no: i64 = conn.query_row(
         "SELECT COALESCE(MAX(rev_no),0)+1 FROM request_revisions WHERE request_id=?1",
@@ -1949,13 +1955,14 @@ pub fn amend(
             today,
         )?;
         validate_past_change(tx, eff, input.leave_type_id, &days, today)?;
-        let allocs = ledger::allocate(
+        let allocs = ledger::allocate_with_credit(
             tx,
             parent.employee_id,
             input.leave_type_id,
             &days,
             today,
             &eff_totals,
+            Some(eff),
         )?;
         let total: i64 = days.iter().map(|d| d.minutes).sum();
         let number = next_number(tx, today)?;

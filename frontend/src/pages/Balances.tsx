@@ -368,6 +368,8 @@ export default function Balances() {
           const selType = typesQ.data?.find((t) => t.id === accrual.leave_type_id) ?? null;
           const accrualPolicy = selType ? accrualPolicyForYear(selType, accrual.period_year) : null;
           const needsMonth = modal === 'accrual' && accrualPolicy?.accrual_mode === 'monthly';
+          const selectedPolicy = selType && needsMonth ? accrualPolicyForYear(selType, accrual.period_year, accrual.month) : accrualPolicy;
+          const invalidPeriod = modal === 'accrual' && (!selectedPolicy || (needsMonth && selectedPolicy.accrual_mode !== 'monthly'));
           return (
         <Modal title={modal === 'accrual' ? 'Run accrual' : 'Close period'} onClose={() => setModal(null)}>
           <p className="muted small">
@@ -404,6 +406,7 @@ export default function Balances() {
               </select>
             </Field>
           ) : null}
+          {invalidPeriod && selType ? <p className="alert alert-error">The policy on this period's first day does not support this accrual run. Choose a month with a monthly policy.</p> : null}
           {modal === 'accrual' && selType && accrualPolicy && !needsMonth ? (
             <p className="muted small">
               Policy in force for {accrual.period_year}: {accrualPolicy.accrual_mode} — no month needed.
@@ -412,7 +415,7 @@ export default function Balances() {
           <div className="btn-row">
             <button
               className="btn"
-              disabled={busy || !accrual.leave_type_id}
+              disabled={busy || !accrual.leave_type_id || invalidPeriod}
               onClick={() =>
                 void run(async () => {
                   const path = modal === 'accrual' ? '/accruals/run' : '/periods/close';

@@ -17,6 +17,14 @@ UPDATE policy_versions SET
  allow_half_day=(SELECT allow_half_day FROM leave_types WHERE id=leave_type_id),
  requires_attachment=(SELECT requires_attachment FROM leave_types WHERE id=leave_type_id),
  min_notice_days=(SELECT min_notice_days FROM leave_types WHERE id=leave_type_id);
+INSERT INTO policy_versions(leave_type_id,valid_from,annual_entitlement_min,accrual_mode,
+ advance_publish_months,carryover_allowed,allow_negative,paid,uses_balance,allow_half_day,
+ requires_attachment,min_notice_days,explanation,status,created_at)
+ SELECT id,'0001-01-01',0,'none',0,0,0,paid,uses_balance,allow_half_day,
+ requires_attachment,min_notice_days,'Preserved legacy leave conditions',
+ CASE WHEN EXISTS(SELECT 1 FROM settings WHERE key='mode' AND value='demo') THEN 'demo_fictional' ELSE 'unverified' END,
+ '1970-01-01T00:00:00Z' FROM leave_types lt
+ WHERE NOT EXISTS(SELECT 1 FROM policy_versions p WHERE p.leave_type_id=lt.id);
 ALTER TABLE request_revisions ADD COLUMN policy_version_id INTEGER REFERENCES policy_versions(id);
 ALTER TABLE request_revisions ADD COLUMN policy_snapshot TEXT;
 -- Legacy submissions did not record business dates or policy provenance. Preserve

@@ -302,26 +302,47 @@ pub fn reservations_of(
     employee_id: i64,
     leave_type_id: i64,
 ) -> Res<Vec<ReservationRow>> {
+    reservations_query(conn, employee_id, leave_type_id, None)
+}
+
+pub fn reservations_on(
+    conn: &Connection,
+    employee_id: i64,
+    leave_type_id: i64,
+    on: Date,
+) -> Res<Vec<ReservationRow>> {
+    reservations_query(conn, employee_id, leave_type_id, Some(on))
+}
+
+fn reservations_query(
+    conn: &Connection,
+    employee_id: i64,
+    leave_type_id: i64,
+    on: Option<Date>,
+) -> Res<Vec<ReservationRow>> {
     let mut st = conn.prepare(
         "SELECT r.id, r.account_id, la.period_year, r.minutes, lr.number, rr.rev_no, r.created_at
          FROM reservations r
          JOIN leave_accounts la ON la.id = r.account_id
          JOIN leave_requests lr ON lr.id = r.request_id
          JOIN request_revisions rr ON rr.id = r.revision_id
-         WHERE la.employee_id=?1 AND la.leave_type_id=?2 AND r.active=1
+         WHERE la.employee_id=?1 AND la.leave_type_id=?2 AND ((?3 IS NULL AND r.active=1) OR (?3 IS NOT NULL AND r.reserved_on<=?3 AND (r.released_on IS NULL OR r.released_on>?3)))
          ORDER BY r.id",
     )?;
-    let rows = st.query_map(params![employee_id, leave_type_id], |r| {
-        Ok(ReservationRow {
-            id: r.get(0)?,
-            account_id: r.get(1)?,
-            period_year: r.get(2)?,
-            minutes: r.get(3)?,
-            request_number: r.get(4)?,
-            revision_no: r.get(5)?,
-            created_at: r.get(6)?,
-        })
-    })?;
+    let rows = st.query_map(
+        params![employee_id, leave_type_id, on.map(|d| date_s(&d))],
+        |r| {
+            Ok(ReservationRow {
+                id: r.get(0)?,
+                account_id: r.get(1)?,
+                period_year: r.get(2)?,
+                minutes: r.get(3)?,
+                request_number: r.get(4)?,
+                revision_no: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        },
+    )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 

@@ -231,6 +231,29 @@ pub fn allocate(
     today: Date,
     extra_available: &BTreeMap<i64, i64>,
 ) -> Res<Vec<DayAllocation>> {
+    allocate_with_credit(
+        conn,
+        employee_id,
+        leave_type_id,
+        days,
+        today,
+        extra_available,
+        None,
+    )
+}
+
+/// Reallocating an amendment replaces its parent's effective allocation.
+/// Only that revision's carry-over usage is credited back against the limit.
+#[allow(clippy::too_many_arguments)]
+pub fn allocate_with_credit(
+    conn: &Connection,
+    employee_id: i64,
+    leave_type_id: i64,
+    days: &[ComputedDay],
+    today: Date,
+    extra_available: &BTreeMap<i64, i64>,
+    credit_revision: Option<i64>,
+) -> Res<Vec<DayAllocation>> {
     let lt = model::leave_type_on(conn, leave_type_id, today)?;
     if !lt.uses_balance {
         return Ok(Vec::new());
@@ -240,6 +263,7 @@ pub fn allocate(
 
     // Capacity per account = balance(today) − active reservations + extra − already taken here.
     let mut taken: BTreeMap<i64, i64> = BTreeMap::new();
+    let mut carry_taken: BTreeMap<i64, i64> = BTreeMap::new();
     let mut out = Vec::new();
 
     for (idx, day) in days.iter().enumerate() {
@@ -281,8 +305,16 @@ pub fn allocate(
                 {
                     continue;
                 }
-                let capacity =
-                    carryover_capacity(conn, acc.0, &carry_policy, today, &taken, extra_available)?;
+                let capacity = carryover_capacity(
+                    conn,
+                    acc.0,
+                    &carry_policy,
+                    today,
+                    &taken,
+                    extra_available,
+                    &carry_taken,
+                    credit_revision,
+                )?;
                 give = take_from(
                     conn,
                     acc.0,
@@ -299,6 +331,7 @@ pub fn allocate(
                         minutes: give,
                         carryover: true,
                     });
+                    *carry_taken.entry(acc.0).or_default() += give;
                     need -= give;
                     if need == 0 {
                         break;
@@ -331,6 +364,7 @@ pub fn allocate(
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn carryover_capacity(
     conn: &Connection,
     acc: i64,
@@ -338,12 +372,56 @@ fn carryover_capacity(
     today: Date,
     taken: &BTreeMap<i64, i64>,
     extra: &BTreeMap<i64, i64>,
+    carry_taken: &BTreeMap<i64, i64>,
+    credit_revision: Option<i64>,
 ) -> Res<i64> {
-    let limit = policy.carryover_limit_min;
     let capacity = account_available_now(conn, acc, today, taken, extra)?.max(0);
-    Ok(limit.map_or(capacity, |cap| {
-        capacity.min((cap - taken.get(&acc).copied().unwrap_or(0)).max(0))
-    }))
+    let Some(limit) = policy.carryover_limit_min else {
+        return Ok(capacity);
+    };
+    let used = carryover_used(conn, acc, credit_revision)?;
+    Ok(capacity.min((limit - used - carry_taken.get(&acc).copied().unwrap_or(0)).max(0)))
+}
+
+/// Approved effective days plus the carry-over portion of active reservations.
+/// A pending amendment reserves only its positive delta over the parent.
+fn carryover_used(conn: &Connection, acc: i64, credit_revision: Option<i64>) -> Res<i64> {
+    let approved: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(ra.minutes),0) FROM revision_allocations ra
+         JOIN request_days rd ON rd.id=ra.day_id
+         JOIN leave_accounts ac ON ac.id=ra.account_id
+         JOIN leave_requests lr ON lr.effective_revision_id=ra.revision_id
+         WHERE ra.account_id=?1 AND rd.period_year>ac.period_year
+         AND lr.kind='leave' AND lr.status IN ('approved','cancelled')
+         AND (?2 IS NULL OR ra.revision_id<>?2)",
+        params![acc, credit_revision],
+        |r| r.get(0),
+    )?;
+    let pending: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(MIN(r.minutes,
+         (SELECT COALESCE(SUM(ra.minutes),0) FROM revision_allocations ra
+          JOIN request_days rd ON rd.id=ra.day_id
+          WHERE ra.revision_id=r.revision_id AND ra.account_id=r.account_id AND rd.period_year>ac.period_year)
+         )),0) FROM reservations r
+         JOIN leave_accounts ac ON ac.id=r.account_id JOIN leave_requests lr ON lr.id=r.request_id
+         WHERE r.account_id=?1 AND r.active=1 AND lr.kind='leave'",[acc],|r|r.get(0))?;
+    // Moving an own-year day into a later year can reserve carry-over allowance
+    // without increasing the account total. Count that delta even when no new
+    // financial reservation is needed. Revisions of this same parent replace it.
+    let amendment_delta: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(MAX(0,
+         (SELECT COALESCE(SUM(ra.minutes),0) FROM revision_allocations ra
+          JOIN request_days rd ON rd.id=ra.day_id
+          WHERE ra.revision_id=lr.current_revision_id AND ra.account_id=?1 AND rd.period_year>ac.period_year)
+         - (SELECT COALESCE(SUM(ra.minutes),0) FROM revision_allocations ra
+          JOIN request_days rd ON rd.id=ra.day_id
+          WHERE ra.revision_id=parent.effective_revision_id AND ra.account_id=?1 AND rd.period_year>ac.period_year)
+         )),0) FROM leave_requests lr
+         JOIN leave_requests parent ON parent.id=lr.parent_request_id
+         JOIN leave_accounts ac ON ac.id=?1
+         WHERE lr.kind='amendment' AND lr.status IN ('submitted','under_review','needs_information')
+         AND (?2 IS NULL OR parent.effective_revision_id<>?2)",params![acc,credit_revision],|r|r.get(0))?;
+    Ok(approved + pending + amendment_delta)
 }
 
 fn take_from(
@@ -591,7 +669,14 @@ pub fn run_accrual(
                 None => format!("accrual:%:{emp}:{period_year}"),
             };
             let existing:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE account_id=?1 AND kind='accrual' AND (op_key=?2 OR (op_key LIKE ?3 AND length(op_key)-length(replace(op_key,':',''))=?4)))",params![acc,op_key,legacy_pattern,if month.is_some(){4}else{3}],|r|r.get(0))?;
-            if existing {
+            let annual_key = format!("accrual:{emp}:{leave_type_id}:{period_year}");
+            let legacy_annual = format!("accrual:%:{emp}:{period_year}");
+            let covered: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE account_id=?1 AND kind='accrual' AND
+                 (op_key=?2 OR (op_key LIKE ?3 AND length(op_key)-length(replace(op_key,':',''))=3)
+                 OR (?4 IS NULL AND (op_key LIKE ?5 OR (op_key LIKE ?6 AND length(op_key)-length(replace(op_key,':',''))=4)))))",
+                params![acc,annual_key,legacy_annual,month,format!("{annual_key}-%"),format!("accrual:%:{emp}:{period_year}:%")], |r|r.get(0))?;
+            if existing || covered {
                 run.skipped_existing += 1;
                 continue;
             }
@@ -667,9 +752,10 @@ pub fn close_period(
         for acc in accs {
             let free = (balance_at(tx, acc, today)? - reserved(tx, acc)?).max(0);
             let cap = if policy.carryover_allowed {
-                policy
-                    .carryover_limit_min
-                    .map_or(free, |limit| free.min(limit))
+                match policy.carryover_limit_min {
+                    Some(limit) => free.min((limit - carryover_used(tx, acc, None)?).max(0)),
+                    None => free,
+                }
             } else {
                 0
             };

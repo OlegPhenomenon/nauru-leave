@@ -536,6 +536,7 @@ fn dispatch(
             .get("sensitivity")
             .map(String::as_str)
             .unwrap_or("normal");
+        drop(_guard);
         let prepared = crate::admin::prepare_upload(
             &mut conn,
             &clock,
@@ -548,24 +549,48 @@ fn dispatch(
             config.mode == Mode::Demo,
         )?;
         let mut used = false;
-        let result = db::atomic(&mut conn, |conn| {
-            if let Some(value) = replay(conn, &actor, &segments, receipt.as_deref(), &hash)? {
-                return Ok(value);
+        let _guard = lock.lock().unwrap();
+        let result = (|| {
+            let current = state.resolve(headers)?;
+            if current.path != database.path {
+                return Err(DomainError::Unauthenticated);
             }
-            let aid = requests::record_attachment(
-                conn,
-                &clock,
-                &actor,
-                id,
-                name,
-                sensitivity,
-                &prepared,
+            let session = sessions::load(
+                &conn,
+                old.as_deref().ok_or(DomainError::Unauthenticated)?,
+                true,
             )?;
-            let value = view::attachment(conn, &actor, aid)?;
-            save_receipt(conn, &actor, &clock, receipt.as_deref(), &hash, &value)?;
-            used = true;
-            Ok(value)
-        });
+            csrf(headers, &session)?;
+            let actor = Actor::load(&conn, session.user_id, clock.today(&conn)?)?;
+            db::atomic(&mut conn, |conn| {
+                if let Some(value) = replay(conn, &actor, &segments, receipt.as_deref(), &hash)? {
+                    return Ok(value);
+                }
+                if config.mode == Mode::Demo {
+                    let (count, size): (i64, i64) = conn.query_row(
+                        "SELECT COUNT(*),COALESCE(SUM(size_bytes),0) FROM attachments",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?;
+                    if count >= 20 || size + bytes.len() as i64 > 10 * 1024 * 1024 {
+                        return Err(DomainError::validation("sandbox upload quota exceeded"));
+                    }
+                }
+                let aid = requests::record_attachment(
+                    conn,
+                    &clock,
+                    &actor,
+                    id,
+                    name,
+                    sensitivity,
+                    &prepared,
+                )?;
+                let value = view::attachment(conn, &actor, aid)?;
+                save_receipt(conn, &actor, &clock, receipt.as_deref(), &hash, &value)?;
+                used = true;
+                Ok(value)
+            })
+        })();
         if result.is_err() || !used {
             let _ = store.remove(&prepared.storage_key);
         }
@@ -584,7 +609,9 @@ fn dispatch(
         return Ok(Output::json(value));
     }
     let value = db::atomic(&mut conn, |conn| {
-        if let Some(value) = replay(conn, &actor, &segments, receipt.as_deref(), &hash)? { return Ok(value); }
+        if let Some(value) = replay(conn, &actor, &segments, receipt.as_deref(), &hash)? {
+            return Ok(value);
+        }
         let pending_before: i64 =
             conn.query_row("SELECT COALESCE(MAX(id),0) FROM notifications", [], |r| {
                 r.get(0)
@@ -669,12 +696,6 @@ fn replay(
                     actor,
                     Action::UploadAttachment,
                     &Resource::Request(&ctx.request),
-                )?;
-                authz::require(
-                    conn,
-                    actor,
-                    Action::ViewAttachment,
-                    &Resource::Attachment(&ctx),
                 )?;
                 value = view::attachment(conn, actor, ctx.id)?;
             } else {
@@ -991,7 +1012,9 @@ fn write(
         return match view::detail(conn, a, result_id) {
             Err(DomainError::Forbidden(_)) if p.get(2) == Some(&"decide") => {
                 let request = model::load_request(conn, result_id)?;
-                Ok(json!({"id":result_id,"status":request.status.as_str(),"version":request.version}))
+                Ok(
+                    json!({"id":result_id,"status":request.status.as_str(),"version":request.version}),
+                )
             }
             result => result,
         };
@@ -1066,11 +1089,11 @@ fn write(
                 admin::date(v, "to")?,
                 admin::nullable_integer(v, "org_unit_id")?,
             )?;
-            Ok(export_record(r))
+            export_record(conn, r)
         }
         ("exports", Some(id), Some("mark-transferred")) => {
             ie::mark_transferred(conn, clock, a, id, admin::optional(v, "note"))?;
-            Ok(export_record(ie::load_export(conn, id)?.0))
+            export_record(conn, ie::load_export(conn, id)?.0)
         }
         ("imports", Some(id), Some("commit")) => Ok(serde_json::to_value(ie::import_commit(
             conn, clock, a, id,
@@ -1101,8 +1124,10 @@ fn write(
         _ => admin::mutate(conn, clock, a, mode, method, p, v),
     }
 }
-fn export_record(r: ie::ExportRecord) -> Value {
-    json!({"org_unit_id":r.org_unit_id,"id":r.id,"from":r.period_from,"to":r.period_to,"row_count":r.row_count,"sha256":r.sha256,"created_at":r.created_at,"transferred_at":r.transferred_at,"transferred_by":r.transferred_by})
+fn export_record(conn: &Connection, r: ie::ExportRecord) -> Res<Value> {
+    Ok(
+        json!({"org_unit_id":r.org_unit_id,"id":r.id,"from":r.period_from,"to":r.period_to,"row_count":r.row_count,"sha256":r.sha256,"created_at":r.created_at,"transferred_at":r.transferred_at,"transferred_by":view::user(conn,r.transferred_by)?}),
+    )
 }
 fn read(
     conn: &Connection,
@@ -1140,24 +1165,24 @@ fn read(
                         .into_iter()
                         .find(|s| s.leave_type.id == lt)
                         .ok_or_else(|| DomainError::not_found("leave type"))?;
-                    json!({"entries":view::ledger_entries(conn,employee,lt,on)?,"reservations":queries::reservations_of(conn,employee,lt)?,"summary":summary})
+                    json!({"entries":view::ledger_entries(conn,employee,lt,on)?,"reservations":queries::reservations_on(conn,employee,lt,on)?,"summary":summary})
                 } else {
                     serde_json::to_value(queries::balance_summaries(conn, employee, on)?)?
                 }
             } else {
                 let mut out = Vec::new();
-                for id in view::ids(conn, "SELECT id FROM employees WHERE active=1", &[])? {
+                for id in view::ids(conn, "SELECT id FROM employees WHERE start_date<=?1 AND (end_date IS NULL OR end_date>=?1)", &[&date_s(&on)])? {
                     if view::can_balance(conn, a, id).is_err() {
                         continue;
                     }
-                    if !unit_filter(conn, id, q, a.today)? {
+                    if !unit_filter(conn, id, q, on)? {
                         continue;
                     }
                     for s in queries::balance_summaries(conn, id, on)? {
                         if qid(q, "leave_type_id")?.is_some_and(|i| i != s.leave_type.id) {
                             continue;
                         }
-                        out.push(json!({"employee":view::employee(conn,id,a.today)?,"summary":s}));
+                        out.push(json!({"employee":view::employee(conn,id,on)?,"summary":s}));
                     }
                 }
                 paginate(out, q)?
@@ -1306,8 +1331,8 @@ fn read(
                     ie::list_exports(conn)?
                         .into_iter()
                         .filter(|r| ie::authorized_export(conn, a, r.id).is_ok())
-                        .map(export_record)
-                        .collect()
+                        .map(|r| export_record(conn, r))
+                        .collect::<Res<Vec<_>>>()?
                 } else {
                     vec![]
                 };
@@ -1600,7 +1625,7 @@ fn report(
         "balances" => {
             let on = qdate(q, "date", a.today)?;
             let mut out = Vec::new();
-            for id in view::ids(conn, "SELECT id FROM employees WHERE active=1", &[])? {
+            for id in view::ids(conn, "SELECT id FROM employees WHERE start_date<=?1 AND (end_date IS NULL OR end_date>=?1)", &[&date_s(&on)])? {
                 if view::can_balance(conn, a, id).is_err() || !unit_filter(conn, id, q, on)? {
                     continue;
                 }

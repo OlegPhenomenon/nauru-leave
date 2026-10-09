@@ -497,11 +497,13 @@ export interface ScheduleWeek {
 }
 export interface ScheduleVersion {
   id: number;
+  version: number;
   valid_from: string;
   week: ScheduleWeek | number[];
 }
 export interface Schedule {
   id: number;
+  version: number;
   name: string;
   active?: boolean;
   versions?: ScheduleVersion[];
@@ -516,7 +518,7 @@ export interface CalendarException {
   // Revoked rows stay as history; new calculations ignore them.
   revoked_at?: string | null;
   revoked_by?: UserRef | null;
-  revoke_reason?: string | null;
+  reason?: string | null;
 }
 export interface ExceptionMutationResp {
   exception?: CalendarException;
