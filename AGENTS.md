@@ -1,7 +1,8 @@
 # Agent guide — Nauru Leave Desk
 
-Read first: `docs/DESIGN.md` (rules, Russian), `docs/API.md` (HTTP contract), `backend/migrations/0001_init.sql`
-(schema, authoritative), `docs/DEMO_DATA.md`, `docs/ACCEPTANCE.md`. Original spec: `docs/spec/SPEC_RU.txt`.
+Read first: `docs/DESIGN.md` (rules, Russian), `docs/API.md` (HTTP contract), `backend/migrations/` (schema,
+authoritative, applied in order), `docs/DEMO_DATA.md`, `docs/ACCEPTANCE.md`. The original spec is private and kept
+outside git in `.private/spec/` (local checkouts only).
 
 ## Layout
 - `backend/` — Rust crate `nauru-leave` (binary + lib). `cargo` commands run from `backend/`.

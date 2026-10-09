@@ -1,0 +1,28 @@
+tsc --noEmit: OK
+
+> nauru-leave-frontend@0.1.0 test
+> vitest run
+
+
+ RUN  v5.0.2 /Users/oleghasjanov/projects/nauru/frontend
+
+
+ Test Files  2 passed (2)
+      Tests  22 passed (22)
+   Start at  16:27:50
+   Duration  125ms (transform 63%, import 21%, tests 10%, worker 5%)
+
+
+> nauru-leave-frontend@0.1.0 build
+> vite build
+
+vite v8.3.1 building client environment for production...
+transforming...
+✓ 45 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.52 kB │ gzip:   0.33 kB
+dist/assets/index-CVDlYiXJ.css   11.51 kB │ gzip:   3.21 kB
+dist/assets/index-cCoTQv6L.js   419.22 kB │ gzip: 116.44 kB
+
+✓ built in 124ms

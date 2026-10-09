@@ -10,3 +10,4 @@
 /.kamal/secrets
 /.audit/
 /.worktrees/
+/.private/

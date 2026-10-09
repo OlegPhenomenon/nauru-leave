@@ -1,0 +1,35 @@
+# N36 — backup on one installation, restore into an empty directory, continue the request there
+# Production mode, release binary, 2026-10-09. Uploads in production require a ClamAV clamd; this run used a
+# minimal local clamd stand-in that speaks the real INSTREAM protocol and answers 'OK' (test harness only).
+# Passwords and TOTP secrets are redacted. Absolute binary path shortened to 'nauru-leave'.
+
+$ nauru-leave init-production --data-dir /tmp/nld-n36-prod
+[2m2026-10-09T13:33:26.983664Z[0m [32m INFO[0m [2mnauru_leave::db[0m[2m:[0m applied [3mmigration[0m[2m=[0m"0001_init"
+[2m2026-10-09T13:33:26.992774Z[0m [32m INFO[0m [2mnauru_leave::db[0m[2m:[0m applied [3mmigration[0m[2m=[0m"0002_audit_fixes"
+Production database ready: /tmp/nld-n36-prod/main.sqlite
+(exit 0)
+$ nauru-leave user create --email hr@example.test --role hr --role hr_medical  → exit 0 (TOTP secret printed once, redacted)
+$ nauru-leave user create --email final@example.test --role final_approver  → exit 0 (TOTP secret printed once, redacted)
+HR via API: org unit, schedule, leave type + test policy, employees T-100 (manager), T-101, T-102 → 200
+accrual 2026 → {"posted": 3, "skipped_existing": 0}
+$ nauru-leave user create --email mona@example.test --employee-service-id T-100  → exit 0 (TOTP secret printed once, redacted)
+$ nauru-leave user create --email kai@example.test --employee-service-id T-101  → exit 0 (TOTP secret printed once, redacted)
+$ nauru-leave user create --email lee@example.test --employee-service-id T-102  → exit 0 (TOTP secret printed once, redacted)
+Kai submits NLD-2026-00001 9–13 Nov 2026 with attachment (scan_status=clean) → status submitted
+before backup: manager recommended; Kai ledger=9600 reserved=2400 available=7200
+$ nauru-leave gen-backup-key --out /tmp/nld-n36p.key
+backup key written: /tmp/nld-n36p.key
+(exit 0)
+$ nauru-leave backup --db /tmp/nld-n36-prod/main.sqlite --files-dir /tmp/nld-n36-prod/files/main --key-file /tmp/nld-n36p.key --out /tmp/nld-n36p.enc
+backup written: /tmp/nld-n36p.enc
+(exit 0)
+$ nauru-leave restore --in /tmp/nld-n36p.enc --key-file /tmp/nld-n36p.key --data-dir /tmp/nld-n36-prod-restored
+restored into /tmp/nld-n36-prod-restored
+(exit 0)
+source   : {"ledger_entries": 3, "request_revisions": 1, "request_days": 5, "decisions": 1, "users": 5, "employees": 3, "employment_assignments": 3, "role_grants": 3, "attachments": 1, "audit_events": 27, "ledger_sum_by_account": "f923f0e857ccbcd4", "files_sha_match": true, "files": 1}
+restored : {"ledger_entries": 3, "request_revisions": 1, "request_days": 5, "decisions": 1, "users": 5, "employees": 3, "employment_assignments": 3, "role_grants": 3, "attachments": 1, "audit_events": 27, "ledger_sum_by_account": "f923f0e857ccbcd4", "files_sha_match": true, "files": 1}
+identical: True
+original data directory deleted; continuing on the restored copy only
+restored install: HR check + final approval → status approved; Kai ledger=7200 reserved=0 available=7200
+Kai downloads his attachment on the restored install → HTTP 200, bytes identical: True
+Lee (colleague) GET Kai's request → HTTP 403; GET Kai's attachment → HTTP 403

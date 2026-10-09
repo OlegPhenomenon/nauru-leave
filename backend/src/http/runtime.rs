@@ -206,8 +206,19 @@ impl AppState {
         registry.execute_batch("CREATE TABLE IF NOT EXISTS sandboxes(id TEXT PRIMARY KEY, generation INTEGER NOT NULL, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, has_pending INTEGER NOT NULL DEFAULT 1);
             CREATE TABLE IF NOT EXISTS retired(id TEXT NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(id,generation));
             CREATE TABLE IF NOT EXISTS creation_events(ip TEXT NOT NULL,at INTEGER NOT NULL);")?;
+        // Existing sandboxes are copies of an older template: bring their schema up to date. A sandbox that
+        // cannot be migrated is a disposable demo copy, so it is removed (its visitor gets a fresh one).
+        for entry in std::fs::read_dir(self.config.data_dir.join("sandboxes"))? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|e| e == "sqlite") {
+                if let Err(e) = db::open(&path).and_then(|c| db::migrate(&c)) {
+                    tracing::warn!(path = %path.display(), error = %e, "removing sandbox that failed to migrate");
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
         // Rebuild the template on every start so an upgraded binary never hands out a seed built by an older
-        // schema or seed. Build aside, then swap; existing sandboxes are independent copies and stay untouched.
+        // schema or seed. Build aside, then swap.
         let template = self.config.data_dir.join("template.sqlite");
         let template_files = self.config.data_dir.join("files/template");
         let next = self.config.data_dir.join("template.next.sqlite");

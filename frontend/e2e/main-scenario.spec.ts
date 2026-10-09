@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-// Walks scenario steps 1–5 from docs/spec/SPEC_RU.txt §3 against a running
+// Walks the main demo story (README "Demo walkthrough", steps 1–5) against a running
 // demo stack. The demo needs a fresh sandbox (balances start at 20 days), so
 // run this right after starting the backend, or press "Reset demo" first.
 

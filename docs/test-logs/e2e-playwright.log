@@ -1,0 +1,23 @@
+
+Running 18 tests using 1 worker
+
+  ✓   1 e2e/audit-fixes.spec.ts:39:1 › F02: monthly accrual posts each month once, retry is a no-op (3.6s)
+  ✓   2 e2e/audit-fixes.spec.ts:105:1 › F03: policy expiry round-trip — Never vs After 0 months (2.6s)
+  ✓   3 e2e/audit-fixes.spec.ts:149:1 › G01: carry-over limit (days) is saved and shown after reopening (2.5s)
+  ✓   4 e2e/audit-fixes.spec.ts:174:1 › F08: delegated final decision works, revocation cuts access (11.0s)
+  ✓   5 e2e/audit-fixes.spec.ts:246:1 › F09: tech_admin has no business-role grant or employee-link controls (2.3s)
+  ✓   6 e2e/audit-fixes.spec.ts:301:1 › F10: revoking an hr grant removes access mid-session (8.5s)
+  ✓   7 e2e/audit-fixes.spec.ts:364:1 › F13: revoking a holiday keeps old requests frozen, new previews recount (17.6s)
+  ✓   8 e2e/audit-fixes.spec.ts:433:1 › F12: a dropped response retried once creates exactly one adjustment (2.4s)
+  ✓   9 e2e/audit-fixes.spec.ts:488:1 › P01: EICAR content under a .pdf name is never downloadable (2.4s)
+  ✓  10 e2e/audit-round2.spec.ts:4:1 › F11 round2: edit leave type identity (2.2s)
+  ✓  11 e2e/audit-round2.spec.ts:13:1 › F11 round2: add schedule version (2.3s)
+  ✓  12 e2e/audit-round2.spec.ts:21:1 › F11 round2: change employee schedule (2.2s)
+  ✓  13 e2e/audit-round2.spec.ts:29:1 › F09 round2: unlink inactive user without reactivation (2.4s)
+  ✓  14 e2e/audit-round2.spec.ts:39:1 › F13 round2: revoked exception displays reason (2.2s)
+  ✓  15 e2e/audit-round2.spec.ts:44:1 › F05 round2: actual correction displays adjustment ids (11.2s)
+  ✓  16 e2e/audit-round2.spec.ts:51:1 › F07 round2: export scope and transfer author (2.3s)
+  ✓  17 e2e/main-scenario.spec.ts:59:1 › main scenario steps 1–5: balance, request, approval, amendment, time travel (24.3s)
+  ✓  18 e2e/new-scenario.spec.ts:7:1 › N38 + walkthrough: new employee, fictional policy, full lifecycle (54.4s)
+
+  18 passed (2.6m)

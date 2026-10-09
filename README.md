@@ -111,6 +111,7 @@ All settings are environment variables; see [.env.example](.env.example).
 | `NLD_DATA_DIR` | `./data` | databases and private files |
 | `NLD_PUBLIC_URL` | `http://127.0.0.1:8080` | browser-visible origin (used for CSRF origin checks and email links) |
 | `NLD_SMTP_URL` | — | required in production |
+| `NLD_CLAMD_ADDR`, `NLD_CLAMD_TIMEOUT_MS` | —, `10000` | ClamAV `clamd` (host:port) for scanning uploads; without it production refuses uploads. The demo uses a built-in test-only check (file signature + EICAR) |
 | `NLD_BACKUP_KEY_FILE` | — | 32-byte key for encrypted backups |
 | `NLD_MAX_SANDBOXES`, `NLD_SANDBOX_TTL_HOURS` | `300`, `24` | demo capacity |
 | `NLD_RATE_PER_SEC`, `NLD_SANDBOX_CREATIONS_PER_HOUR` | `30`, `30` | per-IP limits |
@@ -118,13 +119,15 @@ All settings are environment variables; see [.env.example](.env.example).
 
 ## Production installation
 
-Production mode needs HTTPS (session cookies are `Secure`) and SMTP. There are no default users or passwords.
+Production mode needs HTTPS (session cookies are `Secure`), SMTP and, for attachments, a ClamAV `clamd` service
+(uploads fail closed without it; scanner errors leave the file blocked). There are no default users or passwords.
 
 ```sh
 export NLD_MODE=production
 export NLD_DATA_DIR=/var/lib/nauru-leave
 export NLD_PUBLIC_URL=https://leave.example.org
 export NLD_SMTP_URL=smtps://username:password@smtp.example.org:465
+export NLD_CLAMD_ADDR=127.0.0.1:3310
 
 nauru-leave init-production --data-dir "$NLD_DATA_DIR"
 nauru-leave user create --email admin@example.org --name "Technical administrator" --role tech_admin
