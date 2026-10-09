@@ -80,20 +80,21 @@ Recorded walkthrough of the new-scenario spec: [docs/media/demo-walkthrough.webm
 
 ## Clean installation from the public repository (N37)
 
-Executed on 2026-10-09 against commit `60e6b0b` on GitHub, following the README "Run the demo locally" section:
+Executed on 2026-10-09 against commit `c932ddb` on GitHub (the code of the delivered version; later commits only
+update this file), following the README "Run the demo locally" section. The N36 log was also re-run on this code.
 
 ```text
 $ git clone https://github.com/OlegPhenomenon/nauru-leave.git /tmp/nld-clone && cd /tmp/nld-clone
 $ cp .env.example .env
 $ docker compose -p nldclean up -d --build
  Container nldclean-nauru-leave-1 Started
-$ docker compose -p nldclean ps        → nldclean-nauru-leave-1 Up 11 seconds (healthy)
+$ docker compose -p nldclean ps        → nldclean-nauru-leave-1 Up 6 seconds (healthy)
 GET /up                                → ok
 GET /api/config                        → {"app_version":"0.1.0","business_date":"2026-10-08","mode":"demo"}
 GET /                                  → <title>Nauru Leave Desk
-POST /api/demo/start                   → {"sandbox_id":"aea8ed62…"}
+POST /api/demo/start                   → {"sandbox_id":"91418379…"}
 GET /api/demo/personas                 → 9 personas
-image size                             → 119 MB;  VmRSS of the running server → 8072 kB
+VmRSS of the running server            → 8008 kB
 ```
 
 No licence server, activation key, expiry timer or call to the author's domain exists in the code (searched
