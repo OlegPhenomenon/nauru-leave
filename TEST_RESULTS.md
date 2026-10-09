@@ -70,12 +70,29 @@ Recorded walkthrough of the new-scenario spec: [docs/media/demo-walkthrough.webm
 | N34 | Second factor, session revocation, brute force, CSRF, direct status change | `http::csrf_required`, `http::production_password_totp_and_lockout`, `http::new_privileges_require_fresh_totp`, `audit_round2::f08_delegation_only_*`, `scenario::step_outcomes_validated` | PASS |
 | N35 | Demo sessions isolated; no external email; no demo login in production | `http::sandbox_isolation`, `http::production_has_no_demo_routes`, `system::email_minimal` | PASS |
 | N36 | Backup, restore on an empty installation, same data and files, continue the request | `system::backup_restore_roundtrip`, `http::server_backup_restore_file_layout`; manual run [n36-backup-restore.log](docs/test-logs/n36-backup-restore.log) | PASS |
-| N37 | Clone the public repository into a clean directory and run it from the README | see "Clean installation from the public repository" below | see below |
+| N37 | Clone the public repository into a clean directory and run it from the README | manual run below | PASS |
 | N38 | New employee and new leave type through the UI, full cycle | e2e `new-scenario.spec.ts` | PASS |
 
 ## Clean installation from the public repository (N37)
 
-Filled in after publishing this version; see the section at the end of this file.
+Executed on 2026-10-09 against commit `60e6b0b` on GitHub, following the README "Run the demo locally" section:
+
+```text
+$ git clone https://github.com/OlegPhenomenon/nauru-leave.git /tmp/nld-clone && cd /tmp/nld-clone
+$ cp .env.example .env
+$ docker compose -p nldclean up -d --build
+ Container nldclean-nauru-leave-1 Started
+$ docker compose -p nldclean ps        → nldclean-nauru-leave-1 Up 11 seconds (healthy)
+GET /up                                → ok
+GET /api/config                        → {"app_version":"0.1.0","business_date":"2026-10-08","mode":"demo"}
+GET /                                  → <title>Nauru Leave Desk
+POST /api/demo/start                   → {"sandbox_id":"aea8ed62…"}
+GET /api/demo/personas                 → 9 personas
+image size                             → 119 MB;  VmRSS of the running server → 8072 kB
+```
+
+No licence server, activation key, expiry timer or call to the author's domain exists in the code (searched
+`backend/src` and `frontend/src`); the demo domain is only a deployment setting in `config/deploy.yml`.
 
 ## Not executed
 
