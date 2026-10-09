@@ -36,6 +36,8 @@ pub enum DomainError {
     /// (all-or-nothing, DESIGN §9).
     #[error("{0}")]
     ImportInvalid(String),
+    #[error("production uploads require a configured antivirus scanner")]
+    ScannerUnavailable,
     #[error("demo is full, try later")]
     DemoFull,
     #[error("internal error: {0}")]
@@ -60,6 +62,7 @@ impl DomainError {
             Self::RateLimited => "rate_limited",
             Self::IdempotencyKeyReused => "idempotency_key_reused",
             Self::ImportInvalid(_) => "import_invalid",
+            Self::ScannerUnavailable => "scanner_unavailable",
             Self::DemoFull => "demo_full",
             Self::Internal(_) => "internal",
         }
@@ -81,7 +84,7 @@ impl DomainError {
             | Self::PastDatesNeedHrCorrection
             | Self::IdempotencyKeyReused => 422,
             Self::RateLimited => 429,
-            Self::DemoFull => 503,
+            Self::DemoFull | Self::ScannerUnavailable => 503,
             Self::Internal(_) => 500,
         }
     }

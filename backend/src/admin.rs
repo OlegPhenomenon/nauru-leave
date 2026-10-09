@@ -401,16 +401,23 @@ pub fn mutate(
                     params![id, boolean(body, "active", true)?],
                 )?;
                 if let Some(e) = body["employee_id"].as_i64() {
-                    model::load_employee(tx, e)?;
+                    authz::require_employee_link(tx, actor, id, e)?;
                     tx.execute(
                         "UPDATE employees SET user_id=?2 WHERE id=?1",
                         params![e, id],
                     )?;
                 }
-                json!({"id":id})
+                json!({"id":id,"version":1})
             }
             ("users", "PUT", Some(id), _) => {
                 model::load_user(tx, id)?;
+                if body.get("employee_id").is_some() {
+                    let old: Option<i64> = tx.query_row("SELECT id FROM employees WHERE user_id=?1", [id], |r| r.get(0)).ok();
+                    let new = body["employee_id"].as_i64();
+                    if old != new {
+                        for employee in old.into_iter().chain(new) { authz::require_employee_link(tx, actor, id, employee)?; }
+                    }
+                }
                 let active = boolean(body, "active", true)?;
                 tx.execute(
                     "UPDATE users SET email=?2,display_name=?3,active=?4 WHERE id=?1",
@@ -440,10 +447,6 @@ pub fn mutate(
             }
             ("users", "POST", Some(id), Some("roles")) => {
                 let role = text(body, "role")?;
-                if id == actor.user_id && ["final_approver", "adjustment_approver"].contains(&role)
-                {
-                    return Err(DomainError::forbidden("cannot grant this role to yourself"));
-                }
                 if ![
                     "hr",
                     "hr_medical",
@@ -456,6 +459,7 @@ pub fn mutate(
                 {
                     return Err(DomainError::validation("invalid role"));
                 }
+                authz::require_role_administration(tx, actor, id, role)?;
                 let from = optional(body, "valid_from")
                     .map(model::parse_date)
                     .transpose()?
@@ -469,6 +473,8 @@ pub fn mutate(
                 json!({"id":people::grant_role(tx,id,role,body["scope_org_unit_id"].as_i64(),from,to,Some(actor.user_id),&now)?})
             }
             ("role-grants", "DELETE", Some(id), _) => {
+                let (user, role): (i64, String) = tx.query_row("SELECT user_id,role FROM role_grants WHERE id=?1", [id], |r| Ok((r.get(0)?,r.get(1)?))).map_err(|_| DomainError::not_found("role grant"))?;
+                authz::require_role_administration(tx, actor, user, &role)?;
                 if tx.execute("DELETE FROM role_grants WHERE id=?1", [id])? == 0 {
                     return Err(DomainError::not_found("role grant"));
                 }
@@ -544,17 +550,17 @@ pub fn set_demo_clock(conn: &mut Connection, clock: &Clock, actor: &Actor, date:
     })
 }
 #[allow(clippy::too_many_arguments)]
-pub fn upload(
+pub fn prepare_upload(
     conn: &mut Connection,
     clock: &Clock,
     actor: &Actor,
     store: &crate::files::FileStore,
     id: i64,
-    name: &str,
+    _name: &str,
     bytes: &[u8],
     sensitivity: &str,
     demo: bool,
-) -> Res<i64> {
+) -> Res<crate::requests::PreparedAttachment> {
     let request = model::load_request(conn, id)?;
     let ctx = crate::requests::request_ctx(conn, &request, clock.today(conn)?)?;
     authz::require(
@@ -586,7 +592,7 @@ pub fn upload(
             ));
         }
     }
-    crate::requests::upload_attachment(conn, clock, actor, store, id, name, bytes, sensitivity)
+    crate::requests::prepare_attachment(store, bytes, sensitivity)
 }
 
 /// Authorize again at download time, including medical and scan gates.

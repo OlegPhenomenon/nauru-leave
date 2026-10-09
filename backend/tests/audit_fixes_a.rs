@@ -51,6 +51,8 @@ impl Fixture {
             trust_proxy_headers: false,
             requests_per_sec: 30,
             sandbox_creations_per_hour: 5,
+            clamd_addr: None,
+            clamd_timeout_ms: 10000,
         };
         let state = AppState::new(config).await.unwrap();
         let router = http::router(state.clone());

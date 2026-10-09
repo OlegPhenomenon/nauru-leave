@@ -17,5 +17,14 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
+  # Optional production scanner. Uncomment and set NLD_CLAMD_ADDR=clamav:3310 in .env.
+  # Keep signature databases updated; size resources for ClamAV independently of the app.
+  # clamav:
+  #   image: clamav/clamav:1.4.6-debian13-slim
+  #   volumes:
+  #     - clamav-data:/var/lib/clamav
+  #   restart: unless-stopped
+  #   # TCP 3310 stays on the internal compose network; do not publish it.
 volumes:
   nauru-data:
+  # clamav-data:

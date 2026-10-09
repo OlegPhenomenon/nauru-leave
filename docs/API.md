@@ -1,6 +1,6 @@
 # Nauru Leave Desk — HTTP API contract
 
-Authoritative contract between `backend/` and `frontend/`. Rules: `docs/DESIGN.md`. Schema: `backend/migrations/0001_init.sql`.
+Authoritative contract between `backend/` and `frontend/`. Rules: `docs/DESIGN.md`. Schema: `backend/migrations/0001_init.sql` plus ordered migrations.
 
 Conventions
 - JSON over `/api/*`. Dates `YYYY-MM-DD`; timestamps RFC3339 UTC. Durations are **integer minutes**; every
@@ -8,7 +8,11 @@ Conventions
 - Mutations (POST/PUT/DELETE) require header `X-CSRF-Token: <me.csrf_token>`; cookies are sent automatically
   (`credentials: 'same-origin'`).
 - Request actions take `expected_version` in the body → 409 `stale_version` if it changed.
-- `POST /submit`, `/decide`, `/amend`, `/cancel` accept optional header `Idempotency-Key: <uuid>`.
+- `Idempotency-Key: <uuid>` is optional on POST `/api/requests`, request `/submit`, `/decide`, `/amend`, `/cancel`,
+  `/respond`, `/actual`, `/attachments`, `/api/adjustments`, adjustment `/decide`, `/api/accruals/run`,
+  `/api/periods/close`, import `/commit`, and `/api/exports`. A repeated command returns its saved result after
+  checking current access; a changed body returns 422 `idempotency_key_reused`. Multipart fields, filename and
+  file content define the command; boundary and field order do not. Result and receipt commit together.
 - Error body: `{"error":{"code":"...","message":"...","details":{}}}` (codes in DESIGN §12).
 - Lists: `?limit=&offset=`; response `{ "items": [...], "total": n }`.
 - `allowed_actions` on resources is computed by the server; the UI shows only those buttons but the server
@@ -240,9 +244,9 @@ when viewer may not open the request.
 | GET/POST | `/api/schedules`, `/api/schedules/:id/versions` | |
 | GET/POST | `/api/calendar-exceptions` | holidays; POST response includes `affected_future_requests` |
 | POST | `/api/calendar-exceptions/:id/revoke` | `{ reason }`; retains frozen day references, excludes exception from new calculations; response includes `affected_future_requests` |
-| GET/POST/PUT | `/api/users`, `/api/users/:id` | tech_admin: `{ email, display_name, active, employee_id? }`; deactivate revokes sessions |
-| POST/DELETE | `/api/users/:id/roles`, `/api/role-grants/:id` | tech_admin; cannot grant self final_approver/adjustment_approver |
-| GET/POST | `/api/delegations` | `{ from_user_id, to_user_id, scope, valid_from, valid_to, reason }` (self or hr/tech_admin) |
+| GET/POST/PUT | `/api/users`, `/api/users/:id` | Account administration: tech_admin or HR; `{ email, display_name, active, employee_id? }`. PUT also requires `expected_version`; response includes `version`. Changing employee linkage requires HR scope on affected employees and a different actor from the target user. Deactivation revokes sessions. GET items include `allowed: {grant_roles: Role[], link_employee: boolean}`. |
+| POST/DELETE | `/api/users/:id/roles`, `/api/role-grants/:id` | Business roles: service-wide HR, different from the grantee; hr_medical additionally requires the granter to hold hr_medical. tech_admin can grant/revoke only tech_admin on another user. CLI operator may provision roles. |
+| GET/POST | `/api/delegations` | `{ from_user_id, to_user_id, scope, valid_from, valid_to, reason }` (delegator or service-wide HR) |
 | POST | `/api/delegations/:id/revoke` | |
 
 ### Operations & audit (L13)
@@ -252,6 +256,16 @@ when viewer may not open the request.
 | POST | `/api/ops/notifications/:id/retry` | tech_admin / hr |
 | GET | `/api/ops/summary` | counts: queued/failed/gave_up, quarantined files, active reservations total, sandbox info |
 | GET | `/api/audit?entity=&entity_id=&actor_user_id=&limit=` | auditor, hr (scope), tech_admin (no PII details) |
+
+A current pending-step delegate can read that request, its normal files and its item in `/api/approvals`.
+Sensitive details are masked; medical files require independent ownership or hr_medical. Step completion,
+revocation and delegation expiry remove this access. A decision that ends the actor's read access returns
+`{id,status,version}`. Entry/upload authorship is history and never provides permanent access.
+
+Production uploads require `NLD_CLAMD_ADDR`; without it they return 503 `scanner_unavailable`.
+ClamAV INSTREAM uses `NLD_CLAMD_TIMEOUT_MS` (default 10000). FOUND means `quarantined`; errors, timeout or
+closed connections produce stored `scan_failed` files with a `scan_note`. Only `clean` files are downloadable.
+Operations summary includes `scanner` and `scan_failed_files`; demo uses its built-in EICAR check.
 
 ### Printable card
 `GET /api/requests/:id/card` → `RequestDetail` subset; frontend route `/requests/:id/print` renders a print stylesheet

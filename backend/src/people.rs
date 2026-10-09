@@ -260,7 +260,7 @@ pub fn grant_role(
 // ------------------------------------------------------------------ delegations
 
 /// Create a delegation (`from` acts through `to` on [valid_from, valid_to]).
-/// The delegator themselves, hr or tech_admin may create it.
+/// The delegator themselves or service-wide HR may create it.
 #[allow(clippy::too_many_arguments)]
 pub fn create_delegation(
     conn: &mut Connection,
@@ -289,10 +289,10 @@ pub fn create_delegation(
             return Err(DomainError::validation("valid_to before valid_from"));
         }
         if actor.user_id != from_user_id
-            && !actor.any_role_in_scope(tx, &["hr", "tech_admin"], None)?
+            && !actor.role_in_scope(tx, "hr", None)?
         {
             return Err(DomainError::forbidden(
-                "only the delegator, hr or tech_admin may create a delegation",
+                "only the delegator or service-wide HR may create a delegation",
             ));
         }
         let id: i64 = tx.query_row(
@@ -341,7 +341,7 @@ pub fn revoke_delegation(
             )
             .optional()?
             .ok_or_else(|| DomainError::not_found(format!("delegation {delegation_id}")))?;
-        if actor.user_id != from && !actor.any_role_in_scope(tx, &["hr", "tech_admin"], None)? {
+        if actor.user_id != from && !actor.role_in_scope(tx, "hr", None)? {
             return Err(DomainError::forbidden("cannot revoke this delegation"));
         }
         tx.execute(

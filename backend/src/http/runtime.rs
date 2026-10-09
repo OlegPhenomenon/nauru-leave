@@ -21,6 +21,8 @@ pub struct Config {
     pub max_db_tasks: usize,
     pub sandbox_ttl_hours: i64,
     pub smtp_url: Option<String>,
+    pub clamd_addr: Option<String>,
+    pub clamd_timeout_ms: usize,
     pub backup_key_file: Option<PathBuf>,
     pub trust_proxy_headers: bool,
     /// Sustained requests per second per client IP (burst = 5×). Visitors from one government office often share
@@ -56,6 +58,8 @@ impl Config {
             max_sandboxes: number("NLD_MAX_SANDBOXES", "300")?,
             max_db_tasks: number("NLD_MAX_DB_TASKS", "16")?,
             sandbox_ttl_hours: number("NLD_SANDBOX_TTL_HOURS", "24")? as i64,
+            clamd_addr: std::env::var("NLD_CLAMD_ADDR").ok().filter(|s| !s.is_empty()),
+            clamd_timeout_ms: number("NLD_CLAMD_TIMEOUT_MS", "10000")?,
             smtp_url: std::env::var("NLD_SMTP_URL").ok().filter(|s| !s.is_empty()),
             backup_key_file: std::env::var_os("NLD_BACKUP_KEY_FILE")
                 .filter(|s| !s.is_empty())
@@ -64,7 +68,8 @@ impl Config {
             requests_per_sec: number("NLD_RATE_PER_SEC", "30")?,
             sandbox_creations_per_hour: number("NLD_SANDBOX_CREATIONS_PER_HOUR", "30")?,
         };
-        if config.max_db_tasks == 0
+        if config.clamd_timeout_ms == 0
+            || config.max_db_tasks == 0
             || config.max_sandboxes == 0
             || config.sandbox_ttl_hours <= 0
             || config.requests_per_sec == 0
