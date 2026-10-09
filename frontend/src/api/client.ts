@@ -99,8 +99,8 @@ export const post = <T>(path: string, body?: unknown, idempotencyKey?: string) =
 export const put = <T>(path: string, body: unknown) => api<T>(path, { method: 'PUT', body });
 export const del = <T>(path: string, query?: Query) =>
   api<T>(path, { method: 'DELETE', query });
-export const postForm = <T>(path: string, formData: FormData) =>
-  api<T>(path, { method: 'POST', formData });
+export const postForm = <T>(path: string, formData: FormData, idempotencyKey?: string) =>
+  api<T>(path, { method: 'POST', formData, idempotencyKey });
 
 // API.md documents {items,total} envelopes for paginated lists, but several
 // list endpoints do not specify the envelope. Accept both.

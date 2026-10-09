@@ -158,6 +158,9 @@ export default function RequestNew() {
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitKey, setSubmitKey] = useState<string | null>(null);
+  // Key for POST /requests: stable for the life of this form so a retry after
+  // a dropped connection replays the same create instead of making a second draft.
+  const createKey = useRef(newIdempotencyKey());
   const [formErr, setFormErr] = useState<ApiError | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const debounce = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -220,7 +223,7 @@ export default function RequestNew() {
       setDraft(d);
       return d;
     }
-    const d = await post<RequestDetail>('/requests', input);
+    const d = await post<RequestDetail>('/requests', input, createKey.current);
     setDraft(d);
     return d;
   }

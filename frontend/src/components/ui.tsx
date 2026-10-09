@@ -52,10 +52,22 @@ export function Loading({ label = 'Loading…' }: { label?: string }) {
 
 export function ErrBox({ error }: { error: ApiError | Error | null }) {
   if (!error) return null;
+  // A dropped connection means we cannot know whether the server applied the
+  // action — say so instead of claiming failure (safe retries use the same
+  // Idempotency-Key).
+  const unconfirmed = error instanceof ApiError && error.status === 0;
+  const scannerDown = error instanceof ApiError && error.code === 'scanner_unavailable';
+  const stale = error instanceof ApiError && error.code === 'stale_version';
   const code = error instanceof ApiError ? ` (${error.code})` : '';
   return (
     <div className="alert alert-error" role="alert">
-      {error.message}
+      {unconfirmed
+        ? 'We could not confirm the action — the connection dropped. Check whether it took effect before retrying.'
+        : scannerDown
+          ? 'File scanning is unavailable, so uploads are refused for safety. Try again later or contact the operator.'
+          : stale
+            ? 'Someone else changed this — reload the form and try again.'
+            : error.message}
       {code}
     </div>
   );

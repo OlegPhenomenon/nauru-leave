@@ -243,6 +243,7 @@ export default function PersonDetail() {
                     email: edit.email,
                     end_date: edit.end_date || null,
                     active: edit.active,
+                    expected_version: e.version,
                   }).then(() => undefined),
                 )
               }
@@ -269,7 +270,10 @@ export default function PersonDetail() {
               disabled={busy}
               onClick={() =>
                 void run(() =>
-                  put(`/employees/${e.id}`, { active: false }).then(() => undefined),
+                  put(`/employees/${e.id}`, {
+                    active: false,
+                    expected_version: e.version,
+                  }).then(() => undefined),
                 )
               }
             >

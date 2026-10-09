@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { api, ApiError, post, unwrapList } from '../api/client';
+import { useRef, useState } from 'react';
+import { api, ApiError, newIdempotencyKey, post, unwrapList } from '../api/client';
 import type {
   Adjustment,
   BalanceRow,
@@ -9,6 +9,7 @@ import type {
 } from '../api/types';
 import { Dur, Empty, ErrBox, Field, Loading, Modal } from '../components/ui';
 import { fmtDate, fmtDateTime } from '../lib/format';
+import { accrualPolicyForYear, IntentKeys } from '../lib/domain';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 
@@ -62,9 +63,21 @@ export default function Balances() {
     reason: '',
     basis_document: '',
   });
-  const [accrual, setAccrual] = useState({ leave_type_id: 0, period_year: new Date().getFullYear() + 1 });
+  const [accrual, setAccrual] = useState({ leave_type_id: 0, period_year: new Date().getFullYear() + 1, month: 1 });
+  // One Idempotency-Key per form-open (reused on retry after a network error);
+  // decide buttons get a stable key per adjustment so a lost response cannot
+  // be decided twice.
+  const [formKey, setFormKey] = useState(() => newIdempotencyKey());
+  const decideKeys = useRef(new IntentKeys());
 
-  async function run(fn: () => Promise<void>, ok?: string) {
+  function openModal(m: 'adjust' | 'accrual' | 'close') {
+    setFormKey(newIdempotencyKey());
+    setErr(null);
+    setMsg(null);
+    setModal(m);
+  }
+
+  async function run(fn: () => Promise<void>, ok?: string, intent?: string) {
     setBusy(true);
     setErr(null);
     setMsg(null);
@@ -76,6 +89,12 @@ export default function Balances() {
       adjQ.reload();
     } catch (e) {
       setErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
+      // A definitive server error ends the intent — a corrected retry needs a
+      // fresh key. Only an unconfirmed network result (status 0) keeps it.
+      if (!(e instanceof ApiError) || e.status !== 0) {
+        setFormKey(newIdempotencyKey());
+        if (intent !== undefined) decideKeys.current.reset(intent);
+      }
     } finally {
       setBusy(false);
     }
@@ -113,13 +132,13 @@ export default function Balances() {
           </Field>
           {canEdit ? (
             <div className="btn-row" style={{ marginTop: 0 }}>
-              <button className="btn btn-secondary" onClick={() => setModal('adjust')}>
+              <button className="btn btn-secondary" onClick={() => openModal('adjust')}>
                 Propose adjustment
               </button>
-              <button className="btn btn-secondary" onClick={() => setModal('accrual')}>
+              <button className="btn btn-secondary" onClick={() => openModal('accrual')}>
                 Run accrual
               </button>
-              <button className="btn btn-secondary" onClick={() => setModal('close')}>
+              <button className="btn btn-secondary" onClick={() => openModal('close')}>
                 Close period
               </button>
             </div>
@@ -237,11 +256,13 @@ export default function Balances() {
                             onClick={() =>
                               void run(
                                 () =>
-                                  post(`/adjustments/${a.id}/decide`, {
-                                    decision: 'apply',
-                                    note: '',
-                                  }).then(() => undefined),
+                                  post(
+                                    `/adjustments/${a.id}/decide`,
+                                    { decision: 'apply', note: '' },
+                                    decideKeys.current.forIntent(`apply:${a.id}`),
+                                  ).then(() => decideKeys.current.reset(`apply:${a.id}`)),
                                 'Adjustment applied.',
+                                `apply:${a.id}`,
                               )
                             }
                           >
@@ -253,11 +274,13 @@ export default function Balances() {
                             onClick={() =>
                               void run(
                                 () =>
-                                  post(`/adjustments/${a.id}/decide`, {
-                                    decision: 'reject',
-                                    note: '',
-                                  }).then(() => undefined),
+                                  post(
+                                    `/adjustments/${a.id}/decide`,
+                                    { decision: 'reject', note: '' },
+                                    decideKeys.current.forIntent(`reject:${a.id}`),
+                                  ).then(() => decideKeys.current.reset(`reject:${a.id}`)),
                                 'Adjustment rejected.',
+                                `reject:${a.id}`,
                               )
                             }
                           >
@@ -324,7 +347,12 @@ export default function Balances() {
             <button
               className="btn"
               disabled={busy || !adj.employee_id || !adj.leave_type_id || !adj.minutes || !adj.reason}
-              onClick={() => void run(() => post('/adjustments', adj).then(() => undefined), 'Adjustment proposed.')}
+              onClick={() =>
+                void run(
+                  () => post('/adjustments', adj, formKey).then(() => undefined),
+                  'Adjustment proposed.',
+                )
+              }
             >
               {busy ? 'Saving…' : 'Propose'}
             </button>
@@ -336,10 +364,17 @@ export default function Balances() {
       ) : null}
 
       {modal === 'accrual' || modal === 'close' ? (
+        (() => {
+          const selType = typesQ.data?.find((t) => t.id === accrual.leave_type_id) ?? null;
+          const accrualPolicy = selType ? accrualPolicyForYear(selType, accrual.period_year) : null;
+          const needsMonth = modal === 'accrual' && accrualPolicy?.accrual_mode === 'monthly';
+          return (
         <Modal title={modal === 'accrual' ? 'Run accrual' : 'Close period'} onClose={() => setModal(null)}>
           <p className="muted small">
             {modal === 'accrual'
-              ? 'Posts the yearly accrual for everyone entitled under the policy. Running it twice does not duplicate entries.'
+              ? needsMonth
+                ? 'Posts the monthly accrual for everyone entitled under the policy in force for that period. Running the same month twice does not duplicate entries.'
+                : 'Posts the yearly accrual for everyone entitled under the policy. Running it twice does not duplicate entries.'
               : 'Closes the period and posts carry-over expiry entries per policy. Idempotent.'}
           </p>
           {err ? <ErrBox error={err} /> : null}
@@ -356,6 +391,24 @@ export default function Balances() {
           <Field label="Period year">
             <input type="number" value={accrual.period_year} onChange={(e) => setAccrual({ ...accrual, period_year: Number(e.target.value) })} />
           </Field>
+          {needsMonth ? (
+            <Field label="Month" hint="The policy in force for this year accrues monthly — pick which month to post.">
+              <select value={accrual.month} onChange={(e) => setAccrual({ ...accrual, month: Number(e.target.value) })}>
+                {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(
+                  (name, i) => (
+                    <option key={i + 1} value={i + 1}>
+                      {name}
+                    </option>
+                  ),
+                )}
+              </select>
+            </Field>
+          ) : null}
+          {modal === 'accrual' && selType && accrualPolicy && !needsMonth ? (
+            <p className="muted small">
+              Policy in force for {accrual.period_year}: {accrualPolicy.accrual_mode} — no month needed.
+            </p>
+          ) : null}
           <div className="btn-row">
             <button
               className="btn"
@@ -363,7 +416,16 @@ export default function Balances() {
               onClick={() =>
                 void run(async () => {
                   const path = modal === 'accrual' ? '/accruals/run' : '/periods/close';
-                  const r = await post<{ posted?: number; skipped_existing?: number }>(path, accrual);
+                  const body =
+                    modal === 'accrual'
+                      ? {
+                          leave_type_id: accrual.leave_type_id,
+                          period_year: accrual.period_year,
+                          // `month` is required for monthly policies and rejected otherwise.
+                          ...(needsMonth ? { month: accrual.month } : {}),
+                        }
+                      : { leave_type_id: accrual.leave_type_id, period_year: accrual.period_year };
+                  const r = await post<{ posted?: number; skipped_existing?: number }>(path, body, formKey);
                   setMsg(
                     modal === 'accrual'
                       ? `Accrual done — posted ${r.posted ?? '?'}, skipped existing ${r.skipped_existing ?? 0}.`
@@ -379,6 +441,8 @@ export default function Balances() {
             </button>
           </div>
         </Modal>
+          );
+        })()
       ) : null}
     </>
   );
