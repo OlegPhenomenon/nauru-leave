@@ -262,6 +262,12 @@ export interface RequestDetail extends RequestSummary {
   paper_received_date: string | null;
   current_revision: Revision;
   effective_revision: Revision | null;
+  // Revision actually in force for an approved/cancelled leave request
+  // (may belong to an approved amendment); null otherwise.
+  in_force_revision: Revision | null;
+  // For amendment/cancellation requests: the parent's in-force revision,
+  // shown next to this request's own "proposed" revision.
+  parent_in_force_revision: Revision | null;
   revisions: Revision[];
   steps: Step[];
   decisions: Decision[];
@@ -378,6 +384,7 @@ export interface OrgUnit {
   name: string;
   parent_id: number | null;
   active: boolean;
+  version?: number;
 }
 
 export interface EmployeeListItem extends EmployeeRef {
@@ -391,6 +398,7 @@ export interface EmployeeListItem extends EmployeeRef {
 }
 
 export interface EmployeeDetail extends EmployeeListItem {
+  version: number;
   assignments: {
     id: number;
     org_unit: { id: number; name: string } | null;
@@ -442,8 +450,19 @@ export interface PolicyVersion {
   accrual_mode: string;
   advance_publish_months: number;
   carryover_allowed: boolean;
+  // null = carry-over never expires; 0 = expires at the start of the next year.
   carryover_expiry_months: number | null;
+  // null = no limit on the carry-over balance kept when a period closes.
+  carryover_limit_min: number | null;
   allow_negative: boolean;
+  // Versioned conditions (moved off the leave type; effective from valid_from).
+  paid: boolean;
+  uses_balance: boolean;
+  allow_half_day: boolean;
+  requires_attachment: boolean;
+  min_notice_days: number;
+  // false for versions whose valid_from is still in the future.
+  in_force: boolean;
   explanation: string;
   status: string; // 'demo_fictional' | 'verified' | ...
   verified_by?: UserRef | null;
@@ -455,13 +474,16 @@ export interface LeaveType {
   code: string;
   name: string;
   sensitive: boolean;
+  // Condition flags computed from the policy in force on the business date.
   paid: boolean;
   uses_balance: boolean;
   allow_half_day: boolean;
   requires_attachment: boolean;
   min_notice_days: number;
   active: boolean;
-  policy: PolicyVersion | null;
+  version: number;
+  policy: PolicyVersion | null;   // the version in force, if any
+  policies: PolicyVersion[];      // all versions; future ones have in_force=false
 }
 
 export interface ScheduleWeek {
@@ -491,10 +513,14 @@ export interface CalendarException {
   minutes: number;
   name: string;
   schedule_id: number | null;
+  // Revoked rows stay as history; new calculations ignore them.
+  revoked_at?: string | null;
+  revoked_by?: UserRef | null;
+  revoke_reason?: string | null;
 }
 export interface ExceptionMutationResp {
   exception?: CalendarException;
-  deleted?: boolean;
+  revoked?: boolean;
   affected_future_requests?: { id: number; number: string }[];
 }
 
@@ -513,6 +539,9 @@ export interface UserListItem {
   active: boolean;
   employee: EmployeeRef | null;
   roles: RoleGrant[];
+  version: number;
+  // What the current user may do TO this user (server-computed).
+  allowed: { grant_roles: Role[]; link_employee: boolean };
 }
 
 export interface Delegation {
@@ -532,6 +561,8 @@ export interface ExportBatch {
   id: number;
   from: string;
   to: string;
+  // null = whole service; otherwise the export only covers this unit.
+  org_unit?: { id: number; name: string } | null;
   row_count: number;
   sha256: string;
   created_at: string;

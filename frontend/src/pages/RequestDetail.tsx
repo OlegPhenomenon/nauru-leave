@@ -34,6 +34,7 @@ import {
   partLabel,
   stepLabel,
 } from '../lib/format';
+import { inForceRevision, workedMinutesByAccount } from '../lib/domain';
 import { useApi } from '../lib/useApi';
 
 const REASON_REQUIRED: Outcome[] = [
@@ -213,9 +214,10 @@ export default function RequestDetail() {
   const [stepId, setStepId] = useState(0);
   const [assigneeId, setAssigneeId] = useState(0);
   const [actualAction, setActualAction] = useState<'confirm' | 'propose_adjustment'>('confirm');
-  const [minutesDelta, setMinutesDelta] = useState('');
+  const [workedDates, setWorkedDates] = useState<string[]>([]);
   const [file, setFile] = useState<File | null>(null);
   const [sensitivity, setSensitivity] = useState<'normal' | 'medical'>('normal');
+  const [notice, setNotice] = useState<string | null>(null);
 
   const d = q.data;
 
@@ -230,7 +232,9 @@ export default function RequestDetail() {
 
   useEffect(() => {
     if (d && (action === 'amend' || action === 'revise' || action === 'respond' || action === 'edit')) {
-      const r = d.current_revision;
+      // Amend/cancel start from what is actually in force; draft edits start
+      // from this request's own latest revision.
+      const r = action === 'amend' ? inForceRevision(d) : d.current_revision;
       setFields({
         leave_type_id: r.leave_type?.id ?? 0,
         start_date: r.start_date,
@@ -241,8 +245,9 @@ export default function RequestDetail() {
       });
     }
     if (d && action === 'cancel') {
-      setCancelFrom(d.current_revision.start_date);
-      setCancelTo(d.current_revision.end_date);
+      const r = inForceRevision(d);
+      setCancelFrom(r.start_date);
+      setCancelTo(r.end_date);
     }
     if (d && action === 'decide' && d.decidable_step) {
       setOutcome(d.decidable_step.outcomes[0] ?? '');
@@ -268,7 +273,7 @@ export default function RequestDetail() {
     setBody('');
     setWithChanges(false);
     setChangeReason('');
-    setMinutesDelta('');
+    setWorkedDates([]);
     setFile(null);
     setSensitivity('normal');
     setAction(a);
@@ -289,6 +294,10 @@ export default function RequestDetail() {
       setAction(null);
     } catch (e) {
       handleErr(e);
+      // A definitive server error ends this intent: a corrected retry must
+      // not reuse the key (same key + different body → idempotency_key_reused).
+      // Only a dropped connection (status 0) keeps the key for a safe retry.
+      if (!(e instanceof ApiError) || e.status !== 0) setOpKey(newIdempotencyKey());
     } finally {
       setBusy(false);
     }
@@ -327,7 +336,11 @@ export default function RequestDetail() {
   if (!d) return null;
   const mpd = d.minutes_per_day;
   const can = (a: AllowedAction) => d.allowed_actions.includes(a);
-  const rev = d.current_revision;
+  // The card always shows what is actually in force; a superseded original
+  // revision is only ever rendered as history below.
+  const rev = inForceRevision(d);
+  const amended = d.in_force_revision !== null && d.in_force_revision.id !== d.current_revision.id;
+  const proposed = d.kind !== 'leave';
 
   async function postComment() {
     if (!comment.trim()) return;
@@ -343,6 +356,7 @@ export default function RequestDetail() {
 
   return (
     <>
+      {notice ? <div className="alert alert-info">{notice}</div> : null}
       {stale ? (
         <div className="alert alert-error stale-banner">
           This request changed while you were viewing it.{' '}
@@ -383,15 +397,43 @@ export default function RequestDetail() {
             <dd>{d.leave_type_name}</dd>
           </div>
           <div className="kv-row">
-            <dt>Dates</dt>
+            <dt>{proposed ? 'Proposed dates' : 'Dates'}</dt>
             <dd>
-              {fmtDate(rev.start_date)} – {fmtDate(rev.end_date)} (
-              <Dur minutes={d.total_minutes} mpd={mpd} />)
-              {rev.start_part !== 'full' || rev.end_part !== 'full'
-                ? ` · ${partLabel(rev.start_part)} / ${partLabel(rev.end_part)}`
-                : ''}
+              {rev.total_minutes === 0 && d.status === 'cancelled' ? (
+                <>— fully cancelled ({d.revisions.length ? 'see history below' : 'no days in force'})</>
+              ) : (
+                <>
+                  {fmtDate(rev.start_date)} – {fmtDate(rev.end_date)} (
+                  <Dur minutes={rev.total_minutes} mpd={mpd} />)
+                  {rev.start_part !== 'full' || rev.end_part !== 'full'
+                    ? ` · ${partLabel(rev.start_part)} / ${partLabel(rev.end_part)}`
+                    : ''}
+                  {d.in_force_revision ? (
+                    <span className="badge badge-ok" style={{ marginLeft: '0.4rem' }}>In force</span>
+                  ) : null}
+                  {proposed ? (
+                    <span className="badge" style={{ marginLeft: '0.4rem' }}>proposed</span>
+                  ) : null}
+                </>
+              )}
             </dd>
           </div>
+          {proposed && d.parent_in_force_revision ? (
+            <div className="kv-row">
+              <dt>Now in force</dt>
+              <dd>
+                {fmtDate(d.parent_in_force_revision.start_date)} –{' '}
+                {fmtDate(d.parent_in_force_revision.end_date)} (
+                <Dur minutes={d.parent_in_force_revision.total_minutes} mpd={mpd} />)
+                {d.parent ? (
+                  <>
+                    {' '}
+                    — on <ReqLink id={d.parent.id} number={d.parent.number} />
+                  </>
+                ) : null}
+              </dd>
+            </div>
+          ) : null}
           <div className="kv-row">
             <dt>Entered by</dt>
             <dd>
@@ -399,12 +441,15 @@ export default function RequestDetail() {
               {d.paper_received_date ? ` · paper received ${fmtDate(d.paper_received_date)}` : ''}
             </dd>
           </div>
-          {d.effective_revision && d.effective_revision.id !== d.current_revision.id ? (
+          {amended ? (
             <div className="kv-row">
-              <dt>Effective version</dt>
+              <dt>In force</dt>
               <dd>
-                revision {d.effective_revision.rev_no} is in force; revision{' '}
-                {d.current_revision.rev_no} shown
+                revision {d.in_force_revision!.rev_no} is in force
+                {d.children.find((c) => c.status === 'approved')
+                  ? ` — set by an approved ${d.children.find((c) => c.status === 'approved')!.kind}`
+                  : ''}
+                ; the original revision {d.current_revision.rev_no} is kept as history below
               </dd>
             </div>
           ) : null}
@@ -489,8 +534,18 @@ export default function RequestDetail() {
       </div>
 
       <div className="panel">
-        <h2 style={{ marginTop: 0 }}>Days in revision {rev.rev_no}</h2>
-        <DaysTable days={rev.days} />
+        <h2 style={{ marginTop: 0 }}>
+          {proposed
+            ? 'Proposed days'
+            : amended
+              ? `Days in force (revision ${rev.rev_no})`
+              : `Days in revision ${rev.rev_no}`}
+        </h2>
+        {rev.days.length === 0 ? (
+          <Empty>No days in force — the leave was fully cancelled.</Empty>
+        ) : (
+          <DaysTable days={rev.days} />
+        )}
         {rev.change_reason ? (
           <p className="muted small">Change reason: {rev.change_reason}</p>
         ) : null}
@@ -629,12 +684,17 @@ export default function RequestDetail() {
                       {att.sensitivity === 'medical' ? (
                         <span className="badge badge-med">medical</span>
                       ) : null}
-                      {att.scan_status === 'quarantined' ? (
-                        <span className="badge badge-med">quarantined — cannot be downloaded</span>
-                      ) : att.scan_status === 'pending' ? (
-                        <span className="badge">scan pending</span>
+                      {att.scan_status === 'clean' ? (
+                        <span className="badge badge-ok">Clean</span>
+                      ) : att.scan_status === 'quarantined' ? (
+                        <span className="badge badge-med">Quarantined — not downloadable</span>
                       ) : att.scan_status === 'scan_failed' ? (
-                        <span className="badge badge-med">scan failed</span>
+                        <span className="badge badge-med">Scan failed — not downloadable</span>
+                      ) : (
+                        <span className="badge">Scan pending</span>
+                      )}
+                      {att.scan_note ? (
+                        <span className="muted small"> {att.scan_note}</span>
                       ) : null}
                     </>
                   );
@@ -734,54 +794,71 @@ export default function RequestDetail() {
               ))}
             </p>
           ) : null}
-          {d.revisions.length > 1 ? (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Rev</th>
-                    <th>Type</th>
-                    <th>Dates</th>
-                    <th className="num">Length</th>
-                    <th>Changed by</th>
-                    <th>Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.revisions.map((r, i) => {
-                    const prev = i > 0 ? d.revisions[i - 1] : null;
-                    const changed =
-                      prev &&
-                      (prev.start_date !== r.start_date ||
-                        prev.end_date !== r.end_date ||
-                        prev.leave_type?.id !== r.leave_type?.id);
-                    return (
-                      <tr key={r.id} style={r.id === rev.id ? { fontWeight: 600 } : undefined}>
-                        <td>
-                          {r.rev_no}
-                          {r.id === rev.id ? ' (current)' : ''}
-                          {d.effective_revision?.id === r.id ? ' · effective' : ''}
-                        </td>
-                        <td>{r.leave_type?.name ?? 'Restricted'}</td>
-                        <td>
-                          {fmtDate(r.start_date)} – {fmtDate(r.end_date)}
-                          {changed ? <span className="badge" style={{ marginLeft: '0.3rem' }}>changed</span> : null}
-                        </td>
-                        <td className="num">
-                          <Dur minutes={r.total_minutes} mpd={mpd} />
-                        </td>
-                        <td className="small">
-                          {r.created_by.display_name}
-                          <div className="muted">{fmtDateTime(r.created_at)}</div>
-                        </td>
-                        <td className="small">{r.change_reason ?? '—'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
+          {(() => {
+            // The in-force revision may live on an approved amendment request —
+            // show it in the timeline even when it is not in revisions[].
+            const rows = [...d.revisions];
+            if (d.in_force_revision && !rows.some((r) => r.id === d.in_force_revision!.id)) {
+              rows.push(d.in_force_revision);
+            }
+            rows.sort((a, b) => (a.submitted_at ?? a.created_at).localeCompare(b.submitted_at ?? b.created_at));
+            if (rows.length <= 1) return null;
+            return (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Rev</th>
+                      <th>Type</th>
+                      <th>Dates</th>
+                      <th className="num">Length</th>
+                      <th>Changed by</th>
+                      <th>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => {
+                      const prev = i > 0 ? rows[i - 1] : null;
+                      const changed =
+                        prev &&
+                        (prev.start_date !== r.start_date ||
+                          prev.end_date !== r.end_date ||
+                          prev.leave_type?.id !== r.leave_type?.id);
+                      const inForce = d.in_force_revision?.id === r.id;
+                      const superseded = d.in_force_revision !== null && !inForce;
+                      return (
+                        <tr key={r.id} style={inForce ? { fontWeight: 600 } : undefined}>
+                          <td>
+                            {r.rev_no}
+                            {inForce ? <span className="badge badge-ok">in force</span> : null}
+                            {superseded ? <span className="badge">superseded</span> : null}
+                            {!d.in_force_revision && r.id === d.current_revision.id
+                              ? ' (current)'
+                              : ''}
+                          </td>
+                          <td>{r.leave_type?.name ?? 'Restricted'}</td>
+                          <td>
+                            {fmtDate(r.start_date)} – {fmtDate(r.end_date)}
+                            {changed ? (
+                              <span className="badge" style={{ marginLeft: '0.3rem' }}>changed</span>
+                            ) : null}
+                          </td>
+                          <td className="num">
+                            <Dur minutes={r.total_minutes} mpd={mpd} />
+                          </td>
+                          <td className="small">
+                            {r.created_by.display_name}
+                            <div className="muted">{fmtDateTime(r.created_at)}</div>
+                          </td>
+                          <td className="small">{r.change_reason ?? '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
         </div>
       ) : null}
 
@@ -1018,22 +1095,26 @@ export default function RequestDetail() {
               }
               onClick={() =>
                 void run(() =>
-                  post<RD>(`/requests/${d.id}/respond`, {
-                    expected_version: d.version,
-                    body: body || '(dates changed)',
-                    changes:
-                      withChanges || action === 'revise'
-                        ? {
-                            leave_type_id: fields.leave_type_id,
-                            start_date: fields.start_date,
-                            end_date: fields.end_date,
-                            start_part: fields.start_part,
-                            end_part: fields.end_part,
-                            note: fields.note,
-                            change_reason: changeReason,
-                          }
-                        : undefined,
-                  }),
+                  post<RD>(
+                    `/requests/${d.id}/respond`,
+                    {
+                      expected_version: d.version,
+                      body: body || '(dates changed)',
+                      changes:
+                        withChanges || action === 'revise'
+                          ? {
+                              leave_type_id: fields.leave_type_id,
+                              start_date: fields.start_date,
+                              end_date: fields.end_date,
+                              start_part: fields.start_part,
+                              end_part: fields.end_part,
+                              note: fields.note,
+                              change_reason: changeReason,
+                            }
+                          : undefined,
+                    },
+                    opKey,
+                  ),
                 )
               }
             >
@@ -1194,7 +1275,7 @@ export default function RequestDetail() {
       ) : null}
 
       {action === 'actual' ? (
-        <Modal title="Actual period" onClose={() => setAction(null)}>
+        <Modal title="Actual period" onClose={() => setAction(null)} wide>
           <Field label="Action">
             <select
               value={actualAction}
@@ -1202,21 +1283,52 @@ export default function RequestDetail() {
             >
               {can('confirm_actual') ? <option value="confirm">Confirm the period happened</option> : null}
               {can('propose_actual_adjustment') ? (
-                <option value="propose_adjustment">Propose an adjustment (needs a second approver)</option>
+                <option value="propose_adjustment">Propose a correction (needs a second approver)</option>
               ) : null}
             </select>
           </Field>
           {actualAction === 'propose_adjustment' ? (
-            <Field label="Minutes delta (+ return days / − deduct more)">
-              <input
-                type="number"
-                step="60"
-                value={minutesDelta}
-                onChange={(e) => setMinutesDelta(e.target.value)}
-              />
-            </Field>
+            <>
+              <p className="muted small">
+                Tick the days the employee actually worked. Their minutes are returned to the
+                accounts that originally paid for them — a proposed adjustment is created per
+                account and needs a second approver.
+              </p>
+              <Field label="Days actually worked">
+                <div>
+                  {rev.days
+                    .filter((day) => day.minutes > 0)
+                    .map((day) => (
+                      <label key={day.date} style={{ display: 'block', margin: '0.25rem 0' }}>
+                        <input
+                          type="checkbox"
+                          checked={workedDates.includes(day.date)}
+                          onChange={(e) =>
+                            setWorkedDates(
+                              e.target.checked
+                                ? [...workedDates, day.date]
+                                : workedDates.filter((x) => x !== day.date),
+                            )
+                          }
+                        />{' '}
+                        {fmtWeekday(day.date)} {fmtDate(day.date)} — {fmtHours(day.minutes)}
+                        {day.part !== 'full' ? ` (${partLabel(day.part)})` : ''}
+                      </label>
+                    ))}
+                </div>
+              </Field>
+              {workedDates.length ? (
+                <p className="small">
+                  Returns per account:{' '}
+                  {workedMinutesByAccount(rev.days, workedDates)
+                    .map((a) => `${a.period_year} — ${fmtHours(a.minutes)}`)
+                    .join('; ')}
+                  .
+                </p>
+              ) : null}
+            </>
           ) : null}
-          <Field label="Note">
+          <Field label={actualAction === 'propose_adjustment' ? 'Note (required)' : 'Note'}>
             <textarea value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
           <Field label="Basis document">
@@ -1226,17 +1338,31 @@ export default function RequestDetail() {
           <div className="btn-row">
             <button
               className="btn"
-              disabled={busy}
+              disabled={busy || (actualAction === 'propose_adjustment' && !workedDates.length)}
               onClick={() =>
-                void run(() =>
-                  post<RD>(`/requests/${d.id}/actual`, {
-                    expected_version: d.version,
-                    action: actualAction,
-                    note: reason,
-                    minutes_delta: minutesDelta ? Number(minutesDelta) : undefined,
-                    basis_document: basisDoc || undefined,
-                  }),
-                )
+                void run(async () => {
+                  const r = await post<RD & { created_adjustment_ids?: number[]; adjustments?: number[] }>(
+                    `/requests/${d.id}/actual`,
+                    {
+                      expected_version: d.version,
+                      action: actualAction,
+                      note: reason,
+                      worked_dates:
+                        actualAction === 'propose_adjustment' ? workedDates : undefined,
+                      basis_document: basisDoc || undefined,
+                    },
+                    opKey,
+                  );
+                  const ids = r.created_adjustment_ids ?? r.adjustments;
+                  setNotice(
+                    actualAction === 'propose_adjustment'
+                      ? `Proposed ${ids?.length ? `${ids.length} ` : ''}correction${ids && ids.length > 1 ? 's' : ''}${
+                          ids?.length ? ` (${ids.map((x) => `#${x}`).join(', ')})` : ''
+                        } — a second approver must apply it.`
+                      : 'Actual period confirmed.',
+                  );
+                  return r;
+                })
               }
             >
               {busy ? 'Saving…' : 'Save'}
@@ -1272,7 +1398,7 @@ export default function RequestDetail() {
                   const fd = new FormData();
                   fd.set('file', file!);
                   fd.set('sensitivity', sensitivity);
-                  await postForm(`/requests/${d.id}/attachments`, fd);
+                  await postForm(`/requests/${d.id}/attachments`, fd, opKey);
                 })
               }
             >

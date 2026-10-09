@@ -116,6 +116,27 @@ test('main scenario steps 1–5: balance, request, approval, amendment, time tra
   await goTo(page, `/requests/${reqId}`);
   await expect(page.locator('body')).toContainText('amendment');
 
+  // The original request now shows the amended revision as in force:
+  // 9–11 Nov / 3 days. The old 9–13 dates appear only as history.
+  await expect(page.locator('body')).toContainText('9 Nov');
+  await expect(page.locator('body')).toContainText('11 Nov');
+  await expect(page.locator('body')).toContainText('3 days');
+  await expect(page.locator('body')).toContainText('In force');
+  const histRow = page.getByRole('row', { name: /13 Nov/ });
+  await expect(histRow).toHaveCount(1);
+  await expect(histRow).toContainText('superseded');
+
+  // Same on the printable card: days in force 9–11 Nov, 3 days; the
+  // superseded revision is listed in the history section only.
+  await goTo(page, `/requests/${reqId}/print`);
+  await expect(page.locator('body')).toContainText('Days in force');
+  await expect(page.locator('body')).toContainText('9 Nov');
+  await expect(page.locator('body')).toContainText('11 Nov');
+  await expect(page.locator('body')).toContainText('3 days');
+  const printHist = page.locator('.revision-history');
+  await expect(page.getByRole('row', { name: /13 Nov/ })).toHaveCount(1);
+  await expect(printHist.getByRole('row', { name: /13 Nov/ })).toHaveCount(1);
+
   // ---- 5. Time travel to 2026-11-12: period ended, balance still 17 ----
   await page.locator('input[aria-label="Time travel to business date"]').fill('2026-11-12');
   await expect(page.locator('.demo-bar')).toContainText('12 Nov 2026');

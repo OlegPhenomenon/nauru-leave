@@ -3,6 +3,7 @@ import { api, ApiError, del, post, put, unwrapList } from '../api/client';
 import type {
   CalendarException,
   Delegation,
+  EmployeeListItem,
   LeaveType,
   OrgUnit,
   Role,
@@ -12,20 +13,13 @@ import type {
 } from '../api/types';
 import { Empty, ErrBox, Field, Loading, Modal } from '../components/ui';
 import { fmtDate, fmtHours } from '../lib/format';
+import { daysToMinutes, minutesToDays, STANDARD_DAY_MINUTES } from '../lib/domain';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 
 const TABS = ['Leave types', 'Schedules', 'Holidays', 'Users & roles', 'Delegations'] as const;
 
 const WEEK_DAYS: (keyof ScheduleWeek)[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-const ROLES: Role[] = [
-  'hr',
-  'hr_medical',
-  'final_approver',
-  'adjustment_approver',
-  'tech_admin',
-  'auditor',
-];
 
 export default function Settings() {
   const { hasRole } = useSession();
@@ -61,33 +55,43 @@ export default function Settings() {
 
 /* ---------------- Leave types ---------------- */
 
+const EMPTY_TF = { code: '', name: '', sensitive: false, active: true };
+
+function emptyPolicyForm(t?: LeaveType | null) {
+  // Prefill a new version from the latest existing one (or the type's
+  // in-force flags) so reopening shows the saved values, incl. null ↔ radio.
+  const pv = t?.policies?.[t.policies.length - 1] ?? t?.policy ?? null;
+  return {
+    valid_from: '',
+    annual_entitlement_min: pv?.annual_entitlement_min ?? 9600,
+    accrual_mode: pv?.accrual_mode ?? 'annual_upfront',
+    advance_publish_months: pv?.advance_publish_months ?? 0,
+    carryover_allowed: pv?.carryover_allowed ?? false,
+    carryover_expiry: (pv?.carryover_expiry_months == null ? 'never' : 'months') as 'never' | 'months',
+    carryover_expiry_months: pv?.carryover_expiry_months ?? 12,
+    carryover_limit: (pv?.carryover_limit_min == null ? 'none' : 'days') as 'none' | 'days',
+    carryover_limit_days: minutesToDays(pv?.carryover_limit_min ?? null, STANDARD_DAY_MINUTES) ?? 0,
+    allow_negative: pv?.allow_negative ?? false,
+    paid: pv?.paid ?? t?.paid ?? true,
+    uses_balance: pv?.uses_balance ?? t?.uses_balance ?? true,
+    allow_half_day: pv?.allow_half_day ?? t?.allow_half_day ?? true,
+    requires_attachment: pv?.requires_attachment ?? t?.requires_attachment ?? false,
+    min_notice_days: pv?.min_notice_days ?? t?.min_notice_days ?? 0,
+    explanation: '',
+  };
+}
+
 function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
   const q = useApi(() => api<LeaveType[]>('/leave-types'), []);
   const [modal, setModal] = useState<'type' | 'policy' | null>(null);
   const [sel, setSel] = useState<LeaveType | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tf, setTf] = useState({
-    code: '',
-    name: '',
-    sensitive: false,
-    paid: true,
-    uses_balance: true,
-    allow_half_day: true,
-    requires_attachment: false,
-    min_notice_days: 0,
-    active: true,
-  });
-  const [pf, setPf] = useState({
-    valid_from: '',
-    annual_entitlement_min: 9600,
-    accrual_mode: 'annual_upfront',
-    advance_publish_months: 0,
-    carryover_allowed: false,
-    carryover_expiry_months: 0,
-    allow_negative: false,
-    explanation: '',
-  });
+  // Leave-type form is identity/presentation only — the conditions that used
+  // to live here (paid, uses_balance, allow_half_day, requires_attachment,
+  // min_notice_days) are versioned and now belong to the policy form.
+  const [tf, setTf] = useState(EMPTY_TF);
+  const [pf, setPf] = useState(() => emptyPolicyForm());
 
   async function run(fn: () => Promise<void>) {
     setBusy(true);
@@ -113,7 +117,7 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
           <button
             className="btn"
             onClick={() => {
-              setTf({ code: '', name: '', sensitive: false, paid: true, uses_balance: true, allow_half_day: true, requires_attachment: false, min_notice_days: 0, active: true });
+              setTf(EMPTY_TF);
               setSel(null);
               setModal('type');
             }}
@@ -134,38 +138,67 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
             {t.allow_half_day ? 'half days allowed' : 'whole days only'} · min notice{' '}
             {t.min_notice_days} d{t.requires_attachment ? ' · attachment required' : ''}
           </p>
-          {t.policy ? (
+          {(t.policies?.length ? t.policies : t.policy ? [t.policy] : []).length ? (
             <div className="small">
-              <p>
-                Policy from {fmtDate(t.policy.valid_from)}: {fmtHours(t.policy.annual_entitlement_min)}/year
-                , accrual {t.policy.accrual_mode}
-                {t.policy.advance_publish_months
-                  ? `, published ${t.policy.advance_publish_months} months ahead`
-                  : ''}
-                , carry-over {t.policy.carryover_allowed ? `allowed${t.policy.carryover_expiry_months ? `, expires after ${t.policy.carryover_expiry_months} months` : ', no expiry'}` : 'not allowed'}
-                {t.policy.allow_negative ? ', negative balance allowed' : ''}.
-              </p>
-              <p className="muted">{t.policy.explanation}</p>
-              {t.policy.status === 'demo_fictional' ? (
-                <span className="badge badge-demo">Fictional demo rule — not Nauru law</span>
-              ) : t.policy.status === 'verified' ? (
-                <span className="badge badge-ok">
-                  Verified{t.policy.verified_by ? ` by ${t.policy.verified_by.display_name}` : ''}
-                </span>
-              ) : (
-                <span className="badge badge-med">Rule not verified — {t.policy.status}</span>
-              )}{' '}
-              {canEdit && t.policy.status !== 'verified' ? (
-                <button
-                  className="btn btn-secondary btn-sm"
-                  disabled={busy}
-                  onClick={() =>
-                    void run(() => post(`/policies/${t.policy!.id}/verify`).then(() => undefined))
-                  }
-                >
-                  Verify rule
-                </button>
-              ) : null}
+              {(t.policies?.length ? t.policies : [t.policy!]).map((pv) => (
+                <div key={pv.id} style={{ marginBottom: '0.6rem' }}>
+                  <p>
+                    Policy from {fmtDate(pv.valid_from)}
+                    {pv.in_force === false ? (
+                      <span className="badge" style={{ marginLeft: '0.4rem' }}>Not yet in force</span>
+                    ) : null}
+                    : {fmtHours(pv.annual_entitlement_min)}/year, accrual {pv.accrual_mode}
+                    {pv.advance_publish_months
+                      ? `, published ${pv.advance_publish_months} months ahead`
+                      : ''}
+                    , carry-over{' '}
+                    {pv.carryover_allowed
+                      ? `allowed, ${
+                          pv.carryover_expiry_months == null
+                            ? 'never expires'
+                            : pv.carryover_expiry_months === 0
+                              ? 'expires at the start of the next year'
+                              : `expires after ${pv.carryover_expiry_months} months`
+                        }${
+                          pv.carryover_limit_min != null
+                            ? `, limit ${
+                                Number.isInteger(pv.carryover_limit_min / STANDARD_DAY_MINUTES)
+                                  ? `${pv.carryover_limit_min / STANDARD_DAY_MINUTES} days`
+                                  : `≈${(pv.carryover_limit_min / STANDARD_DAY_MINUTES).toFixed(1)} days`
+                              } (${fmtHours(pv.carryover_limit_min)})`
+                            : ', no limit'
+                        }`
+                      : 'not allowed'}
+                    {pv.allow_negative ? ', negative balance allowed' : ''}.
+                  </p>
+                  <p className="muted">
+                    {pv.paid ? 'paid' : 'unpaid'} · {pv.uses_balance ? 'uses balance' : 'no balance'} ·{' '}
+                    {pv.allow_half_day ? 'half days allowed' : 'whole days only'} · min notice{' '}
+                    {pv.min_notice_days} d{pv.requires_attachment ? ' · attachment required' : ''}
+                    {pv.explanation ? ` — ${pv.explanation}` : ''}
+                  </p>
+                  {pv.status === 'demo_fictional' ? (
+                    <span className="badge badge-demo">Fictional demo rule — not Nauru law</span>
+                  ) : pv.status === 'verified' ? (
+                    <span className="badge badge-ok">
+                      Verified{pv.verified_by ? ` by ${pv.verified_by.display_name}` : ''}
+                    </span>
+                  ) : (
+                    <span className="badge badge-med">Rule not verified — {pv.status}</span>
+                  )}{' '}
+                  {canEdit && pv.status !== 'verified' ? (
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(() => post(`/policies/${pv.id}/verify`).then(() => undefined))
+                      }
+                    >
+                      Verify rule
+                    </button>
+                  ) : null}
+                </div>
+              ))}
             </div>
           ) : (
             <p className="muted small">No policy version.</p>
@@ -176,17 +209,7 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
                 className="btn btn-secondary btn-sm"
                 onClick={() => {
                   setSel(t);
-                  setTf({
-                    code: t.code,
-                    name: t.name,
-                    sensitive: t.sensitive,
-                    paid: t.paid,
-                    uses_balance: t.uses_balance,
-                    allow_half_day: t.allow_half_day,
-                    requires_attachment: t.requires_attachment,
-                    min_notice_days: t.min_notice_days,
-                    active: t.active,
-                  });
+                  setTf({ code: t.code, name: t.name, sensitive: t.sensitive, active: t.active });
                   setModal('type');
                 }}
               >
@@ -196,6 +219,7 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
                 className="btn btn-secondary btn-sm"
                 onClick={() => {
                   setSel(t);
+                  setPf(emptyPolicyForm(t));
                   setModal('policy');
                 }}
               >
@@ -221,47 +245,37 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
             {(
               [
                 ['sensitive', 'Sensitive (details restricted)'],
-                ['paid', 'Paid'],
-                ['uses_balance', 'Uses balance'],
-                ['allow_half_day', 'Allow half days'],
-                ['requires_attachment', 'Requires attachment'],
                 ['active', 'Active'],
               ] as [keyof typeof tf, string][]
-            ).map(([k, label]) =>
-              k === 'code' || k === 'name' || k === 'min_notice_days' ? null : (
-                <label key={k} className="field">
-                  <input
-                    type="checkbox"
-                    checked={tf[k] as boolean}
-                    onChange={(e) => setTf({ ...tf, [k]: e.target.checked })}
-                  />{' '}
-                  {label}
-                </label>
-              ),
-            )}
-            <Field label="Min notice (days)">
-              <input type="number" min={0} value={tf.min_notice_days} onChange={(e) => setTf({ ...tf, min_notice_days: Number(e.target.value) })} />
-            </Field>
+            ).map(([k, label]) => (
+              <label key={k} className="field">
+                <input
+                  type="checkbox"
+                  checked={tf[k] as boolean}
+                  onChange={(e) => setTf({ ...tf, [k]: e.target.checked })}
+                />{' '}
+                {label}
+              </label>
+            ))}
           </div>
+          <p className="muted small">
+            Conditions (paid, balance use, half days, attachments, notice) are versioned — set them
+            on a policy version, not here.
+          </p>
           <div className="btn-row">
             <button
               className="btn"
               disabled={busy || !tf.code || !tf.name}
               onClick={() =>
                 void run(async () => {
-                  const body = {
-                    code: tf.code,
-                    name: tf.name,
-                    sensitive: tf.sensitive,
-                    paid: tf.paid,
-                    uses_balance: tf.uses_balance,
-                    allow_half_day: tf.allow_half_day,
-                    requires_attachment: tf.requires_attachment,
-                    min_notice_days: tf.min_notice_days,
-                    active: tf.active,
-                  };
-                  if (sel) await put(`/leave-types/${sel.id}`, body);
-                  else await post('/leave-types', body);
+                  if (sel)
+                    await put(`/leave-types/${sel.id}`, {
+                      name: tf.name,
+                      sensitive: tf.sensitive,
+                      active: tf.active,
+                      expected_version: sel.version,
+                    });
+                  else await post('/leave-types', tf);
                 })
               }
             >
@@ -295,14 +309,103 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
               <input type="number" min={0} value={pf.advance_publish_months} onChange={(e) => setPf({ ...pf, advance_publish_months: Number(e.target.value) })} />
             </Field>
           </div>
+          <div className="form-grid">
+            {(
+              [
+                ['paid', 'Paid'],
+                ['uses_balance', 'Uses balance'],
+                ['allow_half_day', 'Allow half days'],
+                ['requires_attachment', 'Requires attachment'],
+              ] as [keyof typeof pf, string][]
+            ).map(([k, label]) => (
+              <label key={k} className="field">
+                <input
+                  type="checkbox"
+                  checked={pf[k] as boolean}
+                  onChange={(e) => setPf({ ...pf, [k]: e.target.checked })}
+                />{' '}
+                {label}
+              </label>
+            ))}
+            <Field label="Min notice (days)">
+              <input type="number" min={0} value={pf.min_notice_days} onChange={(e) => setPf({ ...pf, min_notice_days: Number(e.target.value) })} />
+            </Field>
+          </div>
           <label className="field">
             <input type="checkbox" checked={pf.carryover_allowed} onChange={(e) => setPf({ ...pf, carryover_allowed: e.target.checked })} />{' '}
             Carry-over allowed
           </label>
           {pf.carryover_allowed ? (
-            <Field label="Carry-over expires after (months, 0 = never)">
-              <input type="number" min={0} value={pf.carryover_expiry_months} onChange={(e) => setPf({ ...pf, carryover_expiry_months: Number(e.target.value) })} />
-            </Field>
+            <>
+              <Field label="Carry-over expires">
+                <div>
+                  <label className="field" style={{ marginBottom: '0.3rem' }}>
+                    <input
+                      type="radio"
+                      checked={pf.carryover_expiry === 'never'}
+                      onChange={() => setPf({ ...pf, carryover_expiry: 'never' })}
+                    />{' '}
+                    Never
+                  </label>
+                  <label className="field">
+                    <input
+                      type="radio"
+                      checked={pf.carryover_expiry === 'months'}
+                      onChange={() => setPf({ ...pf, carryover_expiry: 'months' })}
+                    />{' '}
+                    After{' '}
+                    <input
+                      type="number"
+                      min={0}
+                      style={{ width: '4.5rem' }}
+                      value={pf.carryover_expiry_months}
+                      onChange={(e) =>
+                        setPf({ ...pf, carryover_expiry: 'months', carryover_expiry_months: Number(e.target.value) })
+                      }
+                    />{' '}
+                    months <span className="muted small">(0 = at the start of the next year)</span>
+                  </label>
+                </div>
+              </Field>
+              <Field label="Carry-over limit">
+                <div>
+                  <label className="field" style={{ marginBottom: '0.3rem' }}>
+                    <input
+                      type="radio"
+                      checked={pf.carryover_limit === 'none'}
+                      onChange={() => setPf({ ...pf, carryover_limit: 'none' })}
+                    />{' '}
+                    No limit
+                  </label>
+                  <label className="field">
+                    <input
+                      type="radio"
+                      checked={pf.carryover_limit === 'days'}
+                      onChange={() => setPf({ ...pf, carryover_limit: 'days' })}
+                    />{' '}
+                    Up to{' '}
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.5"
+                      style={{ width: '4.5rem' }}
+                      value={pf.carryover_limit_days}
+                      onChange={(e) =>
+                        setPf({ ...pf, carryover_limit: 'days', carryover_limit_days: Number(e.target.value) })
+                      }
+                    />{' '}
+                    days
+                    {pf.carryover_limit === 'days' ? (
+                      <span className="muted small">
+                        {' '}
+                        = {fmtHours(daysToMinutes(pf.carryover_limit_days || 0, STANDARD_DAY_MINUTES))}
+                        {' '}(1 day = {fmtHours(STANDARD_DAY_MINUTES)} on the standard schedule)
+                      </span>
+                    ) : null}
+                  </label>
+                </div>
+              </Field>
+            </>
           ) : null}
           <label className="field">
             <input type="checkbox" checked={pf.allow_negative} onChange={(e) => setPf({ ...pf, allow_negative: e.target.checked })} />{' '}
@@ -323,8 +426,18 @@ function LeaveTypesTab({ canEdit }: { canEdit: boolean }) {
                     accrual_mode: pf.accrual_mode,
                     advance_publish_months: pf.advance_publish_months,
                     carryover_allowed: pf.carryover_allowed,
-                    carryover_expiry_months: pf.carryover_expiry_months,
+                    carryover_expiry_months:
+                      pf.carryover_expiry === 'months' ? pf.carryover_expiry_months : null,
+                    carryover_limit_min:
+                      pf.carryover_limit === 'days'
+                        ? daysToMinutes(pf.carryover_limit_days, STANDARD_DAY_MINUTES)
+                        : null,
                     allow_negative: pf.allow_negative,
+                    paid: pf.paid,
+                    uses_balance: pf.uses_balance,
+                    allow_half_day: pf.allow_half_day,
+                    requires_attachment: pf.requires_attachment,
+                    min_notice_days: pf.min_notice_days,
                     explanation: pf.explanation,
                   }).then(() => undefined),
                 )
@@ -499,6 +612,8 @@ function HolidaysTab({ canEdit }: { canEdit: boolean }) {
   );
   const [modal, setModal] = useState(false);
   const [f, setF] = useState({ date: '', name: '', minutes: 0 });
+  const [revoking, setRevoking] = useState<CalendarException | null>(null);
+  const [revokeReason, setRevokeReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -513,6 +628,7 @@ function HolidaysTab({ canEdit }: { canEdit: boolean }) {
       if (aff?.length)
         setNotice(`Affected future requests: ${aff.map((x) => x.number).join(', ')}`);
       setModal(false);
+      setRevoking(null);
       q.reload();
     } catch (e) {
       setErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
@@ -541,28 +657,38 @@ function HolidaysTab({ canEdit }: { canEdit: boolean }) {
               <th>Date</th>
               <th>Name</th>
               <th className="num">Working minutes</th>
+              <th>Status</th>
               <th />
             </tr>
           </thead>
           <tbody>
             {q.data.map((x) => (
-              <tr key={x.id}>
+              <tr key={x.id} style={x.revoked_at ? { opacity: 0.55 } : undefined}>
                 <td>{fmtDate(x.date)}</td>
-                <td>{x.name}</td>
+                <td>
+                  {x.name}
+                  {x.revoke_reason ? <div className="muted small">revoked: {x.revoke_reason}</div> : null}
+                </td>
                 <td className="num">{x.minutes}</td>
                 <td>
-                  {canEdit ? (
+                  {x.revoked_at ? (
+                    <span className="badge">revoked {fmtDate(x.revoked_at)}</span>
+                  ) : (
+                    <span className="badge badge-ok">active</span>
+                  )}
+                </td>
+                <td>
+                  {canEdit && !x.revoked_at ? (
                     <button
                       className="btn btn-danger btn-sm"
                       disabled={busy}
-                      onClick={() =>
-                        void run(async () => {
-                          await del<Record<string, never>>(`/calendar-exceptions/${x.id}`);
-                          return {};
-                        })
-                      }
+                      onClick={() => {
+                        setRevoking(x);
+                        setRevokeReason('');
+                        setErr(null);
+                      }}
                     >
-                      Delete
+                      Revoke
                     </button>
                   ) : null}
                 </td>
@@ -598,6 +724,42 @@ function HolidaysTab({ canEdit }: { canEdit: boolean }) {
           </div>
         </Modal>
       ) : null}
+
+      {revoking ? (
+        <Modal title={`Revoke "${revoking.name}" (${fmtDate(revoking.date)})`} onClose={() => setRevoking(null)}>
+          <p className="muted small">
+            Revoking keeps the record as history — it is not deleted. Approved requests in the
+            future that counted on this day are listed so they can be re-checked manually.
+          </p>
+          {err ? <ErrBox error={err} /> : null}
+          <Field label="Reason (required)">
+            <textarea
+              value={revokeReason}
+              onChange={(e) => setRevokeReason(e.target.value)}
+              placeholder="e.g. gazetted date corrected"
+            />
+          </Field>
+          <div className="btn-row">
+            <button
+              className="btn btn-danger"
+              disabled={busy || !revokeReason.trim()}
+              onClick={() =>
+                void run(() =>
+                  post<{ affected_future_requests?: { number: string }[] }>(
+                    `/calendar-exceptions/${revoking.id}/revoke`,
+                    { reason: revokeReason },
+                  ),
+                )
+              }
+            >
+              {busy ? 'Revoking…' : 'Revoke'}
+            </button>
+            <button className="btn btn-secondary" onClick={() => setRevoking(null)}>
+              Cancel
+            </button>
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }
@@ -607,10 +769,12 @@ function HolidaysTab({ canEdit }: { canEdit: boolean }) {
 function UsersTab({ canEdit }: { canEdit: boolean }) {
   const q = useApi(() => api<unknown>('/users').then((d) => unwrapList<UserListItem>(d)), []);
   const unitsQ = useApi(() => api<unknown>('/org-units').then((d) => unwrapList<OrgUnit>(d)), []);
-  const [modal, setModal] = useState<'user' | 'role' | null>(null);
+  const empsQ = useApi(() => api<unknown>('/employees').then((d) => unwrapList<EmployeeListItem>(d)).catch(() => [] as EmployeeListItem[]), []);
+  const [modal, setModal] = useState<'user' | 'role' | 'link' | null>(null);
   const [sel, setSel] = useState<UserListItem | null>(null);
   const [uf, setUf] = useState({ email: '', display_name: '', active: true });
   const [rf, setRf] = useState<{ role: Role; scope: number }>({ role: 'hr', scope: 0 });
+  const [linkEmp, setLinkEmp] = useState(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiError | null>(null);
 
@@ -674,7 +838,7 @@ function UsersTab({ canEdit }: { canEdit: boolean }) {
                     <span key={r.id} className="badge" style={{ marginRight: '0.3rem' }}>
                       {r.role.replaceAll('_', ' ')}
                       {r.scope_name && r.scope_name !== 'all' ? ` (${r.scope_name})` : ''}
-                      {canEdit ? (
+                      {u.allowed?.grant_roles?.includes(r.role) ? (
                         <button
                           className="btn btn-ghost btn-sm"
                           title="Revoke role"
@@ -688,8 +852,8 @@ function UsersTab({ canEdit }: { canEdit: boolean }) {
                   ))}
                 </td>
                 <td>
-                  {canEdit ? (
-                    <span className="btn-row" style={{ marginTop: 0 }}>
+                  <span className="btn-row" style={{ marginTop: 0 }}>
+                    {canEdit ? (
                       <button
                         className="btn btn-secondary btn-sm"
                         onClick={() => {
@@ -700,17 +864,32 @@ function UsersTab({ canEdit }: { canEdit: boolean }) {
                       >
                         Edit
                       </button>
+                    ) : null}
+                    {u.allowed?.grant_roles?.length ? (
                       <button
                         className="btn btn-secondary btn-sm"
                         onClick={() => {
                           setSel(u);
+                          setRf({ role: u.allowed.grant_roles[0]!, scope: 0 });
                           setModal('role');
                         }}
                       >
                         Add role
                       </button>
-                    </span>
-                  ) : null}
+                    ) : null}
+                    {u.allowed?.link_employee ? (
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => {
+                          setSel(u);
+                          setLinkEmp(u.employee?.id ?? 0);
+                          setModal('link');
+                        }}
+                      >
+                        {u.employee ? 'Re-link' : 'Link'} employee
+                      </button>
+                    ) : null}
+                  </span>
                 </td>
               </tr>
             ))}
@@ -737,7 +916,7 @@ function UsersTab({ canEdit }: { canEdit: boolean }) {
               disabled={busy || !uf.email || !uf.display_name}
               onClick={() =>
                 void run(async () => {
-                  if (sel) await put(`/users/${sel.id}`, uf);
+                  if (sel) await put(`/users/${sel.id}`, { ...uf, expected_version: sel.version });
                   else await post('/users', uf);
                 })
               }
@@ -756,7 +935,7 @@ function UsersTab({ canEdit }: { canEdit: boolean }) {
           {err ? <ErrBox error={err} /> : null}
           <Field label="Role">
             <select value={rf.role} onChange={(e) => setRf({ ...rf, role: e.target.value as Role })}>
-              {ROLES.map((r) => (
+              {(sel.allowed?.grant_roles ?? []).map((r) => (
                 <option key={r} value={r}>
                   {r.replaceAll('_', ' ')}
                 </option>
@@ -787,6 +966,45 @@ function UsersTab({ canEdit }: { canEdit: boolean }) {
               }
             >
               {busy ? 'Saving…' : 'Grant role'}
+            </button>
+            <button className="btn btn-secondary" onClick={() => setModal(null)}>
+              Cancel
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {modal === 'link' && sel ? (
+        <Modal title={`Link employee — ${sel.display_name}`} onClose={() => setModal(null)}>
+          <p className="muted small">
+            Linking ties this login to an employee record (within your HR scope). The user cannot do
+            this for themselves.
+          </p>
+          {err ? <ErrBox error={err} /> : null}
+          <Field label="Employee">
+            <select value={linkEmp} onChange={(e) => setLinkEmp(Number(e.target.value))}>
+              <option value={0}>— not linked —</option>
+              {empsQ.data?.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.full_name} ({e.service_id})
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="btn-row">
+            <button
+              className="btn"
+              disabled={busy}
+              onClick={() =>
+                void run(() =>
+                  put(`/users/${sel.id}`, {
+                    employee_id: linkEmp || null,
+                    expected_version: sel.version,
+                  }).then(() => undefined),
+                )
+              }
+            >
+              {busy ? 'Saving…' : linkEmp ? 'Link' : 'Unlink'}
             </button>
             <button className="btn btn-secondary" onClick={() => setModal(null)}>
               Cancel

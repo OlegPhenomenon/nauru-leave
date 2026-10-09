@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { api, ApiError, post, postForm, unwrapList } from '../api/client';
 import type { ExportBatch, ImportBatch, ImportPreview, OrgUnit } from '../api/types';
 import { Empty, ErrBox, Field, GenericTable } from '../components/ui';
 import { fmtDateTime } from '../lib/format';
+import { IntentKeys } from '../lib/domain';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 
@@ -97,9 +98,13 @@ export default function Reports() {
   const [absTo, setAbsTo] = useState(todayPlusMonthEnd(today));
   const [expFrom, setExpFrom] = useState(today);
   const [expTo, setExpTo] = useState(todayPlusMonthEnd(today));
+  const [expScope, setExpScope] = useState('');
   const [expBusy, setExpBusy] = useState(false);
   const [expMsg, setExpMsg] = useState<string | null>(null);
   const [transferNote, setTransferNote] = useState<Record<number, string>>({});
+  // One Idempotency-Key per intent (export create, import commit); reused only
+  // when retrying the same intent after an unconfirmed network result.
+  const opKeys = useRef(new IntentKeys());
 
   const exportsQ = useApi(
     () => api<unknown>('/exports').then((d) => unwrapList<ExportBatch>(d)),
@@ -128,11 +133,29 @@ export default function Reports() {
     setExpBusy(true);
     setExpMsg(null);
     try {
-      const r = await post<ExportBatch>('/exports', { from: expFrom, to: expTo });
-      setExpMsg(`Export #${r.id} created — ${r.row_count} rows, sha256 ${r.sha256.slice(0, 12)}…`);
+      const r = await post<ExportBatch>(
+        '/exports',
+        { from: expFrom, to: expTo, org_unit_id: expScope ? Number(expScope) : undefined },
+        opKeys.current.forIntent('export'),
+      );
+      opKeys.current.reset('export');
+      const scope = r.org_unit?.name ?? 'the whole service';
+      setExpMsg(
+        `Export #${r.id} created for ${scope} — ${r.row_count} rows, sha256 ${r.sha256.slice(0, 12)}…`,
+      );
       exportsQ.reload();
     } catch (e) {
-      setExpMsg(e instanceof Error ? e.message : 'Export failed');
+      const ae = e instanceof ApiError ? e : null;
+      // Keep the key only while the result is unconfirmed (status 0); a real
+      // error means the server rejected the intent and the next try is new.
+      if (ae && ae.status !== 0) opKeys.current.reset('export');
+      setExpMsg(
+        ae && ae.status === 0
+          ? 'We could not confirm the export — check the list before retrying.'
+          : e instanceof Error
+            ? e.message
+            : 'Export failed',
+      );
     } finally {
       setExpBusy(false);
     }
@@ -169,16 +192,22 @@ export default function Reports() {
     if (!impPreview) return;
     setImpBusy(true);
     setImpErr(null);
+    const intent = `commit:${impPreview.batch_id}`;
     try {
       const r = await post<{ applied: number; skipped_duplicates: number }>(
         `/imports/${impPreview.batch_id}/commit`,
+        {},
+        opKeys.current.forIntent(intent),
       );
+      opKeys.current.reset(intent);
       setImpMsg(`Import committed — applied ${r.applied}, skipped duplicates ${r.skipped_duplicates}.`);
       setImpPreview(null);
       setImpFile(null);
       importsQ.reload();
     } catch (e) {
-      setImpErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
+      const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
+      if (ae.status !== 0) opKeys.current.reset(intent);
+      setImpErr(ae);
     } finally {
       setImpBusy(false);
     }
@@ -238,9 +267,9 @@ export default function Reports() {
 
       <ReportCard
         title="Changes since last export"
-        description="Approved changes made after the most recent transfer export."
+        description="Approved changes made after the most recent transferred export, within the selected org unit."
         path="/reports/changes-since-export"
-        extraParams={{}}
+        extraParams={{ org_unit_id: ouParam }}
       />
 
       <ReportCard
@@ -264,6 +293,16 @@ export default function Reports() {
           <Field label="To">
             <input type="date" value={expTo} onChange={(e) => setExpTo(e.target.value)} />
           </Field>
+          <Field label="Scope">
+            <select value={expScope} onChange={(e) => setExpScope(e.target.value)}>
+              <option value="">Whole service</option>
+              {unitsQ.data?.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} only
+                </option>
+              ))}
+            </select>
+          </Field>
           <button className="btn" disabled={expBusy || !expFrom || !expTo} onClick={() => void createExport()}>
             {expBusy ? 'Creating…' : 'Create export'}
           </button>
@@ -276,6 +315,7 @@ export default function Reports() {
                 <tr>
                   <th>#</th>
                   <th>Period</th>
+                  <th>Scope</th>
                   <th className="num">Rows</th>
                   <th>SHA-256</th>
                   <th>Created</th>
@@ -290,6 +330,7 @@ export default function Reports() {
                     <td>
                       {x.from} – {x.to}
                     </td>
+                    <td className="small">{x.org_unit?.name ?? 'Whole service'}</td>
                     <td className="num">{x.row_count}</td>
                     <td className="mono small" title={x.sha256}>
                       {x.sha256.slice(0, 16)}…
