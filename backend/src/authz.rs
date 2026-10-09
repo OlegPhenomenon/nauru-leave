@@ -206,10 +206,10 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
             }
         }
         Action::ManageUsers => {
-            if actor.has_role("tech_admin") {
+            if actor.has_role("tech_admin") || actor.has_role("hr") {
                 Ok(())
             } else {
-                Err(DomainError::forbidden("needs tech_admin"))
+                Err(DomainError::forbidden("needs tech_admin or hr"))
             }
         }
         Action::ViewOperations => {
@@ -251,9 +251,8 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
         | Action::CancelRequest
         | Action::UploadAttachment => {
             let req = req_of(res);
-            // owner, the person who entered a paper request, or hr in scope
+            // Current ownership or HR scope; authorship is historical.
             if actor.employee_id == Some(req.employee_id)
-                || actor.user_id == req.entered_by()
                 || actor.role_in_scope(conn, "hr", req.org_unit_id)?
             {
                 Ok(())
@@ -262,7 +261,9 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
             }
         }
         Action::Comment => {
-            if actor.has_role("auditor") || actor.has_role("tech_admin") {
+            if (actor.has_role("auditor") || actor.has_role("tech_admin"))
+                && actor.employee_id != Some(req_of(res).employee_id)
+            {
                 return Err(DomainError::forbidden("read-only role cannot comment"));
             }
             view_level(conn, actor, req_of(res)).map(|_| ())
@@ -291,8 +292,8 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
         },
         Action::DownloadAttachment => match res {
             Resource::Attachment(a) => {
-                if a.scan_status == "quarantined" {
-                    return Err(DomainError::forbidden("file is quarantined"));
+                if a.scan_status != "clean" {
+                    return Err(DomainError::forbidden("file has not passed scanning"));
                 }
                 if a.sensitivity == "medical" {
                     let owner = actor.employee_id == Some(a.request.employee_id);
@@ -302,21 +303,7 @@ pub fn can(conn: &Connection, actor: &Actor, action: Action, res: &Resource) -> 
                         Err(DomainError::forbidden("medical file"))
                     }
                 } else {
-                    // normal file: owner/uploader, manager of employee, or
-                    // staff roles in scope
-                    if actor.employee_id == Some(a.request.employee_id)
-                        || actor.user_id == a.uploaded_by
-                        || actor.is_manager_of(a.request.employee_id)
-                        || actor.any_role_in_scope(
-                            conn,
-                            &["hr", "hr_medical", "final_approver", "auditor"],
-                            a.request.org_unit_id,
-                        )?
-                    {
-                        Ok(())
-                    } else {
-                        Err(DomainError::forbidden("no access to file"))
-                    }
+                    view_level(conn, actor, &a.request).map(|_| ())
                 }
             }
             _ => unreachable!(),
@@ -411,12 +398,6 @@ fn req_of<'a>(res: &'a Resource<'a>) -> &'a RequestCtx {
     }
 }
 
-impl RequestCtx {
-    fn entered_by(&self) -> i64 {
-        self.entered_by_user_id
-    }
-}
-
 /// Visibility of a request for the actor. Err = no access at all.
 pub fn view_level(conn: &Connection, actor: &Actor, req: &RequestCtx) -> Res<ViewLevel> {
     let fresh = Actor::load(conn, actor.user_id, actor.today)?;
@@ -426,8 +407,8 @@ pub fn view_level(conn: &Connection, actor: &Actor, req: &RequestCtx) -> Res<Vie
     } else {
         ViewLevel::Full
     };
-    // owner (or whoever entered a paper request) always sees it
-    if actor.employee_id == Some(req.employee_id) || actor.user_id == req.entered_by() {
+    // The employee retains access independently of their staff roles.
+    if actor.employee_id == Some(req.employee_id) {
         return Ok(ViewLevel::Full);
     }
     // staff roles in scope
@@ -438,38 +419,20 @@ pub fn view_level(conn: &Connection, actor: &Actor, req: &RequestCtx) -> Res<Vie
     )? {
         return Ok(ViewLevel::Full); // staff see the type; medical files are a separate gate
     }
-    // current manager / delegate / open-step assignee
-    if actor.is_manager_of(req.employee_id) || manages_via_delegation(conn, actor, req)? {
+    if actor.is_manager_of(req.employee_id) {
         return Ok(masked);
     }
-    let assigned: bool = conn.query_row(
-        "SELECT COUNT(*) FROM approval_steps
-         WHERE request_id=?1 AND assignee_user_id=?2 AND status IN ('pending','waiting')",
-        rusqlite::params![req.id, actor.user_id],
-        |r| r.get::<_, i64>(0),
-    )? > 0;
-    if assigned {
-        return Ok(masked);
+    // Visibility through a step uses exactly the current decision authority.
+    if let Some(step) = crate::requests::pending_step(conn, req.id)? {
+        if matches!(
+            req.status.as_str(),
+            "submitted" | "under_review" | "needs_information"
+        ) && decide_authority(conn, actor, req, &step).is_ok()
+        {
+            return Ok(masked);
+        }
     }
     Err(DomainError::forbidden("no access to this request"))
-}
-
-/// Actor manages the request's employee through an active delegation from the
-/// current manager (scope manager_recommendation or all_approvals).
-fn manages_via_delegation(conn: &Connection, actor: &Actor, req: &RequestCtx) -> Res<bool> {
-    let mgr = model::manager_at(conn, req.employee_id, actor.today)?;
-    let Some(mgr_emp) = mgr else { return Ok(false) };
-    let Some(mgr_user) = mgr_emp.user_id else {
-        return Ok(false);
-    };
-    Ok(model::has_delegation(
-        conn,
-        mgr_user,
-        actor.user_id,
-        "manager_recommendation",
-        actor.today,
-    )?
-    .is_some())
 }
 
 // ------------------------------------------------------------------ decisions
@@ -538,6 +501,9 @@ fn direct_authority(
     principal: Option<i64>,
 ) -> Res<Option<Authority>> {
     let who = principal.unwrap_or(actor.user_id);
+    if !model::load_user(conn, who)?.active {
+        return Ok(None);
+    }
     if let Some(assignee) = step.assignee_user_id {
         if assignee != who {
             return Ok(None);
@@ -640,4 +606,59 @@ pub fn require_operator(conn: &Connection) -> Res<()> {
         ));
     }
     Ok(())
+}
+
+/// Business role administration is independent of account administration.
+pub fn grantable_roles(conn: &Connection, actor: &Actor, grantee: i64) -> Res<Vec<&'static str>> {
+    let actor = Actor::load(conn, actor.user_id, actor.today)?;
+    if actor.user_id == grantee {
+        return Ok(vec![]);
+    }
+    let mut roles = vec![];
+    if actor.has_role("tech_admin") {
+        roles.push("tech_admin");
+    }
+    if actor.role_in_scope(conn, "hr", None)? {
+        roles.extend(["hr", "final_approver", "adjustment_approver", "auditor"]);
+        if actor.has_role("hr_medical") {
+            roles.push("hr_medical");
+        }
+    }
+    Ok(roles)
+}
+pub fn require_role_administration(
+    conn: &Connection,
+    actor: &Actor,
+    grantee: i64,
+    role: &str,
+) -> Res<()> {
+    if grantable_roles(conn, actor, grantee)?.contains(&role) {
+        Ok(())
+    } else {
+        Err(DomainError::forbidden(
+            "role administration needs independent business authority",
+        ))
+    }
+}
+pub fn require_employee_link(
+    conn: &Connection,
+    actor: &Actor,
+    user: i64,
+    employee: i64,
+) -> Res<()> {
+    if user == actor.user_id {
+        return Err(DomainError::forbidden(
+            "cannot change your own employee link",
+        ));
+    }
+    model::load_employee(conn, employee)?;
+    require(
+        conn,
+        actor,
+        Action::ManagePeople,
+        &Resource::Employee {
+            employee_id: employee,
+            org_unit_id: model::unit_of(conn, employee, actor.today)?,
+        },
+    )
 }

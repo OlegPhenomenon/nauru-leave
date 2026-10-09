@@ -43,6 +43,8 @@ impl Fixture {
             max_db_tasks: 16,
             sandbox_ttl_hours: 24,
             smtp_url: None,
+            clamd_addr: None,
+            clamd_timeout_ms: 10000,
             backup_key_file: None,
             trust_proxy_headers: false,
             requests_per_sec: 30,
@@ -1205,6 +1207,8 @@ async fn settings_mutations_and_drift() {
             json!({"email":"extra@example.test","display_name":"Extra"}),
         )
         .await;
+    assert_eq!(c.call("POST", &format!("/api/users/{}/roles", user["id"]), json!({"role":"hr"})).await.0, 403);
+    c.login("Maria Santos").await;
     let grant = c
         .ok(
             "POST",
@@ -1218,6 +1222,7 @@ async fn settings_mutations_and_drift() {
         json!({}),
     )
     .await;
+    c.login("Pavel Grant").await;
     assert_eq!(
         c.call(
             "POST",

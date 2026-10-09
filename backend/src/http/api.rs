@@ -459,27 +459,116 @@ fn dispatch(
             &bytes,
         )?)?));
     }
+    let key = headers
+        .get("idempotency-key")
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_owned);
+    if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 200) {
+        return Err(DomainError::validation("invalid Idempotency-Key"));
+    }
+    let idempotent = method == Method::POST
+        && match segments[0] {
+            "requests" => {
+                segments.len() == 1
+                    || matches!(
+                        segments.get(2),
+                        Some(
+                            &"submit"
+                                | &"decide"
+                                | &"amend"
+                                | &"cancel"
+                                | &"respond"
+                                | &"actual"
+                                | &"attachments"
+                        )
+                    )
+            }
+            "adjustments" => segments.len() == 1 || segments.get(2) == Some(&"decide"),
+            "accruals" | "periods" => true,
+            "imports" => segments.get(2) == Some(&"commit"),
+            "exports" => segments.len() == 1,
+            _ => false,
+        };
+    let receipt = key.filter(|_| idempotent);
+    let raw = if let Some((name, bytes)) = &input.file {
+        // Multipart boundary and field order do not change a user's command.
+        let fields: BTreeMap<_, _> = input.fields.iter().collect();
+        serde_json::to_vec(
+            &json!({"fields":fields,"filename":name,"sha256":hex::encode(Sha256::digest(bytes))}),
+        )?
+    } else {
+        input.raw.clone()
+    };
+    let hash = hex::encode(Sha256::digest(
+        [
+            method.as_str().as_bytes(),
+            b"/api/",
+            path.as_bytes(),
+            b"\n",
+            &raw,
+        ]
+        .concat(),
+    ));
     if segments.first() == Some(&"requests") && segments.get(2) == Some(&"attachments") {
+        // Fast replay precedes scanner/storage. The receipt and action are still atomic below.
+        if let Some(value) = replay(&conn, &actor, &segments, receipt.as_deref(), &hash)? {
+            return Ok(Output::json(value));
+        }
         let id = parse_id(segments[1])?;
         let (name, bytes) = input
             .file
+            .as_ref()
             .ok_or_else(|| DomainError::validation("file required"))?;
-        let store = FileStore::new(&database.files)?;
-        let aid = crate::admin::upload(
+        let store = if config.mode == Mode::Production {
+            FileStore::with_scanner(
+                &database.files,
+                crate::files::ClamdScanner {
+                    addr: config.clamd_addr.clone(),
+                    timeout: std::time::Duration::from_millis(config.clamd_timeout_ms as u64),
+                },
+            )?
+        } else {
+            FileStore::new(&database.files)?
+        };
+        let sensitivity = input
+            .fields
+            .get("sensitivity")
+            .map(String::as_str)
+            .unwrap_or("normal");
+        let prepared = crate::admin::prepare_upload(
             &mut conn,
             &clock,
             &actor,
             &store,
             id,
-            &name,
-            &bytes,
-            input
-                .fields
-                .get("sensitivity")
-                .map(String::as_str)
-                .unwrap_or("normal"),
+            name,
+            bytes,
+            sensitivity,
             config.mode == Mode::Demo,
         )?;
+        let mut used = false;
+        let result = db::atomic(&mut conn, |conn| {
+            if let Some(value) = replay(conn, &actor, &segments, receipt.as_deref(), &hash)? {
+                return Ok(value);
+            }
+            let aid = requests::record_attachment(
+                conn,
+                &clock,
+                &actor,
+                id,
+                name,
+                sensitivity,
+                &prepared,
+            )?;
+            let value = view::attachment(conn, &actor, aid)?;
+            save_receipt(conn, &actor, &clock, receipt.as_deref(), &hash, &value)?;
+            used = true;
+            Ok(value)
+        });
+        if result.is_err() || !used {
+            let _ = store.remove(&prepared.storage_key);
+        }
+        let value = result?;
         if let Some(id) = &database.sandbox_id {
             let bytes: i64 = conn.query_row(
                 "SELECT COALESCE(SUM(size_bytes),0) FROM attachments",
@@ -491,41 +580,10 @@ fn dispatch(
                 params![id, bytes],
             )?;
         }
-        return Ok(Output::json(view::attachment(&conn, &actor, aid)?));
+        return Ok(Output::json(value));
     }
-    let key = headers
-        .get("idempotency-key")
-        .and_then(|h| h.to_str().ok())
-        .map(str::to_owned);
-    if key.as_ref().is_some_and(|k| k.is_empty() || k.len() > 200) {
-        return Err(DomainError::validation("invalid Idempotency-Key"));
-    }
-    let idempotent = segments[0] == "requests"
-        && matches!(
-            segments.get(2),
-            Some(&"submit" | &"decide" | &"amend" | &"cancel")
-        );
-    let receipt = key.filter(|_| idempotent);
-    let hash = hex::encode(Sha256::digest(
-        [
-            method.as_str().as_bytes(),
-            b"/api/",
-            path.as_bytes(),
-            b"\n",
-            &input.raw,
-        ]
-        .concat(),
-    ));
     let value = db::atomic(&mut conn, |conn| {
-        if let Some(key) = &receipt {
-            if let Some((h,body))=conn.query_row("SELECT request_hash,response_json FROM idempotency_keys WHERE user_id=?1 AND key=?2",params![actor.user_id,format!("http:{key}")],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?{
-                if h!=hash{return Err(DomainError::IdempotencyKeyReused);}
-                let mut v:Value=serde_json::from_str(&body)?;let id=v["id"].as_i64().ok_or_else(||DomainError::validation("invalid receipt"))?;
-                let request=model::load_request(conn,id)?;let ctx=requests::request_ctx(conn,&request,actor.today)?;authz::require(conn,&actor,Action::ViewRequest,&Resource::Request(&ctx))?;
-                crate::presentation::redact_cached(conn,&actor,&mut v)?;
-                return Ok(v);
-            }
-        }
+        if let Some(value) = replay(conn, &actor, &segments, receipt.as_deref(), &hash)? { return Ok(value); }
         let pending_before: i64 =
             conn.query_row("SELECT COALESCE(MAX(id),0) FROM notifications", [], |r| {
                 r.get(0)
@@ -547,9 +605,7 @@ fn dispatch(
         if pending_before == pending_after {
             crate::notify::record_change(conn, &clock, actor.user_id, path)?;
         }
-        if let Some(key) = &receipt {
-            conn.execute("INSERT INTO idempotency_keys(key,user_id,request_hash,response_json,created_at) VALUES(?1,?2,?3,?4,?5)",params![format!("http:{key}"),actor.user_id,hash,v.to_string(),clock.now_ts()])?;
-        }
+        save_receipt(conn, &actor, &clock, receipt.as_deref(), &hash, &v)?;
         Ok(v)
     })?;
     if method == Method::DELETE && segments[0] == "requests" {
@@ -560,6 +616,178 @@ fn dispatch(
         Ok(Output::json(value))
     }
 }
+fn save_receipt(
+    conn: &Connection,
+    actor: &Actor,
+    clock: &crate::clock::Clock,
+    key: Option<&str>,
+    hash: &str,
+    value: &Value,
+) -> Res<()> {
+    if let Some(key) = key {
+        conn.execute("INSERT INTO idempotency_keys(key,user_id,request_hash,response_json,created_at) VALUES(?1,?2,?3,?4,?5)",params![format!("http:{key}"),actor.user_id,hash,value.to_string(),clock.now_ts()])?;
+    }
+    Ok(())
+}
+fn replay(
+    conn: &Connection,
+    actor: &Actor,
+    p: &[&str],
+    key: Option<&str>,
+    hash: &str,
+) -> Res<Option<Value>> {
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    let receipt: Option<(String, String)> = conn
+        .query_row(
+            "SELECT request_hash,response_json FROM idempotency_keys WHERE user_id=?1 AND key=?2",
+            params![actor.user_id, format!("http:{key}")],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((stored_hash, stored_body)) = receipt else {
+        return Ok(None);
+    };
+    if stored_hash != hash {
+        return Err(DomainError::IdempotencyKeyReused);
+    }
+    let mut value: Value = serde_json::from_str(&stored_body)?;
+    match p[0] {
+        "requests" => {
+            if p.get(2) == Some(&"attachments") {
+                let ctx = requests::attachment_ctx(
+                    conn,
+                    value["id"]
+                        .as_i64()
+                        .ok_or_else(|| DomainError::validation("invalid receipt"))?,
+                    actor.today,
+                )?;
+                authz::require(
+                    conn,
+                    actor,
+                    Action::UploadAttachment,
+                    &Resource::Request(&ctx.request),
+                )?;
+                authz::require(
+                    conn,
+                    actor,
+                    Action::ViewAttachment,
+                    &Resource::Attachment(&ctx),
+                )?;
+                value = view::attachment(conn, actor, ctx.id)?;
+            } else {
+                let id = value["id"]
+                    .as_i64()
+                    .ok_or_else(|| DomainError::validation("invalid receipt"))?;
+                let request = model::load_request(conn, id)?;
+                let ctx = requests::request_ctx(conn, &request, actor.today)?;
+                authz::require(conn, actor, Action::ViewRequest, &Resource::Request(&ctx))?;
+                let action = match p.get(2).copied() {
+                    Some("submit") => Some(Action::Submit),
+                    Some("amend") => Some(Action::Amend),
+                    Some("cancel") => Some(Action::CancelRequest),
+                    Some("respond") => Some(Action::Respond),
+                    Some("actual") => Some(Action::ConfirmActual),
+                    None => Some(Action::EditDraft),
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    authz::require(conn, actor, action, &Resource::Request(&ctx))?;
+                }
+                crate::presentation::redact_cached(conn, actor, &mut value)?;
+            }
+        }
+        "adjustments" => {
+            let id = value["id"]
+                .as_i64()
+                .ok_or_else(|| DomainError::validation("invalid receipt"))?;
+            let employee: i64=conn.query_row("SELECT ac.employee_id FROM adjustments a JOIN leave_accounts ac ON ac.id=a.account_id WHERE a.id=?1",[id],|r|r.get(0))?;
+            authz::require(
+                conn,
+                actor,
+                if p.get(2) == Some(&"decide") {
+                    Action::DecideAdjustment
+                } else {
+                    Action::ProposeAdjustment
+                },
+                &Resource::Employee {
+                    employee_id: employee,
+                    org_unit_id: model::unit_of(conn, employee, actor.today)?,
+                },
+            )?;
+        }
+        "accruals" | "periods" => authz::require(
+            conn,
+            actor,
+            if p[0] == "accruals" {
+                Action::RunAccrual
+            } else {
+                Action::ClosePeriod
+            },
+            &Resource::Global,
+        )?,
+        "exports" => {
+            ie::authorized_export(
+                conn,
+                actor,
+                value["id"]
+                    .as_i64()
+                    .ok_or_else(|| DomainError::validation("invalid receipt"))?,
+            )?;
+        }
+        "imports" => {
+            authz::require(conn, actor, Action::ManageImportsExports, &Resource::Global)?;
+            let id = parse_id(p[1])?;
+            let owner: i64 = conn.query_row(
+                "SELECT created_by FROM import_batches WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )?;
+            if owner != actor.user_id && !actor.role_in_scope(conn, "hr", None)? {
+                return Err(DomainError::forbidden("import belongs to another HR scope"));
+            }
+            authorize_import_replay(conn, actor, id)?;
+        }
+        _ => return Err(DomainError::validation("unsupported receipt")),
+    }
+    Ok(Some(value))
+}
+fn authorize_import_replay(conn: &Connection, actor: &Actor, id: i64) -> Res<()> {
+    let preview: String = conn.query_row(
+        "SELECT preview_json FROM import_batches WHERE id=?1",
+        [id],
+        |r| r.get(0),
+    )?;
+    let preview: Value = serde_json::from_str(&preview)?;
+    if actor.role_in_scope(conn, "hr", None)? {
+        return Ok(());
+    }
+    for row in preview
+        .as_array()
+        .ok_or_else(|| DomainError::forbidden("cannot establish import scope"))?
+    {
+        let sid = row["data"]["service_id"]
+            .as_str()
+            .or_else(|| row["data"]["employee_service_id"].as_str())
+            .ok_or_else(|| DomainError::forbidden("cannot establish import scope"))?;
+        let employee: i64 =
+            conn.query_row("SELECT id FROM employees WHERE service_id=?1", [sid], |r| {
+                r.get(0)
+            })?;
+        authz::require(
+            conn,
+            actor,
+            Action::ManagePeople,
+            &Resource::Employee {
+                employee_id: employee,
+                org_unit_id: model::unit_of(conn, employee, actor.today)?,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 fn parse_id(s: &str) -> Res<i64> {
     s.parse().map_err(|_| DomainError::validation("invalid id"))
 }
@@ -733,7 +961,13 @@ fn write(
         } else {
             requests::create_draft(conn, clock, a, &draft(v)?)?
         };
-        return view::detail(conn, a, result_id);
+        return match view::detail(conn, a, result_id) {
+            Err(DomainError::Forbidden(_)) if p.get(2) == Some(&"decide") => {
+                let request = model::load_request(conn, result_id)?;
+                Ok(json!({"id":result_id,"status":request.status.as_str(),"version":request.version}))
+            }
+            result => result,
+        };
     }
     match (p[0], id, p.get(2).copied()) {
         ("employees", Some(id), Some("transfer")) => {
@@ -1124,12 +1358,17 @@ fn read(
             authz::require(conn, a, Action::ManageUsers, &Resource::Global)?;
             let mut out = view::rows(
                 conn,
-                "SELECT id,email,display_name,active FROM users ORDER BY id",
+                "SELECT id,email,display_name,active,version FROM users ORDER BY id",
                 &[],
             )?;
             for u in &mut out {
                 let id = u["id"].as_i64().unwrap();
                 u["active"] = json!(u["active"] == 1);
+                let link = if id == a.user_id { false } else {
+                    let employee: Option<i64> = conn.query_row("SELECT id FROM employees WHERE user_id=?1", [id], |r| r.get(0)).optional()?;
+                    if let Some(employee) = employee { authz::require_employee_link(conn, a, id, employee).is_ok() } else { a.has_role("hr") }
+                };
+                u["allowed"] = json!({"grant_roles":authz::grantable_roles(conn,a,id)?,"link_employee":link});
                 let emp: Option<i64> = conn
                     .query_row("SELECT id FROM employees WHERE user_id=?1", [id], |r| {
                         r.get(0)
@@ -1188,7 +1427,7 @@ fn read(
                     "SELECT status,COUNT(*) AS count FROM notifications GROUP BY status",
                     &[],
                 )?;
-                json!({"notifications":counts,"quarantined_files":conn.query_row("SELECT COUNT(*) FROM attachments WHERE scan_status='quarantined'",[],|r|r.get::<_,i64>(0))?,"active_reservation_minutes":conn.query_row("SELECT COALESCE(SUM(minutes),0) FROM reservations WHERE active=1",[],|r|r.get::<_,i64>(0))?,"sandbox_id":database.sandbox_id,"generation":database.generation})
+                json!({"notifications":counts,"scanner":if database.sandbox_id.is_some(){"demo scanner"}else{"ClamAV INSTREAM"},"scan_failed_files":conn.query_row("SELECT COUNT(*) FROM attachments WHERE scan_status='scan_failed'",[],|r|r.get::<_,i64>(0))?,"quarantined_files":conn.query_row("SELECT COUNT(*) FROM attachments WHERE scan_status='quarantined'",[],|r|r.get::<_,i64>(0))?,"active_reservation_minutes":conn.query_row("SELECT COALESCE(SUM(minutes),0) FROM reservations WHERE active=1",[],|r|r.get::<_,i64>(0))?,"sandbox_id":database.sandbox_id,"generation":database.generation})
             }
         }
         ("audit", _, _) => {

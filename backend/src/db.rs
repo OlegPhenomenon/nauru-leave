@@ -9,7 +9,7 @@ use crate::{DomainError, Res};
 
 /// Embedded migrations, in order. Each file runs once, recorded in
 /// `settings.schema_version` (count of applied migrations).
-static MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
+static MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql")), ("0002_audit_fixes", include_str!("../migrations/0002_audit_fixes.sql"))];
 
 /// Open (or create) a database file with the required pragmas.
 pub fn open(path: &Path) -> Res<Connection> {

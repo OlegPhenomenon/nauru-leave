@@ -8,9 +8,10 @@ Please report suspected vulnerabilities privately via GitHub security advisories
 | Area | Control |
 |---|---|
 | Authorisation | Every read and write is checked on the server in one module (`backend/src/authz.rs`): records, files, search, calendar, reports and exports. The UI only hides buttons; it is not the security boundary. |
+| Role administration | Business grants/revocation need independent service-wide HR; medical grants also need hr_medical. Technical account administration cannot assign these roles or change employee linkage. Entry/upload authorship is historical, and delegated visibility lasts only while the pending step and delegation are current. |
 | Self-approval | Nobody can decide a step on their own request, whatever roles or delegations they hold. |
 | Concurrency | Every mutation runs in one SQLite `BEGIN IMMEDIATE` transaction that re-checks permission, status, version, overlap and balance before writing. Two parallel requests cannot spend the same minutes. |
-| Replays | `Idempotency-Key` on submit/decide/amend/cancel; ledger entries carry a unique operation key, so retries never post twice. Reusing a key with a different body is rejected. |
+| Replays | `Idempotency-Key` on the creating and financial commands listed in API.md. Action and saved receipt commit together; replay checks current access. A changed body is rejected. Ledger entries also carry unique operation keys. |
 | Stale tabs | Request actions carry `expected_version`; a changed record returns 409 instead of silently overwriting. |
 | Sessions | Random token, stored hashed; `HttpOnly`, `Secure` (production), `SameSite=Lax`, host-only cookie. Logout and account deactivation revoke sessions. |
 | CSRF | Mutations need the per-session `X-CSRF-Token` header and a matching `Origin`/`Referer`. |
@@ -26,7 +27,15 @@ Please report suspected vulnerabilities privately via GitHub security advisories
 ## Honest limits
 - The audit log is protected against ordinary users, **not** against someone with direct access to the database
   file or the server. Operating-system access, backups and keys need their own controls.
-- The demo antivirus only detects the EICAR test string. A real installation should connect a real scanner.
+- Demo scanning is signature detection plus the EICAR test string, labelled “demo scanner” in Operations.
+  Production uses ClamAV clamd TCP INSTREAM. Set `NLD_CLAMD_ADDR=host:port` and optional
+  `NLD_CLAMD_TIMEOUT_MS` (positive milliseconds, default 10000). Missing configuration refuses uploads with
+  503 `scanner_unavailable`; a scanner error, timeout or closed connection stores `scan_failed`, blocked from
+  download. A FOUND verdict stores `quarantined`. Scanning happens outside database transactions.
+- File signatures are a format filter, not full PDF/image validation or active-content sanitization. A clean
+  antivirus verdict does not guarantee safety. Operators must maintain scanner signatures and restrict its TCP
+  endpoint to the service network. The optional commented compose service uses the pinned official
+  [ClamAV image](https://hub.docker.com/r/clamav/clamav/tags) `1.4.6-debian13-slim`; live deployment is not tested here.
 - In **demo mode** there are no passwords: visitors pick a fictional persona. Demo mode must never hold real data.
   Demo-only endpoints (persona login, time travel, mailbox) are not registered in production mode.
 - Rate limits are in-memory per process; put the service behind a reverse proxy that also limits abusive clients.

@@ -2357,8 +2357,8 @@ pub fn comment(
 pub const MAX_ATTACHMENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_REQUEST: i64 = 5;
 
-/// Upload an attachment: magic-byte type check, size/count limits, EICAR
-/// quarantine. The file is written before the DB row commits (DESIGN §10).
+/// Upload an attachment: magic-byte type check, size/count limits, and scanner
+/// verdict. The file is written before the DB row commits (DESIGN §10).
 #[allow(clippy::too_many_arguments)]
 pub fn upload_attachment(
     conn: &mut Connection,
@@ -2370,8 +2370,43 @@ pub fn upload_attachment(
     bytes: &[u8],
     sensitivity: &str,
 ) -> Res<i64> {
-    let today = clock.today(conn)?;
-    let now_ts = clock.now_ts();
+    let req = model::load_request(conn, request_id)?;
+    let ctx = request_ctx(conn, &req, clock.today(conn)?)?;
+    authz::require(
+        conn,
+        actor,
+        Action::UploadAttachment,
+        &Resource::Request(&ctx),
+    )?;
+    let prepared = prepare_attachment(store, bytes, sensitivity)?;
+    let result = record_attachment(
+        conn,
+        clock,
+        actor,
+        request_id,
+        filename,
+        sensitivity,
+        &prepared,
+    );
+    if result.is_err() {
+        let _ = store.remove(&prepared.storage_key);
+    }
+    result
+}
+
+pub struct PreparedAttachment {
+    pub storage_key: String,
+    content_type: &'static str,
+    size_bytes: i64,
+    digest: String,
+    scan_status: &'static str,
+    scan_note: Option<String>,
+}
+pub fn prepare_attachment(
+    store: &FileStore,
+    bytes: &[u8],
+    sensitivity: &str,
+) -> Res<PreparedAttachment> {
     let content_type = files::sniff(bytes)
         .ok_or_else(|| DomainError::validation("unsupported file type (PDF/PNG/JPEG only)"))?;
     if bytes.len() > MAX_ATTACHMENT_BYTES {
@@ -2380,15 +2415,32 @@ pub fn upload_attachment(
     if sensitivity != "normal" && sensitivity != "medical" {
         return Err(DomainError::validation("bad sensitivity"));
     }
-    let scan_status = if files::looks_infected(bytes) {
-        "quarantined"
-    } else {
-        "clean"
-    };
+    let scan = store.scan(bytes)?;
     let digest = hex::encode(Sha256::digest(bytes));
     // file first, then the row (crash-safe ordering)
     let storage_key = store.put(bytes)?;
-    let result = crate::db::write_tx(conn, |tx| {
+    Ok(PreparedAttachment {
+        content_type,
+        size_bytes: bytes.len() as i64,
+        digest,
+        storage_key,
+        scan_status: scan.status,
+        scan_note: scan.note,
+    })
+}
+
+pub fn record_attachment(
+    conn: &mut Connection,
+    clock: &Clock,
+    actor: &Actor,
+    request_id: i64,
+    filename: &str,
+    sensitivity: &str,
+    prepared: &PreparedAttachment,
+) -> Res<i64> {
+    let today = clock.today(conn)?;
+    let now_ts = clock.now_ts();
+    crate::db::write_tx(conn, |tx| {
         let req = model::load_request(tx, request_id)?;
         let ctx = request_ctx(tx, &req, today)?;
         authz::require(
@@ -2408,18 +2460,19 @@ pub fn upload_attachment(
         let id: i64 = tx.query_row(
             "INSERT INTO attachments
              (request_id, uploaded_by, filename, content_type, size_bytes, sha256,
-              storage_key, sensitivity, scan_status, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10) RETURNING id",
+              storage_key, sensitivity, scan_status, scan_note, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) RETURNING id",
             params![
                 request_id,
                 actor.user_id,
                 filename,
-                content_type,
-                bytes.len() as i64,
-                digest,
-                storage_key,
+                prepared.content_type,
+                prepared.size_bytes,
+                prepared.digest,
+                prepared.storage_key,
                 sensitivity,
-                scan_status,
+                prepared.scan_status,
+                prepared.scan_note,
                 now_ts
             ],
             |r| r.get(0),
@@ -2432,15 +2485,11 @@ pub fn upload_attachment(
             "attachment.upload",
             "attachment",
             Some(id),
-            serde_json::json!({"request_id": request_id, "scan_status": scan_status}),
+            serde_json::json!({"request_id": request_id, "scan_status": prepared.scan_status}),
         )?;
         notify::record_change(tx, clock, actor.user_id, "attachment.upload")?;
         Ok(id)
-    });
-    if result.is_err() {
-        let _ = store.remove(&storage_key); // orphan file cleanup
-    }
-    result
+    })
 }
 
 /// After an approved period ended: HR confirms the actual period or proposes
