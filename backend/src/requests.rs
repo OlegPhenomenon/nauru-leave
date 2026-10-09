@@ -308,6 +308,22 @@ fn validate_range(
     Ok(())
 }
 
+/// Presence is independent of download authority, including medical documents.
+/// An attached document may enter review; only a clean document allows approval.
+pub fn has_supporting_document(
+    conn: &Connection,
+    request_id: i64,
+    final_approval: bool,
+) -> Res<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM attachments WHERE
+         (request_id=?1 OR request_id=(SELECT parent_request_id FROM leave_requests WHERE id=?1))
+         AND (?2=0 OR scan_status='clean'))",
+        params![request_id, final_approval],
+        |r| r.get(0),
+    )?)
+}
+
 fn validate_change_input(
     conn: &Connection,
     attachment_request: i64,
@@ -323,14 +339,10 @@ fn validate_change_input(
         input.end_part,
     )?;
     let lt = model::leave_type_on(conn, input.leave_type_id, today)?;
-    if lt.requires_attachment {
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM attachments WHERE request_id=?1 OR request_id=(SELECT parent_request_id FROM leave_requests WHERE id=?1)", [attachment_request], |r| r.get(0))?;
-        if count == 0 {
-            return Err(DomainError::validation(format!(
-                "{} requires an attachment",
-                lt.code
-            )));
-        }
+    if lt.requires_attachment && !has_supporting_document(conn, attachment_request, false)? {
+        return Err(DomainError::validation(
+            "A readable supporting document is required",
+        ));
     }
     Ok(())
 }
@@ -1151,18 +1163,10 @@ pub fn submit(
             today,
         )?;
         let lt = model::leave_type_on(tx, rev.leave_type_id, today)?;
-        if lt.requires_attachment {
-            let n: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM attachments WHERE request_id=?1",
-                [req.id],
-                |r| r.get(0),
-            )?;
-            if n == 0 {
-                return Err(DomainError::validation(format!(
-                    "{} requires an attachment",
-                    lt.code
-                )));
-            }
+        if lt.requires_attachment && !has_supporting_document(tx, req.id, false)? {
+            return Err(DomainError::validation(
+                "A readable supporting document is required",
+            ));
         }
         let allocs = ledger::allocate(
             tx,
@@ -1475,6 +1479,14 @@ fn apply_final_approval(
     today: Date,
     now_ts: &str,
 ) -> Res<()> {
+    if req.kind != RequestKind::Cancellation
+        && model::revision_leave_type(conn, step.revision_id)?.requires_attachment
+        && !has_supporting_document(conn, req.id, true)?
+    {
+        return Err(DomainError::validation(
+            "A readable supporting document is required",
+        ));
+    }
     match req.kind {
         RequestKind::Leave => {
             // reservations -> consumptions, effective revision = current
@@ -2602,25 +2614,40 @@ pub fn actual_period(
                         ));
                     }
                 }
+                let allocations = model::revision_allocations(tx, eff.id)?;
                 let mut amounts: BTreeMap<i64, i64> = BTreeMap::new();
-                for alloc in model::revision_allocations(tx, eff.id)? {
-                    if days
-                        .iter()
-                        .any(|day| day.id == alloc.day_id && dates.contains(&day.date))
-                    {
-                        *amounts.entry(alloc.account_id).or_default() += alloc.minutes;
+                let mut remaining = Vec::new();
+                for date in &dates {
+                    let day = days.iter().find(|day| day.date == *date).unwrap();
+                    let mut original = 0;
+                    let mut available = 0;
+                    for alloc in allocations.iter().filter(|a| a.day_id == day.id) {
+                        original += alloc.minutes;
+                        let claimed: i64 = tx.query_row(
+                            "SELECT COALESCE(SUM(c.minutes),0) FROM actual_correction_allocations c
+                             JOIN adjustments a ON a.id=c.adjustment_id
+                             WHERE c.request_id=?1 AND c.date=?2 AND c.account_id=?3
+                             AND a.status IN ('proposed','applied')",
+                            params![req.id, date_s(date), alloc.account_id],
+                            |r| r.get(0),
+                        )?;
+                        let minutes = (alloc.minutes - claimed).max(0);
+                        if minutes > 0 {
+                            available += minutes;
+                            *amounts.entry(alloc.account_id).or_default() += minutes;
+                            remaining.push((day.id, *date, alloc.account_id, minutes));
+                        }
                     }
-                }
-                if amounts.values().sum::<i64>()
-                    != days
-                        .iter()
-                        .filter(|day| dates.contains(&day.date))
-                        .map(|day| day.minutes)
-                        .sum::<i64>()
-                {
-                    return Err(DomainError::validation(
-                        "worked days have no balance allocation to return",
-                    ));
+                    if original != day.minutes {
+                        return Err(DomainError::validation(
+                            "worked days have no balance allocation to return",
+                        ));
+                    }
+                    if available == 0 {
+                        return Err(DomainError::validation(
+                            "The selected day is already corrected or has a pending correction",
+                        ));
+                    }
                 }
                 let mut ids = Vec::new();
                 for (account, minutes) in amounts {
@@ -2629,7 +2656,7 @@ pub fn actual_period(
                         [account],
                         |r| Ok((r.get(0)?, r.get(1)?)),
                     )?;
-                    ids.push(ledger::propose_adjustment_in(
+                    let adjustment_id = ledger::propose_adjustment_in(
                         tx,
                         actor,
                         req.employee_id,
@@ -2640,7 +2667,11 @@ pub fn actual_period(
                         basis,
                         Some(req.id),
                         &now_ts,
-                    )?);
+                    )?;
+                    for (day_id, date, _, minutes) in remaining.iter().filter(|a| a.2 == account) {
+                        tx.execute("INSERT INTO actual_correction_allocations(adjustment_id,request_id,day_id,date,account_id,minutes) VALUES(?1,?2,?3,?4,?5,?6)", params![adjustment_id,req.id,day_id,date_s(date),account,minutes])?;
+                    }
+                    ids.push(adjustment_id);
                 }
                 audit::log(
                     tx,

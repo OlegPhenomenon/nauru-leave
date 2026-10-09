@@ -123,6 +123,9 @@ interface RequestDetail extends RequestSummary {
   steps: Step[]; decisions: Decision[]; messages: Message[];
   attachments: (AttachmentMeta | { id: number; restricted: true })[];
   reservations: Reservation[]; ledger_entries: LedgerEntry[];
+  actual_corrections: { date: string; account_id: number; applied_minutes: number; pending_minutes: number }[]; // empty for restricted views
+  supporting_document_required: boolean; // rule frozen in the current revision
+  supporting_document_ready: boolean;    // eligible clean file exists; no download authority implied
   actual: { confirmed_by: UserRef; confirmed_at: string; note: string | null } | null;
   warnings: Warning[];
   allowed_actions: ('edit'|'delete'|'submit'|'withdraw'|'respond'|'revise'|'decide'|'amend'|'cancel'|'comment'
@@ -187,7 +190,7 @@ The demo-only endpoints return 404 in production.
 | POST | `/api/requests/:id/amend` | `{ expected_version, leave_type_id, start_date, end_date, start_part, end_part, change_reason }` → `RequestDetail` (the new amendment request) |
 | POST | `/api/requests/:id/cancel` | `{ expected_version, from_date, to_date, change_reason }` (whole range = full cancel) → `RequestDetail` (new cancellation request) |
 | POST | `/api/requests/:id/reassign` | `{ expected_version, step_id, assignee_user_id }` → `RequestDetail` (hr) |
-| POST | `/api/requests/:id/actual` | `{ expected_version, action: 'confirm'|'propose_adjustment', note, worked_dates?: string[], basis_document? }` → `RequestDetail` with `adjustment_ids` (hr; after period ended; worked dates and a basis document required for proposals; returns go to original paying accounts and need a second approver) |
+| POST | `/api/requests/:id/actual` | `{ expected_version, action: 'confirm'|'propose_adjustment', note, worked_dates?: string[], basis_document? }` → `RequestDetail` with `adjustment_ids` (hr; after period ended; worked dates and a basis document required for proposals; returns go to original paying accounts and need a second approver; pending/applied guided corrections reserve those date/account minutes; already covered dates return 422) |
 | POST | `/api/requests/:id/attachments` | multipart `file`, `sensitivity` → `AttachmentMeta` |
 | GET | `/api/attachments/:id` | → file bytes (permission-checked each time) |
 | GET | `/api/approvals` | → `{ items: (RequestSummary & { step: Step; acting_for: UserRef | null; warnings: Warning[] })[], problems: (RequestSummary & { problem: string })[] }` (problems for hr: unassigned steps) |
@@ -311,3 +314,7 @@ with: number, employee, dates per day, revision, every decision (actor, acting-f
 - Scanning and file storage run outside the database dispatch lock. Recording reloads the session and actor, checks authorization and quotas, then saves the attachment and receipt atomically. Upload receipt replay requires current upload authority and returns redacted attachment metadata; it does not require medical viewing authority.
 - Migration creates an initial non-accruing policy for legacy leave types without policies, preserving their condition flags from the earliest supported date. These rules remain unverified outside demo databases.
 - Leave-type PUT includes `code`; employee-link PUT includes the user's `email`, `display_name`, `active`, `employee_id` and `expected_version`.
+
+- Guided actual-period corrections persist each selected day and original paying account in `actual_correction_allocations`. Pending and applied proposals reduce the remaining refundable allocation inside `BEGIN IMMEDIATE`; rejected proposals release it. Applying a guided proposal rechecks the original allocation ceiling under the same writer lock. Ordinary manual adjustments remain independent. Upgrade recovers earlier guided links from recorded audit dates and adjustment ids.
+- An attachment row allows a required-document request to enter review, including while its scan is pending. Final approval of leave or an amendment requires a linked `clean` attachment on the request or its parent if the submitted revision's frozen `requires_attachment` rule is true. Pending, quarantined and scan-failed files do not satisfy final approval (422: `A readable supporting document is required`). The readiness booleans expose presence only; medical file metadata/content and download permissions remain separately restricted.
+- The accrual form always offers year and month before resolving policy. Monthly runs use the selected month's first day, including a first policy beginning in October. Annual runs retain January lookup and omit the month in the API command. Missing/future-only policies disable the run; server accrual rules are unchanged.

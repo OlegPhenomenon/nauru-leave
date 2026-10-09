@@ -954,6 +954,35 @@ pub fn decide_adjustment(
             ));
         }
         if apply {
+            // Recheck under the writer lock, including proposals recovered by
+            // migration. Only guided corrections participate in this ceiling.
+            let mut st = tx.prepare("SELECT c.request_id,c.date,c.account_id,c.minutes,(SELECT SUM(ra.minutes) FROM revision_allocations ra WHERE ra.day_id=c.day_id AND ra.account_id=c.account_id) FROM actual_correction_allocations c WHERE c.adjustment_id=?1")?;
+            let corrections = st
+                .query_map([adj.id], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (request, date, account, minutes, original) in &corrections {
+                let applied: i64 = tx.query_row("SELECT COALESCE(SUM(c.minutes),0) FROM actual_correction_allocations c JOIN adjustments a ON a.id=c.adjustment_id WHERE c.request_id=?1 AND c.date=?2 AND c.account_id=?3 AND a.status='applied'",params![request,date,account],|r|r.get(0))?;
+                if applied + minutes > *original {
+                    return Err(DomainError::validation(
+                        "The selected day is already corrected",
+                    ));
+                }
+            }
+            if !corrections.is_empty()
+                && corrections.iter().map(|c| c.3).sum::<i64>() != adj.minutes
+            {
+                return Err(DomainError::validation(
+                    "Correction allocations do not match the proposal",
+                ));
+            }
             let outcome = post_entry(
                 tx,
                 &PostEntry {

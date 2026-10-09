@@ -36,6 +36,14 @@ export function accrualPolicyForYear(
   return best;
 }
 
+/** Resolve the selected period before deciding whether the API needs a month. */
+export function accrualPeriodPolicy(type: Pick<LeaveType, 'policy'> & { policies?: PolicyVersion[] }, year: number, month: number): PolicyVersion | null {
+  const january = accrualPolicyForYear(type, year);
+  const selected = accrualPolicyForYear(type, year, month);
+  if (selected?.accrual_mode === 'monthly') return selected;
+  return selected?.accrual_mode === 'annual_upfront' && january?.accrual_mode === 'annual_upfront' ? january : null;
+}
+
 /** Standard full-time schedule day used for the carry-over limit conversion. */
 export const STANDARD_DAY_MINUTES = 480;
 
@@ -93,4 +101,15 @@ export class IntentKeys {
   reset(id: string | number): void {
     this.keys.delete(id);
   }
+}
+
+/** Remaining original allocations after guided corrections (manual entries do not count). */
+export function correctableDays(days: DayRow[], corrections: { date: string; account_id: number; applied_minutes: number; pending_minutes: number }[]): DayRow[] {
+  return days.map(day => ({
+    ...day,
+    allocations: day.allocations.map(a => {
+      const c = corrections.find(c => c.date === day.date && c.account_id === a.account_id);
+      return { ...a, minutes: Math.max(0, a.minutes - (c?.applied_minutes ?? 0) - (c?.pending_minutes ?? 0)) };
+    }),
+  }));
 }

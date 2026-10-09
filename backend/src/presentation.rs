@@ -435,6 +435,17 @@ pub fn detail(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
     } else {
         Value::Null
     };
+    v["actual_corrections"] = if restricted {
+        json!([])
+    } else {
+        json!(rows(conn, "SELECT c.date,c.account_id, SUM(CASE a.status WHEN 'applied' THEN c.minutes ELSE 0 END) AS applied_minutes, SUM(CASE a.status WHEN 'proposed' THEN c.minutes ELSE 0 END) AS pending_minutes FROM actual_correction_allocations c JOIN adjustments a ON a.id=c.adjustment_id WHERE c.request_id=?1 AND a.status IN ('applied','proposed') GROUP BY c.date,c.account_id", &[&id])?)
+    };
+    let current_revision = req.current_revision_id.unwrap();
+    v["supporting_document_required"] = json!(
+        req.kind != model::RequestKind::Cancellation
+            && model::revision_leave_type(conn, current_revision)?.requires_attachment
+    );
+    v["supporting_document_ready"] = json!(requests::has_supporting_document(conn, id, true)?);
     let mut actions = Vec::new();
     let open = req.status.is_open();
     let draft = req.status == RequestStatus::Draft;

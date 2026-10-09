@@ -8,9 +8,9 @@ tsc --noEmit: OK
 
 
  Test Files  2 passed (2)
-      Tests  22 passed (22)
-   Start at  16:27:50
-   Duration  125ms (transform 63%, import 21%, tests 10%, worker 5%)
+      Tests  28 passed (28)
+   Start at  17:45:12
+   Duration  126ms (transform 66%, import 21%, tests 8%, worker 5%)
 
 
 > nauru-leave-frontend@0.1.0 build
@@ -23,6 +23,6 @@ rendering chunks...
 computing gzip size...
 dist/index.html                   0.52 kB │ gzip:   0.33 kB
 dist/assets/index-CVDlYiXJ.css   11.51 kB │ gzip:   3.21 kB
-dist/assets/index-cCoTQv6L.js   419.22 kB │ gzip: 116.44 kB
+dist/assets/index-DJPesH6d.js   420.39 kB │ gzip: 116.88 kB
 
-✓ built in 124ms
+✓ built in 112ms

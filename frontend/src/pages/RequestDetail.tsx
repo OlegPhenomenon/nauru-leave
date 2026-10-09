@@ -34,7 +34,7 @@ import {
   partLabel,
   stepLabel,
 } from '../lib/format';
-import { inForceRevision, workedMinutesByAccount } from '../lib/domain';
+import { inForceRevision, workedMinutesByAccount, correctableDays } from '../lib/domain';
 import { useApi } from '../lib/useApi';
 
 const REASON_REQUIRED: Outcome[] = [
@@ -659,6 +659,9 @@ export default function RequestDetail() {
 
       <div className="panel">
         <h2 style={{ marginTop: 0 }}>Attachments</h2>
+        {d.supporting_document_required && !d.supporting_document_ready ? (
+          <p className="alert alert-error">A readable supporting document is required before final approval.</p>
+        ) : null}
         {d.attachments.length === 0 ? <Empty>No attachments.</Empty> : null}
         <ul>
           {d.attachments.map((a) =>
@@ -1023,11 +1026,14 @@ export default function RequestDetail() {
           <Field label="Basis document (optional)">
             <input type="text" value={basisDoc} onChange={(e) => setBasisDoc(e.target.value)} />
           </Field>
+          {outcome === 'approve' && d.supporting_document_required && !d.supporting_document_ready ? (
+            <p className="alert alert-error">A readable supporting document is required</p>
+          ) : null}
           {actionErr ? <ErrBox error={actionErr} /> : null}
           <div className="btn-row">
             <button
               className="btn"
-              disabled={busy || !outcome || (REASON_REQUIRED.includes(outcome as Outcome) && !reason.trim())}
+              disabled={busy || !outcome || (outcome === 'approve' && d.supporting_document_required && !d.supporting_document_ready) || (REASON_REQUIRED.includes(outcome as Outcome) && !reason.trim())}
               onClick={() =>
                 void run(() =>
                   post<RD>(
@@ -1298,10 +1304,15 @@ export default function RequestDetail() {
                 <div>
                   {rev.days
                     .filter((day) => day.minutes > 0)
-                    .map((day) => (
+                    .map((day) => {
+                      const corrections = d.actual_corrections.filter((c) => c.date === day.date);
+                      const pending = corrections.some((c) => c.pending_minutes > 0);
+                      const fullyCorrected = correctableDays([day], corrections)[0]!.allocations.every((a) => a.minutes === 0);
+                      return (
                       <label key={day.date} style={{ display: 'block', margin: '0.25rem 0' }}>
                         <input
                           type="checkbox"
+                          disabled={pending || fullyCorrected}
                           checked={workedDates.includes(day.date)}
                           onChange={(e) =>
                             setWorkedDates(
@@ -1313,14 +1324,16 @@ export default function RequestDetail() {
                         />{' '}
                         {fmtWeekday(day.date)} {fmtDate(day.date)} — {fmtHours(day.minutes)}
                         {day.part !== 'full' ? ` (${partLabel(day.part)})` : ''}
+                        {pending ? ' — Correction pending' : corrections.length ? (fullyCorrected ? ' — Already corrected' : ' — Partly corrected') : ''}
                       </label>
-                    ))}
+                      );
+                    })}
                 </div>
               </Field>
               {workedDates.length ? (
                 <p className="small">
                   Returns per account:{' '}
-                  {workedMinutesByAccount(rev.days, workedDates)
+                  {workedMinutesByAccount(correctableDays(rev.days, d.actual_corrections), workedDates)
                     .map((a) => `${a.period_year} — ${fmtHours(a.minutes)}`)
                     .join('; ')}
                   .
@@ -1399,6 +1412,7 @@ export default function RequestDetail() {
                   fd.set('file', file!);
                   fd.set('sensitivity', sensitivity);
                   await postForm(`/requests/${d.id}/attachments`, fd, opKey);
+                  q.reload();
                 })
               }
             >

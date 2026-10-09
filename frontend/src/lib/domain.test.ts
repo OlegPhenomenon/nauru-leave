@@ -3,10 +3,12 @@ import type { DayRow, LeaveType, PolicyVersion, Revision } from '../api/types';
 import {
   IntentKeys,
   accrualPolicyForYear,
+  accrualPeriodPolicy,
   daysToMinutes,
   inForceRevision,
   minutesToDays,
   workedMinutesByAccount,
+  correctableDays,
 } from './domain';
 
 function rev(partial: Partial<Revision>): Revision {
@@ -154,6 +156,18 @@ describe('f05_workedMinutesByAccount', () => {
     },
   ];
 
+  it('r02 remaining split-account correction excludes applied and pending minutes', () => {
+    const corrections = [
+      { date: '2027-01-05', account_id: 7, applied_minutes: 240, pending_minutes: 0 },
+      { date: '2027-01-04', account_id: 9, applied_minutes: 0, pending_minutes: 480 },
+    ];
+    const remaining = correctableDays(days, corrections);
+    expect(workedMinutesByAccount(remaining, ['2027-01-04', '2027-01-05'])).toEqual([
+      { period_year: 2026, minutes: 0 }, { period_year: 2027, minutes: 240 },
+    ]);
+    expect(days[2]!.allocations[1]!.minutes).toBe(240);
+  });
+
   it('returns the per-account minutes only for the ticked dates', () => {
     const rows = workedMinutesByAccount(days, ['2027-01-05']);
     expect(rows).toEqual([
@@ -185,5 +199,26 @@ describe('f12_intentKeys', () => {
     expect(keys.forIntent(1)).not.toBe(keys.forIntent(2));
     keys.reset(1);
     expect(keys.forIntent(2)).toBe(keys.forIntent(2));
+  });
+});
+
+describe('r01 selected accrual period', () => {
+  const t = (policies: PolicyVersion[]) => ({ policies, policy: null });
+  it('annual from January', () => {
+    expect(accrualPeriodPolicy(t([policy({})]), 2026, 10)?.accrual_mode).toBe('annual_upfront');
+  });
+  it('first monthly policy from October supports October through December', () => {
+    const type = t([policy({ valid_from: '2026-10-01', accrual_mode: 'monthly' })]);
+    expect(accrualPeriodPolicy(type, 2026, 9)).toBeNull();
+    for (const month of [10, 11, 12]) expect(accrualPeriodPolicy(type, 2026, month)?.accrual_mode).toBe('monthly');
+  });
+  it('monthly from January', () => {
+    expect(accrualPeriodPolicy(t([policy({ accrual_mode: 'monthly' })]), 2026, 10)?.accrual_mode).toBe('monthly');
+  });
+  it('future-only version does not replace missing policy', () => {
+    expect(accrualPeriodPolicy(t([policy({ valid_from: '2027-01-01', accrual_mode: 'monthly' })]), 2026, 12)).toBeNull();
+  });
+  it('year without policy', () => {
+    expect(accrualPeriodPolicy(t([]), 2025, 10)).toBeNull();
   });
 });

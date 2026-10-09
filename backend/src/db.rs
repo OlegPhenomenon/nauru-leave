@@ -15,6 +15,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
         "0002_audit_fixes",
         include_str!("../migrations/0002_audit_fixes.sql"),
     ),
+    (
+        "0003_actual_corrections",
+        include_str!("../migrations/0003_actual_corrections.sql"),
+    ),
 ];
 
 /// Open (or create) a database file with the required pragmas.

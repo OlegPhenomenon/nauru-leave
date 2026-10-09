@@ -991,7 +991,7 @@ fn migration_keeps_legacy_rows_and_export_contents() {
         INSERT INTO reservations(request_id,revision_id,account_id,minutes,active,created_at,released_at) VALUES(1,1,1,480,0,'2026-10-01T00:00:00Z','2026-10-02T00:00:00Z');").unwrap();
     let csv=b"employee_service_id,request_number,revision_no,leave_type_code,date,minutes,period_year,decision_at\nT1,T-1,1,TEST,2026-11-23,480,2026,\n";
     conn.execute("INSERT INTO export_batches(kind,period_from,period_to,row_count,sha256,content,created_by,created_at,transferred_by,transferred_at) VALUES('approved_leave_transfer','2026-11-01','2026-11-30',1,'test',?1,1,'2026-10-03T09:00:00Z',1,'2026-10-03T09:10:00Z')",[csv.as_slice()]).unwrap();
-    assert_eq!(nauru_leave::db::migrate(&conn).unwrap(), 1);
+    assert_eq!(nauru_leave::db::migrate(&conn).unwrap(), 2);
     assert_eq!(nauru_leave::db::migrate(&conn).unwrap(), 0);
     let expiry: Vec<Option<i64>> = conn
         .prepare("SELECT carryover_expiry_months FROM policy_versions ORDER BY id")
@@ -1280,7 +1280,7 @@ fn migration_upgrades_legacy_demo_template_with_request_history() {
         .unwrap();
     legacy.execute_batch("COMMIT; DETACH DATABASE src").unwrap();
     legacy.pragma_update(None, "foreign_keys", "ON").unwrap();
-    assert_eq!(nauru_leave::db::migrate(&legacy).unwrap(), 1);
+    assert_eq!(nauru_leave::db::migrate(&legacy).unwrap(), 2);
     assert!(!legacy
         .prepare("PRAGMA foreign_key_check")
         .unwrap()

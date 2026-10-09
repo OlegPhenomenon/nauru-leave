@@ -4,8 +4,9 @@
 # Passwords and TOTP secrets are redacted. Absolute binary path shortened to 'nauru-leave'.
 
 $ nauru-leave init-production --data-dir /tmp/nld-n36-prod
-[2m2026-10-09T13:33:26.983664Z[0m [32m INFO[0m [2mnauru_leave::db[0m[2m:[0m applied [3mmigration[0m[2m=[0m"0001_init"
-[2m2026-10-09T13:33:26.992774Z[0m [32m INFO[0m [2mnauru_leave::db[0m[2m:[0m applied [3mmigration[0m[2m=[0m"0002_audit_fixes"
+[2m2026-10-09T14:51:05.693897Z[0m [32m INFO[0m [2mnauru_leave::db[0m[2m:[0m applied [3mmigration[0m[2m=[0m"0001_init"
+[2m2026-10-09T14:51:05.703792Z[0m [32m INFO[0m [2mnauru_leave::db[0m[2m:[0m applied [3mmigration[0m[2m=[0m"0002_audit_fixes"
+[2m2026-10-09T14:51:05.704467Z[0m [32m INFO[0m [2mnauru_leave::db[0m[2m:[0m applied [3mmigration[0m[2m=[0m"0003_actual_corrections"
 Production database ready: /tmp/nld-n36-prod/main.sqlite
 (exit 0)
 $ nauru-leave user create --email hr@example.test --role hr --role hr_medical  → exit 0 (TOTP secret printed once, redacted)

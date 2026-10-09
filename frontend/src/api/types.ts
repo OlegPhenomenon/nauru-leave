@@ -275,6 +275,9 @@ export interface RequestDetail extends RequestSummary {
   attachments: AttachmentItem[];
   reservations: Reservation[];
   ledger_entries: LedgerEntry[];
+  actual_corrections: { date: string; account_id: number; applied_minutes: number; pending_minutes: number }[];
+  supporting_document_required: boolean;
+  supporting_document_ready: boolean;
   actual: { confirmed_by: UserRef; confirmed_at: string; note: string | null } | null;
   warnings: Warning[];
   allowed_actions: AllowedAction[];

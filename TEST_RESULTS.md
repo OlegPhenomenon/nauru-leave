@@ -5,14 +5,15 @@ Every result below comes from an actual run; the complete, unedited logs are in 
 
 | Log | Command | Result |
 |---|---|---|
-| [cargo-test.log](docs/test-logs/cargo-test.log) | `cd backend && cargo test` | **147 passed, 0 failed** |
+| [cargo-test.log](docs/test-logs/cargo-test.log) | `cd backend && cargo test` | **156 passed, 0 failed** |
 | [cargo-clippy.log](docs/test-logs/cargo-clippy.log) | `cargo clippy --all-targets -- -D warnings` | clean |
-| [frontend.log](docs/test-logs/frontend.log) | `npx tsc --noEmit && npm test && npm run build` | tsc clean, **22 passed**, build OK |
-| [e2e-playwright.log](docs/test-logs/e2e-playwright.log) | `E2E_BASE=… npx playwright test` against the release binary, fresh demo data | **18 passed** |
+| [frontend.log](docs/test-logs/frontend.log) | `npx tsc --noEmit && npm test && npm run build` | tsc clean, **28 passed**, build OK |
+| [e2e-playwright.log](docs/test-logs/e2e-playwright.log) | `E2E_BASE=… npx playwright test` against the release binary, fresh demo data | **21 passed** |
+| [release-build.log](docs/test-logs/release-build.log) | `touch build.rs && cargo build --release` after frontend build | release build OK |
 | [n36-backup-restore.log](docs/test-logs/n36-backup-restore.log) | production install → backup → restore into an empty directory → continue the request | all checks as expected |
 
 Backend suites: lib 8 · audit_fixes_a 25 · audit_fixes_b 12 · audit_round2 16 · authz_tests 7 · http 28 ·
-idempotency 4 · lifecycle 10 · original_acceptance 3 · provisioning 2 · regressions 18 · scenario 9 · system 5.
+idempotency 4 · lifecycle 10 · original_acceptance 3 · provisioning 2 · reaudit_regressions 9 · regressions 18 · scenario 9 · system 5.
 All tests use real SQLite databases and the real domain code; HTTP tests go through the real axum router.
 
 Browser specs (Playwright, headless Chromium, release binary in demo mode):
@@ -27,6 +28,10 @@ Browser specs (Playwright, headless Chromium, release binary in demo mode):
   "after 0 months", carry-over limit, delegated final decision and its revocation, technical-admin limits, loss of
   access after an HR grant is revoked, revoking a used holiday, a dropped response retried once, EICAR upload,
   leave-type/schedule edits with version checks, export scope.
+
+- `e2e/reaudit.spec.ts` — three fresh sandboxes: first October monthly policy through Settings and Balances (October–December); pending/applied correction disables the same date and a forced second command cannot return more minutes; quarantined-only evidence blocks final approval, then a clean upload allows the same route to complete.
+
+L07 supporting-document notes: final approval uses the submitted revision's frozen requirement and checks clean-file presence independently of download authority. Router tests `r03_required_evidence_cannot_be_satisfied_only_by_quarantined_file`, `r03_pending_failed_quarantined_and_lost_clean_gate_frozen_rule` and `r03_failed_document_clean_replacement_parent_evidence_and_medical_privacy` cover pending, quarantined, scan-failed, lost-clean and replacement files, parent evidence and medical metadata/download denial. The UI explains the blocking requirement and disables final approval until a clean document exists.
 
 Recorded walkthrough of the new-scenario spec: [docs/media/demo-walkthrough.webm](docs/media/demo-walkthrough.webm).
 
@@ -50,13 +55,13 @@ Recorded walkthrough of the new-scenario spec: [docs/media/demo-walkthrough.webm
 | N14 | Reject and withdraw release the reservation once | `lifecycle::reject_releases`, `lifecycle::withdraw_releases` | PASS |
 | N15 | Shorten approved 5 → 3: 15 before, 17 after, old version kept | `scenario::main_scenario`, `audit_fixes_a::f01_in_force_revision_and_parent_are_visible`; e2e main- and new-scenario | PASS |
 | N16 | Add 2 days to an approved 5: only 960 reserved; rejection keeps the original | `original_acceptance::n16_increase_reserves_only_delta_and_rejection_keeps_original` | PASS |
-| N17 | Full future cancellation; past part only via HR correction | `lifecycle::full_cancel_closes_parent`, `lifecycle::partial_cancel`, `regressions::cancellation_approval_rechecks_past_days`, `regressions::past_amendment_requires_hr_correction`, `audit_fixes_a::f05_actual_worked_dates_return_original_accounts` | PASS |
+| N17 | Full future cancellation; past part only via HR correction | `lifecycle::full_cancel_closes_parent`, `lifecycle::partial_cancel`, `regressions::cancellation_approval_rechecks_past_days`, `regressions::past_amendment_requires_hr_correction`, `audit_fixes_a::f05_actual_worked_dates_return_original_accounts`, `reaudit_regressions::r02_*` (pending/applied/rejected, different dates, year boundary, split accounts, upgrade); e2e R02 | PASS |
 | N18 | Time passes the end: period ended, no new deduction | `scenario::main_scenario`; e2e main-scenario | PASS |
 | N19 | 30 Dec–5 Jan: 960 on 2026, 1440 on 2027 | `scenario::year_boundary_allocation`, `scenario::insufficient_blocks` | PASS |
-| N20 | Monthly accrual of 600 run twice → one entry | `audit_fixes_a::f02_monthly_http_requires_month_and_preserves_fact`, `audit_fixes_a::f04_*`, `audit_round2::f04_*`, `idempotency::accrual_idempotent`; e2e F02 | PASS |
+| N20 | Monthly accrual of 600 run twice → one entry | `audit_fixes_a::f02_monthly_http_requires_month_and_preserves_fact`, `audit_fixes_a::f04_*`, `audit_round2::f04_*`, `idempotency::accrual_idempotent`; `reaudit_regressions::r01_first_october_policy_accrues_october_to_december_once`, Vitest `r01 selected accrual period` (five cases); e2e F02 and R01 | PASS |
 | N21 | Carry-over with limit and expiry; close twice; old correction to the original account | `audit_fixes_a::g01_*`, `audit_round2::g01_*`, `audit_fixes_a::f03_*`, `regressions::close_period_preserves_reserved_and_later_consumed_minutes`; e2e G01, F03 | PASS |
 | N22 | Schedule/holiday change does not silently recalculate; affected requests listed | `audit_fixes_a::f11_*`, `audit_fixes_a::f13_revoke_used_exception_keeps_frozen_days`, `http::settings_mutations_and_drift`; e2e F13 | PASS |
-| N23 | +480 adjustment: self-approval blocked, second person applies once | `authz_tests::adjustment_two_person`, `audit_fixes_b::f12_parallel_adjustment_commands_are_one_intent`; e2e F12 | PASS |
+| N23 | +480 adjustment: self-approval blocked, second person applies once | `authz_tests::adjustment_two_person`, `audit_fixes_b::f12_parallel_adjustment_commands_are_one_intent`; `reaudit_regressions::r02_same_worked_day_cannot_refund_twice_with_new_commands`, `r02_year_boundary_and_parallel_proposals_reserve_original_minutes`, `r02_pending_rejected_different_days_and_manual_adjustments`, `r02_upgrade_recovers_day_links_and_apply_checks_legacy_duplicates`, `r02_split_account_rejection_leaves_only_the_uncorrected_part`; e2e F12 and R02 | PASS |
 | N24 | Historical leave already in the opening balance is not deducted again | `imports_exports::tests::historical_modes` | PASS |
 | N25 | Import preview errors; repeated import does not duplicate | `imports_exports::tests::import_preview_errors`, `imports_exports::tests::import_idempotent`, `http::import_preview_errors`, `http::import_idempotent` | PASS |
 | N26 | Transfer and deactivation | `authz_tests::transfer_access`, `regressions::transfer_requires_target_scope_and_defers_future_reassign`, `audit_fixes_a::f06_absence_history_includes_inactive_employee_and_day_assignment`, `audit_fixes_b::f09_http_accounts_linking_and_independent_grants` (deactivation ends the session) | PASS |
@@ -66,7 +71,7 @@ Recorded walkthrough of the new-scenario spec: [docs/media/demo-walkthrough.webm
 | N30 | Two editors: the second gets a version conflict | `lifecycle::stale_version`, `audit_fixes_a::f11_settings_versions_increment_and_conflict_without_overwrite`, `audit_fixes_a::f11_settings_reject_stale_version` | PASS |
 | N31 | Mail failure: decision saved once, notification retried | `system::notification_retry`, `http::smtp_delivery_happens_outside_database_transaction`, `http::notification_worker_and_registry_marker` | PASS |
 | N32 | CSV formula injection; transfer mark is not a payroll import | `http::csv_formula_safe`, `http::main_scenario_export`, `audit_fixes_a::f07_*`, `audit_round2::f07_*` | PASS |
-| N33 | Disguised executable, oversize file, archive, scanner failure | `http::upload_checks`, `system::upload_checks`, `audit_fixes_b::p01_*`, `audit_round2::p01_slow_clamd_does_not_block_concurrent_get`; e2e P01 | PASS |
+| N33 | Disguised executable, oversize file, archive, scanner failure | `http::upload_checks`, `system::upload_checks`, `audit_fixes_b::p01_*`, `audit_round2::p01_slow_clamd_does_not_block_concurrent_get`; `reaudit_regressions::r03_*` (frozen rule, missing/pending/quarantined/failed/clean, loss of eligibility, parent evidence, medical privacy); e2e P01 and R03 | PASS |
 | N34 | Second factor, session revocation, brute force, CSRF, direct status change | `http::csrf_required`, `http::production_password_totp_and_lockout`, `http::new_privileges_require_fresh_totp`, `audit_round2::f08_delegation_only_*`, `scenario::step_outcomes_validated` | PASS |
 | N35 | Demo sessions isolated; no external email; no demo login in production | `http::sandbox_isolation`, `http::production_has_no_demo_routes`, `system::email_minimal` | PASS |
 | N36 | Backup, restore on an empty installation, same data and files, continue the request | `system::backup_restore_roundtrip`, `http::server_backup_restore_file_layout`; manual run [n36-backup-restore.log](docs/test-logs/n36-backup-restore.log) | PASS |

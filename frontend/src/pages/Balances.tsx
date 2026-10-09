@@ -9,7 +9,7 @@ import type {
 } from '../api/types';
 import { Dur, Empty, ErrBox, Field, Loading, Modal } from '../components/ui';
 import { fmtDate, fmtDateTime } from '../lib/format';
-import { accrualPolicyForYear, IntentKeys } from '../lib/domain';
+import { accrualPeriodPolicy, IntentKeys } from '../lib/domain';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 
@@ -366,9 +366,9 @@ export default function Balances() {
       {modal === 'accrual' || modal === 'close' ? (
         (() => {
           const selType = typesQ.data?.find((t) => t.id === accrual.leave_type_id) ?? null;
-          const accrualPolicy = selType ? accrualPolicyForYear(selType, accrual.period_year) : null;
+          const accrualPolicy = selType ? accrualPeriodPolicy(selType, accrual.period_year, accrual.month) : null;
           const needsMonth = modal === 'accrual' && accrualPolicy?.accrual_mode === 'monthly';
-          const selectedPolicy = selType && needsMonth ? accrualPolicyForYear(selType, accrual.period_year, accrual.month) : accrualPolicy;
+          const selectedPolicy = accrualPolicy;
           const invalidPeriod = modal === 'accrual' && (!selectedPolicy || (needsMonth && selectedPolicy.accrual_mode !== 'monthly'));
           return (
         <Modal title={modal === 'accrual' ? 'Run accrual' : 'Close period'} onClose={() => setModal(null)}>
@@ -383,7 +383,7 @@ export default function Balances() {
           <Field label="Leave type">
             <select value={accrual.leave_type_id} onChange={(e) => setAccrual({ ...accrual, leave_type_id: Number(e.target.value) })}>
               <option value={0}>—</option>
-              {typesQ.data?.filter((t) => t.uses_balance).map((t) => (
+              {typesQ.data?.filter((t) => t.uses_balance || t.policies?.some((p) => p.uses_balance)).map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>
@@ -393,8 +393,8 @@ export default function Balances() {
           <Field label="Period year">
             <input type="number" value={accrual.period_year} onChange={(e) => setAccrual({ ...accrual, period_year: Number(e.target.value) })} />
           </Field>
-          {needsMonth ? (
-            <Field label="Month" hint="The policy in force for this year accrues monthly — pick which month to post.">
+          {modal === 'accrual' ? (
+            <Field label="Month" hint="Choose the period first. Monthly accrual uses the policy on its first day; annual accrual uses January.">
               <select value={accrual.month} onChange={(e) => setAccrual({ ...accrual, month: Number(e.target.value) })}>
                 {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(
                   (name, i) => (
