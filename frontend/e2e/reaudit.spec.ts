@@ -6,7 +6,7 @@ import type { LeaveType, RequestDetail } from '../src/api/types';
 // starts a fresh sandbox; no shared seed modifications or requests are reused.
 test('R01: first policy from October supports October–December monthly accrual', async ({ page }) => {
   await page.goto('/'); await pick(page, 'Maria'); await goTo(page, '/settings/leave-types');
-  await page.getByRole('button', { name: 'Add leave type', exact: true }).click();
+  await page.getByRole('button', { name: 'Add leave type…', exact: true }).click();
   let modal = page.locator('.modal');
   await modal.getByLabel('Name', { exact: true }).fill('October monthly demonstration');
   await modal.getByLabel('Rules start on').fill('2026-10-01');
@@ -101,7 +101,7 @@ test('R03: quarantined-only evidence blocks final approval; a clean file allows 
   await goTo(page, `/requests/${req.id}`);
   const eicar = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
   await upload(page, 'quarantined-support.pdf', `%PDF-1.4\n${eicar}`);
-  await openDetails(page, 'Documents');
+  await expect(page.locator('.dc-docs')).toBeVisible();
   await expect(page.locator('body')).toContainText('blocked by the virus check');
   await expect(page.locator('a[href^="/api/attachments/"]', { hasText: 'quarantined-support.pdf' })).toHaveCount(0);
   let detail = await apiGet<RequestDetail>(page, `/requests/${req.id}`);

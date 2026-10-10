@@ -20,35 +20,33 @@ import { remainingRanges } from '../lib/domain';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 import { ActionNeeded } from './employee/ActionNeeded';
+import { cancellationDays } from './request/text';
 import './MyLeave.css';
 
 const CLOSED: RequestSummary['status'][] = ['rejected', 'withdrawn', 'cancelled'];
 
-function kindText(kind: RequestSummary['kind']): string {
-  return kind === 'amendment' ? 'Change of dates' : 'Cancellation of days';
-}
+type DisplayRequest = RequestSummary & { ranges?: [string, string][]; changedDates?: string[] };
 
-function RequestTable({ rows }: { rows: RequestSummary[] }) {
+function RequestTable({ rows }: { rows: DisplayRequest[] }) {
   const { config } = useSession();
   return (
-    <DataTable<RequestSummary>
+    <DataTable<DisplayRequest>
       columns={[
         {
           label: 'Dates',
           title: true,
           render: (r) => {
             const phase =
-              r.status === 'approved'
+              r.status === 'approved' && r.kind === 'leave'
                 ? fmtPhase(r.date_phase, r.start_date, config?.business_date)
                 : '';
             return (
               <>
                 <Link to={`/requests/${r.id}`}>
-                  {('ranges' in r ? (r.ranges as [string, string][]).map(([a, b]) => fmtRange(a, b)).join(', ') : fmtRange(r.start_date, r.end_date))}
+                  {r.kind === 'cancellation' ? `${r.status === 'approved' ? 'Cancelled' : 'Cancel'} ${r.changedDates?.map(fmtDay).join(', ') || fmtRange(r.start_date, r.end_date)}` : `${r.kind === 'amendment' ? r.status === 'approved' ? 'Changed to ' : 'Change to ' : ''}${r.ranges?.map(([a, b]) => fmtRange(a, b)).join(', ') || fmtRange(r.start_date, r.end_date)}`}
                 </Link>
                 <div className="muted small">
                   {r.number}
-                  {r.kind !== 'leave' ? ` · ${kindText(r.kind)}` : ''}
                   {phase ? ` · ${phase}` : ''}
                 </div>
               </>
@@ -63,9 +61,9 @@ function RequestTable({ rows }: { rows: RequestSummary[] }) {
         },
         {
           label: 'Status',
-          render: (r) => <StatusBadge status={r.status} label={r.status === 'needs_information' ? 'Question for you' : undefined} />,
+          render: (r) => <StatusBadge status={r.status} label={r.kind !== 'leave' && r.status === 'approved' ? 'Done' : r.status === 'needs_information' ? 'Question for you' : undefined} />,
         },
-        { label: '', render: (r) => r.status === 'approved' && r.kind === 'leave' ? <Link className="btn btn-ghost btn-sm" to={`/requests/${r.id}/print`}>Print</Link> : ['submitted', 'under_review', 'needs_information'].includes(r.status) ? <Link className="btn btn-ghost btn-sm" to={`/requests/${r.id}?action=withdraw`}>Withdraw…</Link> : null },
+        { label: '', className: 'request-actions', render: (r) => r.status === 'approved' && r.kind === 'leave' ? <Link className="btn btn-ghost btn-sm" to={`/requests/${r.id}/print`}>Print</Link> : ['submitted', 'under_review', 'needs_information'].includes(r.status) ? <Link className="btn btn-ghost btn-sm" to={`/requests/${r.id}?action=withdraw`}>Withdraw…</Link> : null },
       ]}
       rows={rows}
       empty="Nothing here."
@@ -79,19 +77,23 @@ export default function MyLeave() {
   const userId = me?.user.id;
   const balancesQ = useApi(
     () => (empId ? api<BalanceSummary[]>('/balances/me') : Promise.resolve([])),
-    [empId],
+    [empId, config?.business_date],
   );
   const requestsQ = useApi(
     () =>
       api<unknown>('/requests', { query: { scope: 'mine' } }).then(async (d) =>
         Promise.all(unwrapList<RequestSummary>(d).map(async r => {
-          if (r.kind !== 'leave' || r.status !== 'approved') return r;
+          if (r.kind === 'leave' && r.status !== 'approved') return r;
           const detail = await api<RequestDetail>(`/requests/${r.id}`);
           const rev = detail.in_force_revision ?? detail.current_revision;
+          if (r.kind === 'cancellation') {
+            const days = cancellationDays(detail);
+            return { ...r, changedDates: days.map(day => day.date), total_minutes: days.reduce((sum, day) => sum + day.minutes, 0) };
+          }
           return { ...r, ranges: remainingRanges(rev) };
         })),
       ),
-    [userId],
+    [userId, config?.business_date],
   );
 
   const requests = requestsQ.data ?? [];
@@ -125,7 +127,7 @@ export default function MyLeave() {
       <PageHeader
         title="My leave"
         primary={
-          <Link className="btn" to="/requests/new">
+          <Link className={awaitingAnswer.length ? "btn btn-secondary" : "btn"} to="/requests/new">
             Request leave
           </Link>
         }
@@ -138,10 +140,11 @@ export default function MyLeave() {
         </div>
       ) : null}
 
-      {awaitingAnswer.map((r) => (
+      {awaitingAnswer.map((r, index) => (
         <ActionNeeded
           key={r.id}
           request={r}
+          primary={index === 0}
           onDone={() => {
             requestsQ.reload();
             balancesQ.reload();

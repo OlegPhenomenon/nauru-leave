@@ -10,7 +10,7 @@ import { readAll } from './data';
 import { Check, ROLE_INFO, SidePanel, useSave, userRoleLabel } from './shared';
 
 function accessSummary(u: UserListItem): string {
-  return u.roles.map((r) => `${userRoleLabel(r.role)}${r.scope_org_unit_id ? ` — ${r.scope_name}` : ''}`).join('; ') || 'No extra access';
+  return u.roles.filter(r => r.role !== 'hr' || !u.roles.some(m => m.role === 'hr_medical' && m.scope_org_unit_id === r.scope_org_unit_id)).map(r => `${r.role === 'hr_medical' ? 'HR officer (with medical files)' : userRoleLabel(r.role)}${r.scope_org_unit_id ? ` — ${r.scope_name}` : ''}`).join(', ') || 'No extra access';
 }
 export default function UsersAccess() {
   const { me } = useSession();
@@ -30,12 +30,13 @@ export default function UsersAccess() {
   }
   const rows = (q.data ?? []).filter((u) => (!roleFilter || u.roles.some((r) => r.role === roleFilter)) && `${u.display_name} ${u.email}`.toLowerCase().includes(search.toLowerCase())).sort((a, b) => a.display_name.localeCompare(b.display_name));
   return <>
-    <PageHeader title="Users & access" subtitle="Who can sign in, and what each person may do." primary={tech || hr ? <>{tech ? <button className="btn" onClick={() => setAddOpen(true)}>Add user</button> : null}<button className={tech ? 'btn btn-secondary' : 'btn'} onClick={() => setAccessOpen(true)}>Give access…</button></> : undefined} />
+    <PageHeader title="Users & access" subtitle="Who can sign in, and what each person may do." primary={tech || hr ? <>{tech ? <button className="btn" onClick={() => setAddOpen(true)}>Add user…</button> : null}<button className={tech ? 'btn btn-secondary' : 'btn'} onClick={() => setAccessOpen(true)}>Give access…</button></> : undefined} />
     <Field label="Find a user"><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Name or email" /></Field>
     {roleFilter ? <p>Showing {userRoleLabel(roleFilter)} <button className="btn btn-ghost btn-sm" onClick={() => setParam('role', null)}>Show all users</button></p> : null}
     {q.loading ? <Loading /> : q.error ? <ErrBox error={q.error} /> : <DataTable<UserListItem> rows={rows} rowLink={(u) => { const next = new URLSearchParams(params); next.set('user', String(u.id)); return `/settings/users?${next}`; }} empty="No users match." columns={[
       { label: 'Person', render: (u) => <>{u.display_name}{!u.active ? <> <Tag>Inactive</Tag></> : null}<div className="muted small">{u.email}</div></> },
       { label: 'Access', render: accessSummary },
+      { label: '', className:'row-actions', render:u => u.allowed.grant_roles.length ? <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); setParam('user',String(u.id)); }}>Edit access…</button> : null },
     ]} />}
     <p className="muted small">Managers get approval rights from <Link to="/people">People</Link> › Manager.</p>
     {selected ? <UserPanel key={selected.id} user={selected} hr={hr} onClose={() => setParam('user', null)} onSaved={q.reload} /> : null}
@@ -58,7 +59,14 @@ function UserPanel({ user: u, hr, onClose, onSaved, picker, dialog = false }: { 
     return [info.role, { checked: !!grants.length, scopes: grants.length ? grants.map((r) => String(r.scope_org_unit_id ?? '')) : [''] }];
   })));
   const setRole = (role: string, state: RoleState) => setRoles((old) => ({ ...old, [role]: state }));
+  const hasChanges = active !== u.active || name.trim() !== u.display_name || email.trim() !== u.email || employeeId !== String(u.employee?.id ?? '') || ROLE_INFO.some(info => {
+    if (!u.allowed.grant_roles.includes(info.role)) return false;
+    const wanted = new Set(roles[info.role]?.checked ? roles[info.role]!.scopes : []);
+    const current = new Set(u.roles.filter(r => r.role === info.role).map(r => String(r.scope_org_unit_id ?? '')));
+    return wanted.size !== current.size || [...wanted].some(s => !current.has(s));
+  });
   async function save() {
+    if (!hasChanges) return;
     let changed = false;
     try {
       const linkChanged = u.allowed.link_employee && employeeId !== String(u.employee?.id ?? '');
@@ -77,11 +85,11 @@ function UserPanel({ user: u, hr, onClose, onSaved, picker, dialog = false }: { 
         }
         for (const grant of current) if (!wanted.has(String(grant.scope_org_unit_id ?? ''))) { await del(`/role-grants/${grant.id}`); changed = true; }
       }
-      onSaved(); onClose(); return 'Access updated.';
+      onSaved(); onClose(); return `${u.display_name}: access updated.`;
     } catch (error) { setPartial(changed); throw error; }
   }
   const Container = dialog ? Modal : SidePanel;
-  return <Container title={dialog ? 'Give access' : u.display_name} onClose={() => { if (!busy) onClose(); }} footer={<><button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" form="access-form" className="btn" disabled={busy || partial}>{busy ? 'Saving…' : 'Save access'}</button></>}>
+  return <Container title={dialog ? 'Give access' : u.display_name} onClose={() => { if (!busy) onClose(); }} footer={<><button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancel</button><button type="submit" form="access-form" className="btn" disabled={busy || partial || !hasChanges}>{busy ? 'Saving…' : 'Save access'}</button></>}>
     {picker ? <fieldset disabled={busy || partial}>{picker}</fieldset> : null}
     <p className="muted small">{u.email}</p>
     {err ? <ErrBox error={err} /> : null}
@@ -143,5 +151,5 @@ export function GiveAccessModal({ users, hr, onClose, onSaved }: { users: UserLi
     {eligible.map((u) => <option key={u.id} value={u.id}>{u.display_name} — {u.email}</option>)}
   </select></Field>;
   return user ? <UserPanel key={user.id} user={user} hr={hr} dialog picker={picker} onClose={onClose} onSaved={onSaved} /> :
-    <Modal title="Give access" onClose={onClose}>{picker}{!eligible.length ? <p className="muted">No users are available for you to give access.</p> : null}</Modal>;
+    <Modal title="Give access" onClose={onClose} footer={<><button className="btn btn-ghost" onClick={onClose}>Cancel</button><button className="btn" disabled>Save access</button></>}>{picker}{!eligible.length ? <p className="muted">No users are available for you to give access.</p> : null}</Modal>;
 }

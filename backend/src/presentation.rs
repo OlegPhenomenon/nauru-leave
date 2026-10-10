@@ -316,6 +316,27 @@ pub fn audit_rows(
     }
     Ok(out)
 }
+fn message_ids(conn: &Connection, actor: &Actor, ctx: &authz::RequestCtx) -> Res<Vec<i64>> {
+    let actor = Actor::load(conn, actor.user_id, actor.today)?;
+    // Messages have no revision id. Keep their privacy if a later revision
+    // reclassifies the request; frozen sensitive material remains sensitive.
+    let sensitive = ctx.sensitive_type || ids(conn,
+        "SELECT id FROM request_revisions WHERE request_id=?1", &[&ctx.id])?
+        .into_iter().map(|id| model::revision_leave_type(conn, id).map(|t| t.sensitive))
+        .collect::<Res<Vec<_>>>()?.into_iter().any(|s| s);
+    let restricted = sensitive
+        && actor.employee_id != Some(ctx.employee_id)
+        && !actor.any_role_in_scope(conn, &["hr", "hr_medical"], ctx.org_unit_id)?;
+    // The route permits one open question at a time. Answers belong to the
+    // latest preceding question; comments and system updates do not end it.
+    ids(conn, "SELECT m.id FROM messages m WHERE m.request_id=?1 AND
+        (?2=0 OR (m.kind='question' AND m.author_user_id=?3) OR
+         (m.kind='answer' AND (SELECT q.author_user_id FROM messages q
+          WHERE q.request_id=m.request_id AND q.kind='question' AND q.id<m.id
+          ORDER BY q.id DESC LIMIT 1)=?3)) ORDER BY m.id",
+        &[&ctx.id, &restricted, &actor.user_id])
+}
+
 pub fn detail(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
     let mut v = summary(conn, actor, id)?;
     let req = model::load_request(conn, id)?;
@@ -397,11 +418,10 @@ pub fn detail(conn: &Connection, actor: &Actor, id: i64) -> Res<Value> {
     let family=ids(conn,"SELECT id FROM leave_requests WHERE id=?1 OR (parent_request_id=?1 AND status='approved') ORDER BY id",&[&id])?;
     let decisions=family.into_iter().map(|i|model::decisions_of(conn,i)).collect::<Res<Vec<_>>>()?.into_iter().flatten().collect::<Vec<_>>().iter().map(|d|Ok(json!({"request":link(Some(model::load_revision(conn,d.revision_id)?.request_id))?,"revision_id":d.revision_id,"id":d.id,"step_id":d.step_id,"step_kind":model::load_step(conn,d.step_id)?.kind.as_str(),"revision_no":model::load_revision(conn,d.revision_id)?.rev_no,"actor":user(conn,Some(d.actor_user_id))?,"acting_for":user(conn,d.acting_for_user_id)?,"authority":d.authority,"outcome":d.outcome,"reason":if revision_restricted(d.revision_id)?{None}else{d.reason.clone()},"basis_document":if revision_restricted(d.revision_id)?{None}else{d.basis_document.clone()},"created_at":d.created_at}))).collect::<Res<Vec<_>>>()?;
     v["decisions"] = json!(decisions);
-    let messages = if restricted {
-        vec![]
-    } else {
-        rows(conn,"SELECT id,kind,author_user_id,body,created_at FROM messages WHERE request_id=?1 ORDER BY id",&[&id])?.into_iter().map(|mut m|{m["author"]=user(conn,m["author_user_id"].as_i64())?;m.as_object_mut().unwrap().remove("author_user_id");Ok(m)}).collect::<Res<Vec<Value>>>()?
-    };
+    let visible_messages = message_ids(conn, actor, &ctx)?;
+    let messages = rows(conn,"SELECT id,kind,author_user_id,body,created_at FROM messages WHERE request_id=?1 ORDER BY id",&[&id])?.into_iter()
+        .filter(|m| m["id"].as_i64().is_some_and(|i| visible_messages.contains(&i)))
+        .map(|mut m|{m["author"]=user(conn,m["author_user_id"].as_i64())?;m.as_object_mut().unwrap().remove("author_user_id");Ok(m)}).collect::<Res<Vec<Value>>>()?;
     v["messages"] = json!(messages);
     v["attachments"] = json!(ids(
         conn,
@@ -692,7 +712,7 @@ pub fn redact_cached(conn: &Connection, actor: &Actor, value: &mut Value) -> Res
                 decision["basis_document"] = Value::Null;
             }
         }
-        for key in ["messages", "reservations", "ledger_entries"] {
+        for key in ["reservations", "ledger_entries"] {
             value[key] = json!([]);
         }
         if value["actual"].is_object() {
@@ -703,6 +723,12 @@ pub fn redact_cached(conn: &Connection, actor: &Actor, value: &mut Value) -> Res
                 event["details"] = json!({"restricted":true});
             }
         }
+    }
+    let mut message_ctx = ctx.clone();
+    message_ctx.sensitive_type |= saved_restricted;
+    let visible_messages = message_ids(conn, actor, &message_ctx)?;
+    if let Some(messages) = value["messages"].as_array_mut() {
+        messages.retain(|m| m["id"].as_i64().is_some_and(|i| visible_messages.contains(&i)));
     }
     // A receipt may contain previously visible history even when its header is
     // currently non-sensitive. Re-check each saved revision independently.

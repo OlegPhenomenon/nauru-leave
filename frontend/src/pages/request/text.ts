@@ -175,6 +175,17 @@ function rangeOf(dates: string[]): string {
   return fmtRange(sorted[0]!, sorted[sorted.length - 1]!);
 }
 
+/** Cancelled dates retain their original schedule even after approval. */
+export function cancellationDays(d: RequestDetail): { date: string; minutes: number }[] {
+  const rev = d.current_revision;
+  return rev.days.filter(day => day.explanation === `Cancelled by ${d.number}`).map(day => {
+    const before = d.parent_in_force_revision?.days.find(w => w.date === day.date && w.minutes > 0);
+    const half = (day.date === rev.start_date && rev.start_part !== 'full') ||
+      (day.date === rev.end_date && rev.end_part !== 'full');
+    return { date: day.date, minutes: before?.minutes ?? (half ? Math.trunc(day.scheduled_minutes / 2) : day.scheduled_minutes) };
+  });
+}
+
 export interface ChangeSummary {
   /** "Now approved: 2–3 Nov (2 days) → Asked for: 2–4 Nov (3 days)." */
   headline: string;
@@ -361,7 +372,7 @@ const VERBS: Record<StepKind, StepVerbs> = {
     question: 'needs_information',
     questionLabel: 'Ask a question…',
     questionConfirm: 'Send question',
-    yourStep: 'Your recommendation',
+    yourStep: 'Needs your recommendation',
   },
   hr_check: {
     positive: 'checked_ok',
@@ -372,7 +383,7 @@ const VERBS: Record<StepKind, StepVerbs> = {
     question: 'needs_information',
     questionLabel: 'Ask a question…',
     questionConfirm: 'Send question',
-    yourStep: 'HR check',
+    yourStep: 'Needs your HR check',
   },
   final_decision: {
     positive: 'approve',
@@ -383,7 +394,7 @@ const VERBS: Record<StepKind, StepVerbs> = {
     question: 'needs_information',
     questionLabel: 'Ask a question…',
     questionConfirm: 'Send question',
-    yourStep: 'Final decision',
+    yourStep: 'Needs your final decision',
   },
 };
 

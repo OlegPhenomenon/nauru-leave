@@ -6,7 +6,7 @@ import { apiGet, apiPost, approveChain, decide, goTo, more, openDetails, pick, p
 
 async function newLeaveType(page: Page, _code: string, name: string) {
   await goTo(page, '/settings/leave-types');
-  await page.getByRole('button', { name: 'Add leave type', exact: true }).click();
+  await page.getByRole('button', { name: 'Add leave type…', exact: true }).click();
   const modal = page.locator('.modal');
   await modal.getByLabel('Name', { exact: true }).fill(name);
   await modal.getByLabel('Rules start on').fill('2026-01-01');
@@ -16,7 +16,7 @@ async function newLeaveType(page: Page, _code: string, name: string) {
   return page.locator('.drawer');
 }
 async function openPolicyForm(page: Page, typePanel: ReturnType<Page['locator']>) {
-  await typePanel.getByRole('button', { name: 'Change rules from a date…' }).click();
+  await typePanel.getByRole('button', { name: 'Change rules…' }).click();
   await openDetails(page, 'More rules');
   return page.locator('.modal');
 }
@@ -60,7 +60,7 @@ test('F02: monthly accrual posts each month once, retry is a no-op', async ({
     await m.getByRole('button', { name: 'Add', exact: true }).click();
     const result = await response; expect(result.status()).toBe(200);
     const data = await result.json();
-    await expect(m).toContainText(`${data.skipped_existing} already had it`);
+    await expect(m).toContainText(data.posted === 0 ? 'Everyone already has the' : `${data.skipped_existing} already had it`);
     await m.getByRole('button', { name: 'Done' }).click();
     await expect(m).toHaveCount(0);
     return data;
@@ -146,8 +146,7 @@ test('F08: delegated final decision works, revocation cuts access', async ({
   // Sam's seeded paper request waits at the HR step — move it to final.
   await goTo(page, '/approvals');
   const samRow = page.locator('.queue-row', { hasText: 'Sam Oduya' });
-  await samRow.locator('summary').click();
-  await samRow.getByRole('menuitem', { name: 'Open full request' }).click();
+  await samRow.getByRole('link', { name: 'Open full request' }).click();
   await page.waitForURL(u => /^\/requests\/\d+$/.test(u.pathname));
   const reqId = requestId(page);
   await decide(page);
@@ -173,17 +172,16 @@ test('F08: delegated final decision works, revocation cuts access', async ({
   await modal.getByRole('button', { name: 'Save stand-in' }).click();
   await expect(page.locator('.modal')).toHaveCount(0);
   await expect(
-    page.locator('.sentence-list > li', { hasText: 'Elena Ward' }),
+    page.getByRole('row', { name: /Elena Ward/ }),
   ).toContainText('Active');
 
   // Tom sees the item, marked as delegated, and can decide.
   await pick(page, 'Tom');
   await goTo(page, '/approvals');
   const tomRow = page.locator('.queue-row', { hasText: 'Sam Oduya' });
-  await expect(tomRow).toContainText('Final decision');
+  await expect(tomRow).toContainText('Needs your final decision');
   await expect(tomRow).toContainText('for Elena Ward');
-  await tomRow.locator('summary').click();
-  await tomRow.getByRole('menuitem', { name: 'Open full request' }).click();
+  await tomRow.getByRole('link', { name: 'Open full request' }).click();
   await page.waitForURL(u => /^\/requests\/\d+$/.test(u.pathname));
   await expect(page.locator('body')).toContainText('for Elena Ward');
   await decide(page);
@@ -196,13 +194,13 @@ test('F08: delegated final decision works, revocation cuts access', async ({
   // Revoke the delegation: Tom loses access to the request.
   await goTo(page, '/settings/delegations');
   await page
-    .locator('.sentence-list > li', { hasText: 'Elena Ward' })
-    .getByRole('button', { name: 'End now' })
+    .getByRole('row', { name: /Elena Ward/ })
+    .getByRole('button', { name: 'End…' })
     .click();
   await page.locator('.modal').getByRole('button', { name: 'End stand-in', exact: true }).click();
   await openDetails(page, 'Ended stand-ins');
   await expect(
-    page.locator('.sentence-list > li', { hasText: 'Elena Ward' }),
+    page.getByRole('row', { name: /Elena Ward/ }),
   ).toContainText('Ended');
 
   await pick(page, 'Tom');
@@ -226,7 +224,8 @@ test('F09: tech_admin has no business-role grant or employee-link controls', asy
 
   const mariaRow = page.getByRole('row', { name: /Maria Santos/ });
   await expect(mariaRow).toContainText('HR officer');
-  await expect(mariaRow.locator('button')).toHaveCount(0);
+  await expect(mariaRow.getByRole('button', { name: 'Edit access…', exact: true })).toBeVisible();
+  await expect(mariaRow.locator('button').filter({ hasNotText: /^Edit access…$/ })).toHaveCount(0);
   await mariaRow.click();
   const panel = page.locator('.drawer');
   await expect(panel.getByRole('checkbox', { name: /^HR officer Sets/ })).toBeDisabled();
@@ -321,7 +320,9 @@ test('F13: revoking a holiday keeps old requests frozen, new previews recount', 
   await modal.getByRole('button', { name: 'Add holiday' }).click();
   await expect(page.locator('.modal')).toHaveCount(0);
   await goTo(page, '/settings/holidays');
-  await expect(page.getByRole('row', { name: /Audit demo holiday/ })).toContainText('Holiday');
+  await expect(page.getByRole('row', { name: /Audit demo holiday/ })).toContainText('Audit demo holiday');
+  const holidays = await apiGet<{ items: { name: string; minutes: number; revoked_at: string | null }[] }>(page, '/calendar-exceptions');
+  expect(holidays.items.find(h => h.name === 'Audit demo holiday')).toMatchObject({ minutes: 0, revoked_at: null });
 
   // Alexei books around the holiday — 10 Nov is not counted.
   await pick(page, 'Alexei');
@@ -349,10 +350,12 @@ test('F13: revoking a holiday keeps old requests frozen, new previews recount', 
   modal = page.locator('.modal');
   await modal.locator('textarea').fill('gazetted date corrected');
   await modal.getByRole('button', { name: 'Remove holiday' }).click();
+  await expect(modal).toContainText('These future requests need to be checked');
+  await modal.getByRole('button', { name: 'Done', exact: true }).click();
   await expect(page.locator('.modal')).toHaveCount(0);
   await expect(page.locator('body')).toContainText('These future requests need to be checked');
   await openDetails(page, 'Removed holidays');
-  await expect(page.getByRole('row', { name: /Audit demo holiday/ })).toContainText('Removed');
+  await expect(page.locator('details').filter({ has: page.locator('summary', { hasText: /^Removed holidays/ }) }).getByRole('row', { name: /Audit demo holiday/ })).toContainText('gazetted date corrected');
 
   // The old, approved request keeps its frozen 4-day calculation.
   await goTo(page, `/requests/${reqId}`);

@@ -190,7 +190,7 @@ export default function RequestDetail() {
     d.source === 'paper'
       ? `paper form${d.paper_received_date ? ` received ${fmtDate(d.paper_received_date)}` : ''}`
       : null,
-    d.entered_by.id !== me.user.id ? `entered by ${d.entered_by.display_name}` : null,
+    ('user_id' in d.employee ? d.entered_by.id !== d.employee.user_id : d.source === 'paper' && (!isOwner || d.entered_by.id !== me.user.id)) ? `entered by ${d.entered_by.display_name}` : null,
   ].filter(Boolean);
   const subtitle = (
     <>
@@ -235,7 +235,8 @@ export default function RequestDetail() {
     more.push({ label: 'Confirm leave was taken', onSelect: () => setModal('actual-confirm') });
   if (can('propose_actual_adjustment') && !employeeActions.some((a) => a.action === 'actual-worked'))
     more.push({ label: 'Days actually worked…', onSelect: () => setModal('actual-worked') });
-  if (can('print'))
+  const printOnly = can('print') && ['withdrawn', 'cancelled', 'rejected'].includes(d.status);
+  if (can('print') && !printOnly)
     more.push({ label: 'Print', onSelect: () => navigate(`/requests/${d.id}/print`) });
   if (can('withdraw'))
     more.push({
@@ -311,7 +312,7 @@ export default function RequestDetail() {
         back={{ to: isOwner ? '/my' : '/approvals', label: isOwner ? 'My leave' : 'Approvals' }}
         title={isOwner ? ownerTitle(d) : reviewerTitle(d)}
         subtitle={subtitle}
-        primary={primary}
+        primary={primary || printOnly ? <>{primary}{printOnly ? <Link className="btn btn-ghost" to={`/requests/${d.id}/print`}>Print</Link> : null}</> : undefined}
         more={more}
       />
 
@@ -324,7 +325,7 @@ export default function RequestDetail() {
         <span className="rq-status-text">{statusSentence(d, viewer, today)}</span>
       </div>
 
-      <p className="rq-duration">{d.kind === 'cancellation' ? changeSummary(d)?.headline : `${fmtDuration((d.in_force_revision ?? d.current_revision).total_minutes, d.minutes_per_day)} of leave`}</p>
+      <p className="rq-duration">{d.kind === 'cancellation' ? changeSummary(d)?.headline : `${fmtDuration(d.status === 'cancelled' ? d.current_revision.total_minutes : (d.in_force_revision ?? d.current_revision).total_minutes, d.minutes_per_day)}${['withdrawn', 'cancelled', 'rejected'].includes(d.status) ? ' — not taken' : ' of leave'}`}</p>
       {isOwner && d.attachments.length ? <AttachmentLines d={d} owner /> : null}
       {activeChange ? <p className="rq-change-pending">A {activeChange.kind === 'cancellation' ? 'cancellation' : 'change'} is waiting for approval. <Link to={`/requests/${activeChange.id}`}>View request</Link></p> : null}
       {isOwner && pastLeave ? <p className="muted small">Past leave can be corrected by HR.</p> : null}
@@ -355,7 +356,7 @@ export default function RequestDetail() {
         <DaysDetails d={d} />
         <StepsDetails d={d} viewer={viewer} />
         <ChangesDetails d={d} />
-        <DocumentsDetails d={d} owner={isOwner} />
+        {!((isOwner || decidable) && d.attachments.length) ? <DocumentsDetails d={d} owner={isOwner} /> : null}
         <EffectDetails d={d} />
         <ActualDetails d={d} />
         <HistoryDetails d={d} startOpen={searchParams.get('history') === 'open'} />

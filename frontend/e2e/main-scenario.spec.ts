@@ -51,7 +51,7 @@ test('main scenario steps 1–5: balance, request, approval, amendment, time tra
   ).toHaveValue('2026-11-09');
   await page.locator('.modal .field:has-text("Last day") input').fill('2026-11-11');
   await page
-    .locator('.modal .field:has-text("Why? (required)") input')
+    .locator('.modal .field:has-text("Why? (required)") textarea')
     .fill('Plans changed — shorter trip');
   await page.getByRole('button', { name: 'Send change for approval' }).click();
   await page.waitForURL(

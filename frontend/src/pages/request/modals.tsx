@@ -75,6 +75,7 @@ function Footer({
   danger,
   label,
   busyLabel,
+  closeLabel = 'Cancel',
 }: {
   ctx: ModalCtx;
   confirm: () => void;
@@ -83,10 +84,11 @@ function Footer({
   danger?: boolean | undefined;
   label: string;
   busyLabel?: string | undefined;
+  closeLabel?: string;
 }) {
   return (
     <>
-      <button type="button" className="btn btn-ghost" disabled={busy} onClick={ctx.onClose}>Cancel</button>
+      <button type="button" className="btn btn-ghost" disabled={busy} onClick={ctx.onClose}>{closeLabel}</button>
       <button type="button" className={`btn${danger ? ' btn-danger' : ''}`} disabled={busy || disabled} onClick={confirm}>
         {busy ? (busyLabel ?? 'Sending…') : label}
       </button>
@@ -134,11 +136,13 @@ export function DateFields({
   value,
   onChange,
   showType,
+  typeOnly = false,
 }: {
   leaveTypes: LeaveType[];
   value: DateFieldsValue;
   onChange: (patch: Partial<DateFieldsValue>) => void;
   showType?: boolean | undefined;
+  typeOnly?: boolean;
 }) {
   const lt = leaveTypes.find((t) => t.id === value.leave_type_id);
   const halfDay = lt ? policyInForceOn(lt, value.start_date)?.allow_half_day ?? false : false;
@@ -163,6 +167,7 @@ export function DateFields({
       </select>
     </Field>
   );
+  if (typeOnly) return typeSelect;
   return (
     <>
       {showType ? typeSelect : null}
@@ -186,7 +191,6 @@ export function DateFields({
       {halfDay ? <Details title="Starts or ends with a half day?" defaultOpen={value.start_part !== 'full' || value.end_part !== 'full'}>
         <DayParts single={value.start_date === value.end_date} startPart={value.start_part} endPart={value.end_part} prefix="change" onChange={(start, end) => onChange({ start_part: start, end_part: end })} />
       </Details> : null}
-      {!showType ? <Details title="Change leave type">{typeSelect}</Details> : null}
     </>
   );
 }
@@ -425,10 +429,11 @@ export function ChangeDatesModal({
       )}
       <DateFields leaveTypes={ctx.leaveTypes} value={fields} onChange={patch} />
       {preview.data ? <p className="small" role="status">Was {fmtDuration(inForceRevision(d).total_minutes, d.minutes_per_day)} → now {fmtDuration(preview.data.total_minutes, preview.data.minutes_per_day)}{selectedBalance?.leave_type.uses_balance && leftAfter !== undefined ? ` · ${fmtDuration(leftAfter - preview.data.total_minutes, preview.data.minutes_per_day)} left after` : ''}.</p> : null}
+      <Details title="Change leave type"><DateFields leaveTypes={ctx.leaveTypes} value={fields} onChange={patch} typeOnly /></Details>
       <ErrBox error={preview.error} />
       {preview.data?.errors.map((error, i) => <ErrBox key={i} error={new ApiError(422, error.code, error.message)} />)}
       <Field label="Why? (required)">
-        <input type="text" value={why} onChange={(e) => setWhy(e.target.value)} />
+        <textarea rows={2} value={why} onChange={(e) => setWhy(e.target.value)} />
       </Field>
       <ErrBox error={err} />
     </Modal>
@@ -494,6 +499,7 @@ export function CancelModal({ ctx }: { ctx: ModalCtx }) {
           busy={busy}
           disabled={!sel.size || !why.trim() || runs.length !== 1}
           label='Send cancellation'
+          closeLabel="Keep my days"
           confirm={() =>
             void run(async () => {
               const range = runs[0];
@@ -512,8 +518,7 @@ export function CancelModal({ ctx }: { ctx: ModalCtx }) {
     >
       <p className="muted small">Tick the days to cancel on {who}. Days already taken can't be
         cancelled here — HR can correct them instead.</p>
-      <button type="button" className="btn btn-ghost" onClick={() => setSel(new Set(future.map(x => x.date)))}>Select all days</button>
-      <div className="field"><span className="field-label">Days to cancel</span>
+      <div className="field"><div className="rq-check-label"><span className="field-label">Days to cancel</span><button type="button" className="link-button" onClick={() => setSel(new Set(future.map(x => x.date)))}>Select all</button></div>
         <div className="rq-checklist" role="group" aria-label="Days to cancel">
           {future.map((day) => (
             <label key={day.date} className="rq-check">
@@ -537,7 +542,7 @@ export function CancelModal({ ctx }: { ctx: ModalCtx }) {
       {runs.length > 1 ? <p className="field-hint" role="status">Choose consecutive working days. Submit another cancellation after this one is decided.</p> : null}
       {!future.length ? <Empty>No future working days remain. Ask HR to correct past leave.</Empty> : null}
       <Field label="Why? (required)">
-        <input type="text" value={why} onChange={(e) => setWhy(e.target.value)} />
+        <textarea rows={2} value={why} onChange={(e) => setWhy(e.target.value)} />
       </Field>
       <ErrBox error={err} />
     </Modal>

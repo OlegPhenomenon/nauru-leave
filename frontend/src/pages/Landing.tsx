@@ -196,14 +196,14 @@ export default function Landing() {
 
   return (
     <div className="hero">
-      <h1>Nauru Leave Desk</h1>
+      <h1>{isDemo ? 'Try the demo' : 'Nauru Leave Desk'}</h1>
       <p>
         {isDemo
           ? 'Try a private demo of a leave system for a public service.'
           : 'Sign in to manage leave.'}
       </p>
 
-      {isDemo ? (
+      <div className="landing-card">{isDemo ? (
         me && !picking ? (
           <ContinuePanel me={me} demo onSwitch={() => setPicking(true)} />
         ) : picking || statusQ.data?.has_sandbox ? (
@@ -218,7 +218,7 @@ export default function Landing() {
         <ContinuePanel me={me} demo={false} />
       ) : (
         <ProductionLogin />
-      )}
+      )}</div>
       {statusQ.error ? <ErrBox error={statusQ.error} /> : null}
     </div>
   );

@@ -109,7 +109,14 @@ fn parse_csv(bytes: &[u8]) -> Res<Csv> {
 
 impl Csv {
     fn col(&self, name: &str) -> Option<usize> {
-        self.header.iter().position(|h| h == name)
+        self.header.iter().position(|h| h == name).or_else(|| {
+            let alias = match name {
+                "service_id" => "staff_number",
+                "period_year" => "year",
+                _ => return None,
+            };
+            self.header.iter().position(|h| h == alias)
+        })
     }
     fn require(&self, names: &[&str]) -> Res<()> {
         for n in names {
@@ -174,10 +181,41 @@ fn leave_type_by_code(conn: &Connection, code: &str) -> Res<Option<model::LeaveT
     }
 }
 
+fn leave_type_by_name_or_code(conn: &Connection, value: &str) -> Res<Option<model::LeaveType>> {
+    let needle = value.trim().to_lowercase();
+    let mut st = conn.prepare("SELECT id, code, name FROM leave_types ORDER BY id")?;
+    let types = st
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // Preserve code matching even if another type has that code as its name.
+    if let Some((id, _, _)) = types
+        .iter()
+        .find(|(_, code, _)| code.trim().to_lowercase() == needle)
+    {
+        return model::load_leave_type(conn, *id).map(Some);
+    }
+    let mut names = types
+        .iter()
+        .filter(|(_, _, name)| name.trim().to_lowercase() == needle);
+    if let Some((id, _, _)) = names.next() {
+        if names.next().is_none() {
+            return model::load_leave_type(conn, *id).map(Some);
+        }
+    }
+    Ok(None)
+}
+
 fn opening_posted(conn: &Connection, employee_id: i64, leave_type_id: i64, year: i64) -> Res<bool> {
     let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM ledger_entries WHERE op_key=?1",
-        [format!("opening:{employee_id}:{leave_type_id}:{year}")],
+        "SELECT COUNT(*) FROM ledger_entries l JOIN leave_accounts a ON a.id=l.account_id
+         WHERE a.employee_id=?1 AND a.leave_type_id=?2 AND a.period_year=?3 AND l.kind IN ('opening','accrual')",
+        params![employee_id, leave_type_id, year],
         |r| r.get(0),
     )?;
     Ok(n > 0)
@@ -230,7 +268,7 @@ pub fn import_preview(
     let mut rows: Vec<PreviewRow> = Vec::new();
     match kind {
         "employees" => validate_employees(conn, &csv, &mut rows)?,
-        "opening_balances" => validate_openings(conn, &csv, &mut rows)?,
+        "opening_balances" => validate_openings(conn, &csv, today, &mut rows)?,
         "historical_leave" => validate_history(conn, &csv, mode.as_deref().unwrap(), &mut rows)?,
         _ => unreachable!(),
     }
@@ -418,8 +456,33 @@ fn validate_employees(conn: &Connection, csv: &Csv, out: &mut Vec<PreviewRow>) -
     Ok(())
 }
 
-fn validate_openings(conn: &Connection, csv: &Csv, out: &mut Vec<PreviewRow>) -> Res<()> {
-    csv.require(&["service_id", "leave_type", "period_year", "minutes"])?;
+// Parse decimal days as half-days, with checked integer arithmetic only.
+fn half_days(value: &str) -> Option<i64> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, "0"));
+    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let half = match fraction {
+        "0" => 0,
+        "5" => 1,
+        _ => return None,
+    };
+    whole.parse::<i64>().ok()?.checked_mul(2)?.checked_add(half)
+}
+
+fn validate_openings(
+    conn: &Connection,
+    csv: &Csv,
+    today: Date,
+    out: &mut Vec<PreviewRow>,
+) -> Res<()> {
+    csv.require(&["service_id", "leave_type", "period_year"])?;
+    let days_column = csv.col("days");
+    let amount_error = if csv.col("minutes").is_some() == days_column.is_some() {
+        Some("Use exactly one of the minutes or days columns")
+    } else {
+        None
+    };
     let mut seen: BTreeSet<(String, String, i64)> = BTreeSet::new();
     for (line, r) in &csv.rows {
         let mut errors = Vec::new();
@@ -427,6 +490,7 @@ fn validate_openings(conn: &Connection, csv: &Csv, out: &mut Vec<PreviewRow>) ->
         let lt_code = cell(r, csv.col("leave_type"));
         let year_s = cell(r, csv.col("period_year"));
         let min_s = cell(r, csv.col("minutes"));
+        let days_s = cell(r, days_column);
         let basis = cell(r, csv.col("basis"));
 
         let emp = if service_id.is_empty() {
@@ -436,7 +500,11 @@ fn validate_openings(conn: &Connection, csv: &Csv, out: &mut Vec<PreviewRow>) ->
             match employee_by_service_id(conn, &service_id)? {
                 Some(id) => Some(id),
                 None => {
-                    errors.push(format!("unknown service_id '{service_id}'"));
+                    errors.push(if csv.header.iter().any(|h| h == "staff_number") {
+                        format!("Unknown staff number {service_id}")
+                    } else {
+                        format!("unknown service_id '{service_id}'")
+                    });
                     None
                 }
             }
@@ -445,7 +513,7 @@ fn validate_openings(conn: &Connection, csv: &Csv, out: &mut Vec<PreviewRow>) ->
             errors.push("missing leave_type".to_string());
             None
         } else {
-            match leave_type_by_code(conn, &lt_code)? {
+            match leave_type_by_name_or_code(conn, &lt_code)? {
                 Some(t) => Some(t),
                 None => {
                     errors.push(format!("unknown leave_type '{lt_code}'"));
@@ -460,15 +528,41 @@ fn validate_openings(conn: &Connection, csv: &Csv, out: &mut Vec<PreviewRow>) ->
                 None
             }
         };
-        let minutes = match min_s.parse::<i64>() {
-            Ok(m) if m < 0 => {
-                errors.push("negative value".to_string());
-                None
+        let minutes = if let Some(message) = amount_error {
+            errors.push(message.to_string());
+            None
+        } else if days_column.is_some() {
+            match half_days(&days_s) {
+                Some(halves) => match emp {
+                    Some(e) => {
+                        let mpd = crate::queries::minutes_per_day(conn, e, today)?;
+                        // A half-day must remain exactly representable in integer minutes.
+                        match halves.checked_mul(mpd).filter(|m| m % 2 == 0) {
+                            Some(m) => Some(m / 2),
+                            None => {
+                                errors.push("Days cannot be represented in whole minutes".into());
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                },
+                None => {
+                    errors.push("Days must be a number like 12 or 12.5".into());
+                    None
+                }
             }
-            Ok(m) => Some(m),
-            Err(_) => {
-                errors.push(format!("bad minutes '{min_s}'"));
-                None
+        } else {
+            match min_s.parse::<i64>() {
+                Ok(m) if m < 0 => {
+                    errors.push("negative value".into());
+                    None
+                }
+                Ok(m) => Some(m),
+                Err(_) => {
+                    errors.push(format!("bad minutes '{min_s}'"));
+                    None
+                }
             }
         };
         if let (Some(s), Some(t), Some(y)) = (emp.as_ref().map(|_| &service_id), lt.as_ref(), year)
@@ -503,7 +597,7 @@ fn validate_openings(conn: &Connection, csv: &Csv, out: &mut Vec<PreviewRow>) ->
             })?,
             _ => serde_json::json!({
                 "service_id": service_id, "leave_type": lt_code,
-                "period_year": year_s, "minutes": min_s, "basis": basis,
+                "period_year": year_s, "minutes": min_s, "days": days_s, "basis": basis,
                 "employee_id": emp,
             }),
         };
@@ -538,7 +632,11 @@ fn validate_history(
             match employee_by_service_id(conn, &service_id)? {
                 Some(id) => Some(id),
                 None => {
-                    errors.push(format!("unknown service_id '{service_id}'"));
+                    errors.push(if csv.header.iter().any(|h| h == "staff_number") {
+                        format!("Unknown staff number {service_id}")
+                    } else {
+                        format!("unknown service_id '{service_id}'")
+                    });
                     None
                 }
             }
@@ -774,6 +872,9 @@ pub fn import_commit(
                     let d: OpeningRow = serde_json::from_value(row.data.clone())?;
                     let emp = employee_by_service_id(tx, &d.service_id)?
                         .ok_or_else(|| DomainError::validation("service_id vanished"))?;
+                    if opening_posted(tx, emp, d.leave_type_id, d.period_year)? {
+                        return Err(DomainError::validation("An opening balance or entitlement already exists for this person and year. Use a balance correction instead."));
+                    }
                     let acc = ledger::ensure_account(tx, emp, d.leave_type_id, d.period_year)?;
                     let out = ledger::post_entry(
                         tx,
@@ -1114,6 +1215,9 @@ pub fn create_export_scoped(
                     r.minutes.to_string(),
                     r.period_year.to_string(),
                     r.decision_at.clone(),
+                    if r.leave_type_code == "RESTRICTED" { "Away".into() } else {
+                        tx.query_row("SELECT name FROM leave_types WHERE code=?1", [&r.leave_type_code], |row| row.get::<_,String>(0)).unwrap_or_else(|_| "Leave".into())
+                    },
                 ]
             })
             .collect();
@@ -1127,6 +1231,7 @@ pub fn create_export_scoped(
                 "minutes",
                 "period_year",
                 "decision_at",
+                "Leave type (sick leave details are hidden)",
             ],
             &csv_rows,
         )?;

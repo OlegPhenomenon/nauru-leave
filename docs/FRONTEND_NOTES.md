@@ -30,8 +30,8 @@ endpoints use it. The client accepts either `{items|rows: []}` or a bare array
   the next year. `carryover_limit_min`: null = no limit; the policy form edits
   it in days and converts to minutes (`STANDARD_DAY_MINUTES` = 480, the demo
   full-time day — no org-level day length is exposed to the client).
-  The leave-rule panel shows the “Fictional demo rule” badge when
-  `status === 'demo_fictional'` and a Verify button when it is not `'verified'`.
+  The demo strip identifies fictional rules. The leave-rule panel offers “Mark rules as checked”
+  for rules whose status is neither `'verified'` nor `'demo_fictional'`.
 - `BalanceSummary` (from `GET /api/balances/me` and
   `GET /api/balances/:employee_id`) carries `policy: PolicyVersion | null`;
   `POST /api/requests/preview` also returns `policy`. Every surface that shows
@@ -162,7 +162,10 @@ Cross-page shortcuts preserve context: `/requests/new?employee=…` selects pape
 Run against a real demo backend and Vite's API proxy. No business responses are mocked. The dropped-response test forwards the mutation to the server before aborting its reply.
 
 ```bash
-# From the repository root. Reuse an existing binary, or build it once:
+# From the repository root. Build the frontend before the release backend:
+cd frontend
+npx tsc --noEmit && npx vitest run && npx vite build
+cd ..
 cd backend && cargo build --release --target-dir target
 cd ..
 
@@ -179,11 +182,10 @@ NLD_API=http://127.0.0.1:18080 npx vite --host 127.0.0.1 --port 5173 --strictPor
 
 # In a third terminal:
 cd frontend
-npx tsc --noEmit && npx vitest run && npx vite build
 npx playwright test
 ```
 
-`backend/target/debug/nauru-leave` also works. Keep all Cargo artifacts in `backend/target`; the backend source need not change for these tests. The larger sandbox quota is only a local test setting. Default `E2E_BASE` is `http://127.0.0.1:5173`. Chromium must already be installed or be installed once with `npx playwright install chromium`.
+Keep all Cargo artifacts in `backend/target`. Rebuild the release backend after each frontend build so the embedded UI matches the tested source, and use a fresh `NLD_DATA_DIR` for the final full run. The larger sandbox quota is only a local test setting. Default `E2E_BASE` is `http://127.0.0.1:5173`. Chromium must already be installed or be installed once with `npx playwright install chromium`.
 
 Each test has a fresh browser context and creates its own sandbox. The suites cover the main lifecycle, new-person lifecycle, audit fixes and R01/R02/R03 regressions. `click-budget.spec.ts` adds thirteen measured task flows and cross-page shortcut checks. Its helper counts every action click, checks the budget, and checks visible body text before and after each click and after form input; date/form selections are not counted as navigation clicks. Fixture creation and persona selection happen before measurement.
 

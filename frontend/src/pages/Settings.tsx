@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Navigate, NavLink, useParams } from 'react-router';
+import { Navigate, NavLink, useNavigate, useParams } from 'react-router';
 import { isHr } from '../lib/nav';
 import { useSession } from '../lib/session';
 import './Settings.css';
@@ -35,6 +35,7 @@ const SECTIONS: Section[] = [
  */
 export default function Settings() {
   const { me } = useSession();
+  const navigate = useNavigate();
   const { section } = useParams();
   const hr = me ? isHr(me) : false;
   const visible = SECTIONS.filter((s) => !s.hrOnly || hr);
@@ -54,7 +55,8 @@ export default function Settings() {
           </NavLink>
         ))}
       </nav> : null}
-      <div className="settings-content">{cur.render()}</div>
+      {hr ? <label className="settings-section-picker">Section<select value={cur.slug} onChange={e => navigate(e.target.value === 'overview' ? '/settings' : `/settings/${e.target.value}`)}>{visible.map(s => <option value={s.slug} key={s.slug}>{s.label}</option>)}</select></label> : null}
+      <div className="settings-content stack">{cur.render()}</div>
     </div>
   );
 }

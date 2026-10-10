@@ -33,7 +33,7 @@ test('review: amendment balance, returned days, child rows and partial cancellat
   await expect(page.locator(`a[href="/requests/${original.id}"]`).first()).toHaveText('19–22 Oct 2026');
   await goTo(page, '/balances/8/explain?leave_type_id=1');
   await expect(page.locator('.sum-list')).toContainText('given 20 days');
-  await expect(page.locator('.sum-list')).toContainText('4 days went to approved leave');
+  await expect(page.locator('.sum-list')).toContainText('4 days used');
   await expect(page.locator('main')).not.toContainText('Leave 19–22 Oct 2026 approved');
   const current = await apiGet<RequestDetail>(page, `/requests/${original.id}`);
   const response = await apiPost(page, `/requests/${original.id}/cancel`, { expected_version: current.version, from_date: '2026-10-20', to_date: '2026-10-20', change_reason: 'Working on Tuesday' });
@@ -52,8 +52,8 @@ test('review: manager sees their pending question and the returned answer; badge
   await page.goto('/'); await pick(page, 'Alexei'); const request = await create(page);
   await pick(page, 'Olga');
   let row = page.locator('.queue-row').filter({ has: page.locator(`button[aria-controls="request-${request.id}"]`) });
-  await row.getByText('More', { exact: true }).click();
-  await row.getByRole('menuitem', { name: 'Ask a question…' }).click();
+  await row.locator('.queue-row-toggle').click();
+  await row.getByRole('button', { name: 'Ask a question…' }).click();
   await row.getByLabel('Your question').fill('Which flight?');
   await row.getByRole('button', { name: 'Send question', exact: true }).click();
   const waiting = page.locator('details').filter({ has: page.locator('summary', { hasText: /^Waiting for the employee/ }) });
@@ -75,7 +75,8 @@ test('review: manager sees their pending question and the returned answer; badge
 
 test('review: admin shortcuts fit three clicks and Settings uses a single footer', async ({ page }) => {
   await page.goto('/'); await pick(page, 'Maria');
-  await more(page, 'Add unit');
+  await page.getByRole('navigation', { name: 'Main', exact: true }).getByRole('link', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Add unit…', exact: true }).click();
   await page.locator('.modal').getByLabel('Name', { exact: true }).fill('Review Unit');
   await page.locator('.modal').getByRole('button', { name: 'Add unit', exact: true }).click();
   await expect(page.locator('.modal')).toHaveCount(0);
@@ -93,11 +94,12 @@ test('review: admin shortcuts fit three clicks and Settings uses a single footer
 
 test('review: year defaults stay appropriate and the correction badge refreshes after approval', async ({ page }) => {
   await page.goto('/'); await pick(page, 'Maria');
+  await goTo(page, '/balances');
   await more(page, 'Add entitlement…');
-  await expect(page.locator('.modal').getByLabel('Year', { exact: true })).toHaveValue('2026');
+  await expect(page.locator('.modal').getByLabel('Year', { exact: true })).toHaveValue('2027');
   await page.locator('.modal').getByRole('button', { name: 'Cancel', exact: true }).click();
-  await pick(page, 'Maria'); await more(page, 'Close year…');
-  await expect(page.locator('.modal').getByLabel('Year to close')).toHaveValue('2025');
+  await pick(page, 'Maria'); await goTo(page, '/balances'); await more(page, 'Close year…');
+  await expect(page.getByRole('dialog', { name: 'Close 2025', exact: true }).getByLabel('Year to close')).toHaveValue('2025');
   await page.locator('.modal').getByRole('button', { name: 'Cancel', exact: true }).click();
   await goTo(page, '/balances');
   await page.getByRole('button', { name: 'Correct balance…', exact: true }).click();

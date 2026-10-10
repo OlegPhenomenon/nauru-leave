@@ -12,6 +12,7 @@ import type {
   Schedule,
 } from '../../api/types';
 import { Details, ErrBox, Field, Loading, Modal } from '../../components/ui';
+import { nextPatternDate } from '../../lib/domain';
 import { fmtDate } from '../../lib/format';
 import { useApi } from '../../lib/useApi';
 import { savePersonChanges } from './edit';
@@ -57,26 +58,30 @@ function EditPersonForm({ employee, units, people, schedules, today, onClose, on
   employee: EmployeeDetail; units: OrgUnit[]; people: PersonRef[]; schedules: Schedule[]; today: string;
   onClose: () => void; onSaved: (message: string, affected: AffectedRequest[]) => void;
 }) {
-  const [changes, setChanges] = useState({ unitId: employee.org_unit?.id ?? 0, managerId: employee.manager?.id ?? 0, scheduleId: employee.schedule?.id ?? 0, from: today, reassign: true });
+  const [changes, setChanges] = useState({ unitId: employee.org_unit?.id ?? 0, managerId: employee.manager?.id ?? 0, scheduleId: employee.schedule?.id ?? 0, from: nextPatternDate(employee.schedules, today), reassign: true });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiError | null>(null);
+  const [dateMessage, setDateMessage] = useState('');
   const [partial, setPartial] = useState(false);
   const [affected, setAffected] = useState<AffectedRequest[]>([]);
+  const patternChanged = changes.scheduleId !== (employee.schedule?.id ?? 0);
+  const minimumDate = nextPatternDate(employee.schedules, today);
+  const dateError = patternChanged && changes.from < minimumDate ? `Choose ${fmtDate(minimumDate)} or later — the current work pattern has already started.` : '';
   const changed = changes.unitId !== (employee.org_unit?.id ?? 0) || changes.managerId !== (employee.manager?.id ?? 0) || changes.scheduleId !== (employee.schedule?.id ?? 0);
   async function save() {
-    if (busy || partial || !changed) return;
-    setBusy(true); setErr(null);
+    if (busy || partial || !changed || dateError) return;
+    setBusy(true); setErr(null); setDateMessage('');
     let saved = false;
     let requests: AffectedRequest[] = [];
     try {
       await savePersonChanges(employee, changes, (_operation, future) => { saved = true; requests = [...requests, ...future]; setAffected(requests); });
       onSaved(`${employee.full_name}: changes saved from ${fmtDate(changes.from)}.`, requests);
-    } catch (e) { setErr(errOf(e)); setPartial(saved); }
+    } catch (e) { const error = errOf(e); if (error.message.includes('schedule valid_from must follow')) setDateMessage('The work pattern changed while this form was open. Reload this person and choose a later start date.'); else setErr(error); setPartial(saved); }
     finally { setBusy(false); }
   }
   return <Modal title={`Edit ${employee.full_name}`} onClose={() => { if (!busy) { if (partial) onSaved('Some changes were saved. Check the updated person before editing again.', affected); else onClose(); } }} footer={<>
     <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => partial ? onSaved('Some changes were saved. Check the updated person before editing again.', affected) : onClose()}>Cancel</button>
-    {partial ? <button type="button" className="btn" onClick={() => onSaved('Some changes were saved. Check the updated person before editing again.', affected)}>Reload people</button> : <button type="button" className="btn" disabled={busy || !changed || !changes.unitId || !changes.scheduleId || !changes.from} onClick={() => void save()}>{busy ? 'Saving…' : 'Save changes'}</button>}
+    {partial ? <button type="button" className="btn" onClick={() => onSaved('Some changes were saved. Check the updated person before editing again.', affected)}>Reload people</button> : <button type="button" className="btn" disabled={busy || !!dateError || !changed || !changes.unitId || !changes.scheduleId || !changes.from} onClick={() => void save()}>{busy ? 'Saving…' : 'Save changes'}</button>}
   </>}>
     <ErrBox error={err} />
     {partial ? <p role="status">The work pattern was saved, but the assignment could not be saved. Reload people before trying again.</p> : null}
@@ -85,7 +90,7 @@ function EditPersonForm({ employee, units, people, schedules, today, onClose, on
       <Field label="Unit"><select value={changes.unitId} onChange={(e) => setChanges({ ...changes, unitId: Number(e.target.value) })}><option value={0}>Choose a unit</option>{units.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}</select></Field>
       <Field label="Manager"><select value={changes.managerId} onChange={(e) => setChanges({ ...changes, managerId: Number(e.target.value) })}><option value={0}>No manager</option>{people.filter((p) => p.id !== employee.id).map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}</select></Field>
       <Field label="Work pattern"><select value={changes.scheduleId} onChange={(e) => setChanges({ ...changes, scheduleId: Number(e.target.value) })}><option value={0}>Choose a work pattern</option>{schedules.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
-      <Field label="From"><input type="date" value={changes.from} onChange={(e) => setChanges({ ...changes, from: e.target.value })} /></Field>
+      <Field label="From" error={dateMessage || dateError} hint={patternChanged ? `The new pattern can start from ${fmtDate(minimumDate)}. Saved hours stay the same; the number of days may change.` : undefined}><input type="date" min={patternChanged ? minimumDate : undefined} value={changes.from} onChange={(e) => setChanges({ ...changes, from: e.target.value })} /></Field>
       <label className="field"><input type="checkbox" checked={changes.reassign} onChange={(e) => setChanges({ ...changes, reassign: e.target.checked })} /> Move open approvals to the new manager</label>
     </fieldset>
   </Modal>;
@@ -249,13 +254,15 @@ export function PatternDialog({
 
   if (e && !prefilled) {
     setScheduleId(e.schedule?.id ?? schedules[0]?.id ?? 0);
+    setFrom(nextPatternDate(e.schedules, today));
     setPrefilled(true);
   }
 
   const scheduleName = schedules.find((s) => s.id === scheduleId)?.name;
+  const [dateMessage, setDateMessage] = useState('');
 
   async function save() {
-    if (!e) return;
+    if (!e || from < nextPatternDate(e.schedules, today)) return;
     setBusy(true);
     setErr(null);
     try {
@@ -268,7 +275,8 @@ export function PatternDialog({
         r.affected_future_requests ?? [],
       );
     } catch (ex) {
-      setErr(errOf(ex));
+      const error = errOf(ex);
+      if (error.message.includes('schedule valid_from must follow')) setDateMessage('The current pattern changed while this form was open. Reload this person and choose a later date.'); else setErr(error);
     } finally {
       setBusy(false);
     }
@@ -286,7 +294,7 @@ export function PatternDialog({
           <button
             type="button"
             className="btn"
-            disabled={busy || !e || !scheduleId || !from}
+            disabled={busy || !e || !scheduleId || !from || from < nextPatternDate(e.schedules, today)}
             onClick={() => void save()}
           >
             Save change
@@ -308,8 +316,8 @@ export function PatternDialog({
               ))}
             </select>
           </Field>
-          <Field label="From" hint="Days after this date are counted on the new pattern.">
-            <input type="date" value={from} onChange={(x) => setFrom(x.target.value)} />
+          <Field label="From" error={dateMessage || (from < nextPatternDate(e.schedules, today) ? `Choose ${fmtDate(nextPatternDate(e.schedules, today))} or later.` : undefined)} hint="Saved hours stay the same. Days from this date use the new pattern, so the number of days left may change.">
+            <input type="date" min={e ? nextPatternDate(e.schedules, today) : undefined} value={from} onChange={(x) => setFrom(x.target.value)} />
           </Field>
         </>
       ) : null}
@@ -574,7 +582,7 @@ export function UnitDialog({
   unit?: OrgUnit | null | undefined;
   units: OrgUnit[];
   onClose: () => void;
-  onSaved: (message: string) => void;
+  onSaved: (message: string, id?: number) => void;
 }) {
   const [name, setName] = useState(unit?.name ?? '');
   const [parentId, setParentId] = useState(unit?.parent_id ?? 0);
@@ -595,14 +603,14 @@ export function UnitDialog({
           active,
           expected_version: unit.version,
         });
-        onSaved(`Unit saved: ${name.trim()}.`);
+        onSaved(`${name.trim()} saved.`, unit.id);
       } else {
-        await post('/org-units', {
+        const result = await post<{ id: number }>('/org-units', {
           code: deriveCode(name),
           name: name.trim(),
           parent_id: parentId || null,
         });
-        onSaved(`Unit added: ${name.trim()}.`);
+        onSaved(`${name.trim()} added.`, result.id);
       }
     } catch (e) {
       setErr(errOf(e));
@@ -613,7 +621,7 @@ export function UnitDialog({
 
   return (
     <Modal
-      title={renaming ? 'Rename unit' : 'Add unit'}
+      title={renaming ? 'Edit unit' : 'Add unit'}
       onClose={onClose}
       footer={
         <>
@@ -652,11 +660,7 @@ export function UnitDialog({
           <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />{' '}
           Listed as a unit people can join
         </label>
-      ) : (
-        <Details title="More">
-          <p className="muted small">Unit code (kept automatically): {deriveCode(name) || '—'}</p>
-        </Details>
-      )}
+      ) : null}
     </Modal>
   );
 }

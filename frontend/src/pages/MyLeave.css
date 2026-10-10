@@ -51,3 +51,11 @@
 .coming-up {
   margin: 0;
 }
+
+.request-actions { text-align: right; width: 1%; white-space: nowrap; }
+@media (max-width: 640px) {
+  .table-stack tr:has(.request-actions > a) { position: relative; }
+  .table-stack tr:has(.request-actions > a) .stack-title { padding-right: 6.5rem; }
+  .table-stack td.request-actions { position: absolute; top: var(--sp-2); right: var(--sp-3); width: auto; padding: 0; }
+  .table-stack td.request-actions::before, .table-stack td.request-actions:empty { display: none; }
+}

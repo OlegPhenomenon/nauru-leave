@@ -20,10 +20,10 @@ export default function Holidays() {
   const rows = [...(q.data ?? [])].sort((a, b) => a.date.localeCompare(b.date));
   function done(requests: AffectedRequest[]) { setAffected(requests); setAdd(false); setRevokeFor(null); q.reload(); }
   const table = (items: CalendarException[], empty: string, removed = false) => <DataTable<CalendarException> rows={items} empty={empty} columns={[
-    { label: 'Date', render: ex => fmtDay(ex.date) },
+    { label: 'Date', render: ex => ex.date.slice(0,4) === today.slice(0,4) ? fmtDay(ex.date) : fmtDate(ex.date) },
     { label: 'Name', render: ex => <>{ex.name}{ex.schedule_id ? <div className="small muted">{schedules.data?.find(s => s.id === ex.schedule_id)?.name ?? 'Selected work pattern'}</div> : null}</> },
-    { label: 'Day type', render: ex => ex.revoked_at ? 'Removed' : ex.minutes === 0 ? 'Holiday' : `Short day — ${ex.minutes / 60} h` },
-    removed ? { label: 'Reason', render: ex => ex.reason ?? '—' } : { label: '', render: ex => canEdit ? <button className="btn btn-ghost btn-sm" onClick={() => setRevokeFor(ex)} aria-label={`Remove ${ex.name}`}>Remove…</button> : null },
+    ...(rows.some(ex => ex.minutes > 0) ? [{ label: 'Day type', render: (ex: CalendarException) => ex.minutes === 0 ? 'Holiday' : `Short day — ${ex.minutes / 60} h` }] : []),
+    removed ? { label: 'Reason', render: ex => ex.reason ?? '—' } : { label: '', className: 'row-actions', render: ex => canEdit ? <button className="btn btn-ghost btn-sm" onClick={() => setRevokeFor(ex)} aria-label={`Remove ${ex.name}`}>Remove…</button> : null },
   ]} />;
   return <>
     <PageHeader title="Public holidays" subtitle="Days off and shorter days used when working out leave." primary={canEdit ? <button className="btn" onClick={() => setAdd(true)}>Add public holiday…</button> : undefined} />
@@ -42,20 +42,22 @@ export default function Holidays() {
 export function RevokeModal({ ex, onClose, onDone }: { ex: CalendarException; onClose: () => void; onDone: (requests: AffectedRequest[]) => void }) {
   const { err, busy, run } = useSave();
   const [reason, setReason] = useState('');
-  return <Modal title={`Remove ${ex.name}?`} onClose={onClose} footer={<>
+  const [result, setResult] = useState<AffectedRequest[] | null>(null);
+  return <Modal title={`Remove ${ex.name}?`} onClose={() => result ? onDone(result) : onClose()} footer={result ? <button className="btn" onClick={() => onDone(result)}>Done</button> : <>
     <button className="btn btn-ghost" type="button" disabled={busy} onClick={onClose}>Cancel</button>
     <button className="btn btn-danger" type="submit" form="remove-holiday" disabled={busy || !reason.trim()}>{busy ? 'Removing…' : 'Remove holiday'}</button>
   </>}>
+    {result ? <><p role="status">{ex.name} removed.</p><AffectedRequests requests={result} /></> : <>
     <p>{ex.name} on {fmtDate(ex.date)} will stop applying to new calculations. Saved requests keep their original days.</p>
     <ErrBox error={err} />
     <form id="remove-holiday" onSubmit={e => { e.preventDefault(); void run(async () => {
       const result = await post<{ affected_future_requests?: AffectedRequest[] }>(`/calendar-exceptions/${ex.id}/revoke`, { reason: reason.trim() });
       const affected = result.affected_future_requests ?? [];
-      onDone(affected);
+      if (affected.length) setResult(affected); else onDone(affected);
       return affected.length ? `Holiday removed. ${plural(affected.length, 'request')} needs checking.` : 'Holiday removed.';
     }); }}>
       <Field label="Reason (required)"><textarea value={reason} required onChange={e => setReason(e.target.value)} /></Field>
-    </form>
+    </form></>}
   </Modal>;
 }
 

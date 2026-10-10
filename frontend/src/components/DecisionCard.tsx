@@ -119,6 +119,7 @@ export function DecisionCard({
   const earlier = d.decisions.filter(x => completed.has(x.step_id) && x.outcome !== 'needs_information');
   const know = thingsToKnow(openLink ? { ...d, warnings: d.warnings.filter(w => w.code !== 'team_overlap' && w.code !== 'late_notice') } : d);
   const latestQ = [...d.messages].reverse().find((m) => m.kind === 'question');
+  const answers = latestQ ? d.messages.filter(m => m.kind === 'answer' && m.id > latestQ.id) : [];
   const approveBlocked =
     step?.kind === 'final_decision' &&
     d.supporting_document_required &&
@@ -165,7 +166,7 @@ export function DecisionCard({
         {fmtRange(rev.start_date, rev.end_date)}
         {' · '}
         {fmtDuration(rev.total_minutes, d.minutes_per_day)}
-      </p> : <p className="muted small">{d.number}</p>}
+      </p> : null}
       {rev.note ? <p className="dc-note">“{rev.note}”</p> : null}
       {rev.change_reason ? <p className="dc-note">Why: “{rev.change_reason}”</p> : null}
 
@@ -177,7 +178,7 @@ export function DecisionCard({
       ) : null}
 
       {d.attachments.length ? <div className="dc-block"><h3 className="dc-h">Documents</h3><AttachmentLines d={d} /></div> : null}
-      {latestQ ? <p className="dc-note">{latestQ.author?.display_name ?? 'Reviewer'} asked: “{latestQ.body}”{d.messages.find(m => m.kind === 'answer' && m.id > latestQ.id) ? ` · ${d.employee.full_name} answered: “${d.messages.find(m => m.kind === 'answer' && m.id > latestQ.id)!.body}”` : ' · Waiting for an answer.'}</p> : null}
+      {latestQ ? <div className="dc-note"><p>{latestQ.author?.display_name ?? 'Reviewer'} asked: “{latestQ.body}”</p>{answers.map(answer => <p key={answer.id}>{answer.author?.display_name ?? d.employee.full_name} answered: “{answer.body}”</p>)}{!answers.length && d.status === 'needs_information' ? <p>Waiting for an answer.</p> : null}</div> : null}
       {earlier.length ? (
         <div className="dc-block">
           <h3 className="dc-h">Earlier steps</h3>
@@ -268,13 +269,13 @@ export function DecisionCard({
               <div className="btn-row">
                 <button
                   type="button"
-                  className="btn"
+                  className={panelIs === 'refuse' ? 'btn btn-danger' : 'btn'}
                   disabled={busy || !text.trim()}
                   onClick={() => void decide(confirmOutcome, text.trim())}
                 >
                   {busy ? 'Sending…' : confirmLabel}
                 </button>
-                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPanel(null)}>Keep reviewing</button>
+                <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setPanel(null)}>Cancel</button>
                 {!text.trim() ? (
                   <span className="field-hint">
                     {panelIs === 'refuse'

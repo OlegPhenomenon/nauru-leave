@@ -1,3 +1,4 @@
+import { fmtDuration } from './format';
 // Pure helpers shared by several pages. Behaviour is covered by domain.test.ts.
 import type { DayRow, LeaveType, PolicyVersion, Revision } from '../api/types';
 import { newIdempotencyKey } from '../api/client';
@@ -171,4 +172,23 @@ export function remainingRanges(revision: Revision): [string, string][] {
     else ranges.push([date, date]);
   }
   return ranges;
+}
+
+/** Preserve exact hours when the current pattern cannot express a whole/half day. */
+export function fmtBalance(minutes: number, minutesPerDay = 480): string {
+  if (minutesPerDay <= 0 || (minutes * 2) % minutesPerDay === 0) return fmtDuration(minutes, minutesPerDay);
+  const halfDays = Math.round(minutes * 2 / minutesPerDay);
+  const about = fmtDuration(halfDays * minutesPerDay / 2, minutesPerDay);
+  const hours = Math.trunc(minutes / 60);
+  const remainder = Math.abs(minutes % 60);
+  return `${remainder ? (minutes / 60).toLocaleString('en', { maximumFractionDigits: 2 }) : hours} h, about ${about}`;
+}
+
+/** Earliest date that appends a work pattern without replacing its history. */
+export function nextPatternDate(history: { valid_from: string }[], today: string): string {
+  const latest = history.map(s => s.valid_from).sort().at(-1);
+  if (!latest || latest < today) return today;
+  const next = new Date(`${latest}T00:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return next.toISOString().slice(0, 10);
 }

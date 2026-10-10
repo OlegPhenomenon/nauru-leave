@@ -197,7 +197,7 @@ export function ChangesDetails({ d }: { d: RD }) {
   );
 
   return (
-    <Details title="Changes">
+    <Details title="Changes" count={Math.max(1, d.children.length + d.revisions.filter(r => r.id !== d.current_revision.id).length + (d.parent ? 1 : 0) + (d.previous_request ? 1 : 0))}>
       {change ? (
         <p>
           {change.headline}
@@ -294,7 +294,7 @@ function EventLine({ e }: { e: AuditEvent }) {
   return (
     <li>
       <span>{auditSentence(e)}</span><Details title="Details"><AuditDetails details={e.details} /></Details>{' '}
-      <span className="muted small">{fmtDateTime(e.at)}</span>
+      <span className="muted small">{fmtStampDay(e.at)}</span>
     </li>
   );
 }
@@ -392,7 +392,7 @@ export function Messages({
   }
 
   const messageLine = (m: RD['messages'][number]) => <div key={m.id} className={`msg msg-${m.kind}`}>
-    <div className="small muted">{m.author?.display_name ?? 'System'} · {MSG_KIND[m.kind] ?? 'Message'} · {fmtDateTime(m.created_at)}</div>
+    <div className="small muted">{m.author?.display_name ?? 'System'} · {MSG_KIND[m.kind] ?? 'Message'} · {fmtStampDay(m.created_at)}</div>
     <div>{m.body}</div>
   </div>;
   const updates = d.messages.filter(m => m.kind === 'system');
@@ -408,11 +408,11 @@ export function Messages({
       {canAnswer && onChangeInstead ? <button type="button" className="btn btn-ghost" disabled={busy} onClick={onChangeInstead}>Change dates instead…</button> : null}
     </div>
   </div> : null;
-  return <section className="rq-messages">
+  return <section className={`rq-messages${canAnswer ? ' rq-messages-answer' : ''}`}>
     {canAnswer ? <><h2 className="rq-h2">Answer question</h2>{question ? <p className="rq-question"><strong>{question.author?.display_name ?? 'Reviewer'} asked:</strong> “{question.body}”</p> : null}{reply}</> : null}
-    <Details title="Messages" count={d.messages.length}>
-      {d.messages.length ? thread : <Empty>No messages yet.</Empty>}
+    {d.messages.length ? <Details title="Messages" count={d.messages.length}>
+      {thread}
       {!canAnswer ? reply : null}
-    </Details>
+    </Details> : !canAnswer ? reply : null}
   </section>;
 }

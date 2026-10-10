@@ -195,6 +195,18 @@ The demo-only endpoints return 404 in production.
 | GET | `/api/attachments/:id` | → file bytes (permission-checked each time) |
 | GET | `/api/approvals` | → `{ items: (RequestSummary & { step: Step; acting_for: UserRef | null; warnings: Warning[] })[], problems: (RequestSummary & { problem: string })[] }` (problems for hr: unassigned steps) |
 
+On a sensitive request, the employee and HR/medical HR within scope see all messages. Other authorized
+viewers see only questions they authored and answers following those questions. An answer belongs to the
+latest preceding question by message id on that request; comments/system updates do not change the pairing.
+Each new question starts a new pair, including when asked by a stand-in. Authorship does not grant request
+access. Other questions, answers, comments (including the viewer's own) and system messages stay hidden.
+Earlier sensitive revisions keep this restriction even if a later revision changes the leave type.
+Cached mutation receipts apply the same current access check and message filter to their saved messages;
+they do not acquire messages posted after the receipt. This exception grants no access to leave reasons or
+medical documents. Non-HR final approvers and auditors retain request access with restricted sensitive
+details, including masked revision notes/change reasons and decision reasons/references; the question
+exception applies only to the messages array. Medical documents still require ownership or medical HR.
+
 ### Team calendar
 `GET /api/calendar?org_unit_id=&from=&to=` →
 `{ from, to, org_units: {id,name}[], people: { employee: EmployeeRef, absences: { date: string, part: Part, state: 'approved'|'pending', label: string, request_id: number|null }[] }[], counts: { date: string, approved: number, pending: number }[] }`
@@ -221,7 +233,19 @@ when viewer may not open the request.
 | GET | `/api/adjustments?status=` | list with old/new values `{ ..., balance_before, balance_after_if_applied, proposed_by, decided_by }` |
 | POST | `/api/adjustments/:id/decide` | `{ decision: 'apply'|'reject', note }` (adjustment_approver ≠ proposer) |
 | POST | `/api/accruals/run` | `{ leave_type_id, period_year, month? }` → `{ posted: n, skipped_existing: n }` (idempotent) |
-| POST | `/api/periods/close` | `{ leave_type_id, period_year }` → `{ posted }`; expire excess above the carry-over limit when closing, then the remaining unreserved balance at expiry; idempotent |
+| GET | `/api/periods/close?leave_type_id=&period_year=` | → `ClosePreview` (same service-wide HR authorization as close; finished years only; read-only) |
+| POST | `/api/periods/close` | `{ leave_type_id, period_year }` → `ClosePreview & { posted }`; expire excess above the carry-over limit when closing, then the remaining unreserved balance at expiry; idempotent |
+
+`ClosePreview` is `{ leave_type_id, period_year, already_closed, items: [{ account_id, employee_id,
+service_id, full_name, minutes_per_day, left_minutes, carried_minutes, removed_minutes, already_closed }] }`.
+Rows cover existing accounts for that type/year, including inactive employees. All amounts are integer minutes;
+the UI divides by each employee's current `minutes_per_day` to show days. `left_minutes` is the nonnegative,
+unreserved balance now. `carried_minutes` is what remains after this close; carry-over stays in its original
+account. Preview and commit share the calculation; POST returns the plan used inside its transaction. Changes
+between GET and POST are recomputed by POST. `already_closed` uses `period_closures` and legacy ledger op_keys,
+not the number of postings; when no accounts exist, a previous close audit fact identifies closure. The overall
+flag is true when all accounts were closed. Existing accounts can still expire on a later repeat, and newly
+created accounts can still be closed; the UI disables a new close when all accounts are already closed.
 
 ### Reports & export (L10, L12)
 | Method | Path | Notes |
@@ -237,6 +261,16 @@ when viewer may not open the request.
 | POST | `/api/imports/preview` | multipart `file`, `kind`, `mode?` → `{ batch_id, rows: { line, data, errors: string[] }[], rows_total, rows_valid }` |
 | POST | `/api/imports/:id/commit` | → `{ applied: n, skipped_duplicates: n }` (409 if any row invalid — all-or-nothing) |
 | GET | `/api/imports` | history |
+
+Opening-balance CSV accepts `staff_number,leave_type,year,days,basis`. `staff_number` aliases
+`service_id` for all three import kinds; `year` aliases `period_year` for opening balances. Opening
+`leave_type` matches a trimmed code or name case-insensitively. Exactly one amount header, `minutes` or
+`days`, is allowed per file; a missing/both amount header is reported on each row. Days must be nonnegative
+whole or half-days (e.g. `12`, `12.5`) and are parsed as integer half-days, then converted with the same current
+employee schedule day length as balances (`minutes_per_day`, default 480). Unrepresentable/overflowing amounts
+are row errors. Legacy headers, type codes and integer-minute files remain supported, including their legacy
+error wording. Plain-column errors include “Unknown staff number NPS-9999” and “Days must be a number like
+12 or 12.5”. The dialog template uses a leave type name and half-day example; uploads are sent unchanged.
 
 ### Settings (L02, L03, L09)
 | Method | Path | Notes |
@@ -255,7 +289,7 @@ when viewer may not open the request.
 ### Operations & audit (L13)
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/ops/notifications?status=` | `{ id, to_email(masked for non-admin), subject, status, attempts, last_error, next_attempt_at, created_at, sent_at }` — no body |
+| GET | `/api/ops/notifications?status=` | `{ id, to_email(masked for non-tech-admin), recipient_name: string|null, request_number: string|null, request_id: number|null, subject, status, attempts, last_error, next_attempt_at, created_at, sent_at }` — no body; existing visibility filter applies before identity lookup; request number/link only when the viewer may open that request; tech-admin address stays unmasked |
 | POST | `/api/ops/notifications/:id/retry` | tech_admin / hr |
 | GET | `/api/ops/summary` | counts: queued/failed/gave_up, quarantined files, active reservations total, sandbox info |
 | GET | `/api/audit?entity=&entity_id=&actor_user_id=&limit=` | auditor, hr (scope), tech_admin (no PII details) |
@@ -318,3 +352,7 @@ with: number, employee, dates per day, revision, every decision (actor, acting-f
 - Guided actual-period corrections persist each selected day and original paying account in `actual_correction_allocations`. Pending and applied proposals reduce the remaining refundable allocation inside `BEGIN IMMEDIATE`; rejected proposals release it. Applying a guided proposal rechecks the original allocation ceiling under the same writer lock. Ordinary manual adjustments remain independent. Upgrade recovers earlier guided links from recorded audit dates and adjustment ids.
 - An attachment row allows a required-document request to enter review, including while its scan is pending. Final approval of leave or an amendment requires a linked `clean` attachment on the request or its parent if the submitted revision's frozen `requires_attachment` rule is true. Pending, quarantined and scan-failed files do not satisfy final approval (422: `A readable supporting document is required`). The readiness booleans expose presence only; medical file metadata/content and download permissions remain separately restricted.
 - The accrual form always offers year and month before resolving policy. Monthly runs use the selected month's first day, including a first policy beginning in October. Annual runs retain January lookup and omit the month in the API command. Missing/future-only policies disable the run; server accrual rules are unchanged.
+
+- `GET /api/accruals/preview?leave_type_id=…&period_year=…[&month=…]` requires the same service-wide HR authority as an accrual run. It returns `eligible`, `skipped_existing` and integer `entitlement_minutes`, without creating accounts or postings. Annual facts also cover monthly previews; preview counts remain advisory because a commit rechecks facts under the writer lock.
+- Payroll CSVs retain their transfer columns and append `Leave type (sick leave details are hidden)`. Sensitive types remain masked as `RESTRICTED` in the transfer code and `Away` in the readable column.
+- An opening-balance import cannot initialize an account that already has an opening or an accrual fact. This guard is rechecked when committing, so an entitlement granted after preview cannot be doubled by the import.

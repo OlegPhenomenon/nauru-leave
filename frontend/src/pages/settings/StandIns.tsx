@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router';
 import { post } from '../../api/client';
 import type { Delegation, UserListItem } from '../../api/types';
 import {
+  DataTable,
   Details,
   EmptyState,
   ErrBox,
@@ -13,7 +14,6 @@ import {
   Tag,
 } from '../../components/ui';
 import { delegationScopeLabel, fmtRange } from '../../lib/format';
-import { isTechAdmin } from '../../lib/nav';
 import { useSession } from '../../lib/session';
 import { readAll } from './data';
 import { useApi } from '../../lib/useApi';
@@ -38,11 +38,10 @@ export default function StandIns() {
   const { me, config } = useSession();
   const today = config?.business_date ?? '';
   const manageOthers = me?.roles.some((r) => r.role === 'hr' && r.scope_org_unit_id === null) ?? false;
-  const canEdit = manageOthers || (me ? isTechAdmin(me) : false);
+  const canEdit = manageOthers || !!me?.is_manager || !!me?.roles.some(r => r.role === 'hr' || r.role === 'final_approver');
   const q = useApi(() => readAll<Delegation>('/delegations'), []);
   const users = useApi(() => readAll<UserListItem>('/users'), []);
   const [params, setParams] = useSearchParams();
-  const { err, busy, run } = useSave();
   const [endFor, setEndFor] = useState<Delegation | null>(null);
 
   const newOpen = params.get('new') === '1';
@@ -63,36 +62,14 @@ export default function StandIns() {
     (a, b) => rank(a) - rank(b) || b.valid_from.localeCompare(a.valid_from),
   );
 
-  const standInList = (items: Delegation[]) => (
-        <ul className="sentence-list">
-          {items.map((d) => {
-            const st = status(d, today);
-            const canEnd =
-              st !== 'Ended' && (manageOthers || d.from_user.id === me?.user.id);
-            return (
-              <li key={d.id}>
-                <span>
-                  <strong>{d.to_user.display_name}</strong> stands in for{' '}
-                  <strong>{d.from_user.display_name}</strong> ·{' '}
-                  {delegationScopeLabel(d.scope).toLowerCase()} · {fmtRange(d.valid_from, d.valid_to)}{' '}
-                  <Tag tone={st === 'Active' ? 'ok' : undefined}>{st}</Tag>
-                  {d.reason ? <span className="muted small"> — {d.reason}</span> : null}
-                </span>
-                {canEnd ? (
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    disabled={busy}
-                    onClick={() => setEndFor(d)}
-                  >
-                    End now
-                  </button>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-  );
+  const standInList = (items: Delegation[]) => <DataTable<Delegation> rows={items} empty="No current stand-ins." columns={[
+    { label:'Stand-in', title:true, render:d => d.to_user.display_name },
+    { label:'For', render:d => d.from_user.display_name },
+    { label:'Approvals', render:d => delegationScopeLabel(d.scope) },
+    { label:'Dates', render:d => fmtRange(d.valid_from,d.valid_to) },
+    { label:'Status', render:d => <Tag tone={status(d,today) === 'Active' ? 'ok' : undefined}>{status(d,today)}</Tag> },
+    { label:'', className:'row-actions', render:d => status(d,today) !== 'Ended' && (manageOthers || d.from_user.id === me?.user.id) ? <button className="btn btn-ghost btn-sm" onClick={() => setEndFor(d)}>End…</button> : null },
+  ]} />;
 
   return (
     <>
@@ -110,12 +87,12 @@ export default function StandIns() {
                 setParams(next);
               }}
             >
-              Add stand-in
+              Add stand-in…
             </button>
           ) : undefined
         }
       />
-      {err ? <ErrBox error={err} /> : null}
+      {!canEdit ? <p className="muted">You have no approval duties to hand over.</p> : null}
       {rows.length === 0 ? (
         <EmptyState text="No stand-ins set up." />
       ) : (
@@ -129,7 +106,7 @@ export default function StandIns() {
 
       {newOpen && today && users.loading ? <Loading label="Loading people…" /> : null}
       {newOpen && users.error ? <ErrBox error={users.error} /> : null}
-      {newOpen && today && users.data && me ? (
+      {newOpen && canEdit && today && users.data && me ? (
         <NewStandInModal
           businessDate={today}
           users={users.data ?? []}
@@ -143,13 +120,7 @@ export default function StandIns() {
           }}
         />
       ) : null}
-      {endFor ? <Modal title="End stand-in?" onClose={() => setEndFor(null)} footer={<> <button type="button" className="btn btn-ghost" onClick={() => setEndFor(null)}>Cancel</button><button className="btn btn-secondary" disabled={busy} onClick={() => void run(async () => {
-          await post(`/delegations/${endFor.id}/revoke`); setEndFor(null); q.reload(); return 'Stand-in ended.';
-        })}>End stand-in</button> </>}>
-        <p>{endFor.to_user.display_name} will no longer be able to act for {endFor.from_user.display_name}.</p>
-        {err ? <ErrBox error={err} /> : null}
-
-      </Modal> : null}
+      {endFor ? <EndStandInModal delegation={endFor} onClose={() => setEndFor(null)} onDone={() => { setEndFor(null); q.reload(); }} /> : null}
     </>
   );
 }
@@ -172,22 +143,29 @@ export function NewStandInModal({
   onDone: () => void;
 }) {
   const { err, busy, run } = useSave();
-  const active = users.filter((u) => u.active);
-  const [fromId, setFromId] = useState<number>(prefillFor ?? active[0]?.id ?? 0);
+  const { me } = useSession();
+  const active = users.filter((u) => u.active && !u.roles.some(r => r.role === 'auditor' || r.role === 'tech_admin'));
+  const [fromId, setFromId] = useState<number>(prefillFor ?? (manageOthers ? 0 : viewerId));
   const [toId, setToId] = useState<number>(0);
-  const [scope, setScope] = useState('all_approvals');
+  const [scope, setScope] = useState('manager_recommendation');
+  const sender = active.find(u => u.id === fromId);
+  const senderRoles = sender?.roles.map(r => r.role) ?? [];
+  const senderScopes = SCOPE_OPTIONS.filter(s => s === 'manager_recommendation' ? !!sender?.employee && (manageOthers || !!me?.is_manager) : s === 'hr_check' ? senderRoles.includes('hr') : s === 'final_decision' ? senderRoles.includes('final_approver') : senderRoles.includes('hr') && senderRoles.includes('final_approver'));
+  // A delegation supplies approval authority for its scope. The stand-in does
+  // not need to hold that role already (e.g. Tom standing in for Elena).
+  const eligible = active.filter(u => !!u.employee);
   const [from, setFrom] = useState(businessDate);
   const [to, setTo] = useState('');
   const [reason, setReason] = useState('');
 
   return (
-    <Modal title="Add stand-in" onClose={onClose} footer={<> <button type="button" className="btn btn-secondary" onClick={onClose}>
+    <Modal title="Add stand-in" onClose={onClose} footer={<> <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
         </button>
         <button
           type="button"
           className="btn"
-          disabled={busy || !fromId || !toId || (fromId === toId || (fromId !== viewerId && toId === viewerId)) || !from || !to || to < from || !reason.trim()}
+          disabled={busy || !senderScopes.includes(scope) || !eligible.some(u => u.id === toId) || !fromId || !toId || (fromId === toId || (fromId !== viewerId && toId === viewerId)) || !from || !to || to < from || !reason.trim()}
           onClick={() =>
             void run(async () => {
               await post('/delegations', {
@@ -209,23 +187,24 @@ export function NewStandInModal({
        </>}>
       {err ? <ErrBox error={err} /> : null}
       <Field label="Who is away?" hint={manageOthers ? undefined : "HR appoints stand-ins for other people. You can appoint your own."}>
-        <select disabled={!manageOthers} value={fromId} onChange={(e) => setFromId(Number(e.target.value))}>
+        {manageOthers ? <select value={fromId} onChange={(e) => { const id = Number(e.target.value); setFromId(id); setToId(0); const u = active.find(u => u.id === id); setScope(u?.roles.some(r => r.role === 'final_approver') ? 'final_decision' : u?.roles.some(r => r.role === 'hr') ? 'hr_check' : 'manager_recommendation'); }}>
+          <option value={0}>Choose who is away</option>
           {active.map((u) => (
             <option key={u.id} value={u.id}>
               {u.display_name}
             </option>
           ))}
-        </select>
+        </select> : <span>You ({sender?.display_name ?? me?.user.display_name})</span>}
       </Field>
       <Field label="Who stands in?">
         <select value={toId} onChange={(e) => setToId(Number(e.target.value))}>
           <option value={0}>Choose a stand-in</option>
-          {active.filter((u) => u.id !== fromId && (fromId === viewerId || u.id !== viewerId)).map((u) => <option key={u.id} value={u.id}>{u.display_name}</option>)}
+          {eligible.filter((u) => u.id !== fromId && (fromId === viewerId || u.id !== viewerId)).map((u) => <option key={u.id} value={u.id}>{u.display_name}</option>)}
         </select>
       </Field>
       <Field label="Which approvals?">
         <select value={scope} onChange={(e) => setScope(e.target.value)}>
-          {SCOPE_OPTIONS.map((s) => (
+          {senderScopes.map((s) => (
             <option key={s} value={s}>
               {delegationScopeLabel(s)}
             </option>
@@ -238,7 +217,7 @@ export function NewStandInModal({
       <Field label="To">
         <input type="date" min={from} value={to} onChange={(e) => setTo(e.target.value)} />
       </Field>
-      <Field label="Reason" hint="Required — shown in the history.">
+      <Field label="Reason (required)" hint="Shown in the history.">
         <textarea value={reason} onChange={(e) => setReason(e.target.value)} />
       </Field>
 
@@ -252,3 +231,8 @@ export function NewStandInModal({
   );
 }
 
+
+export function EndStandInModal({ delegation:d, onClose, onDone }: { delegation:Delegation; onClose:()=>void; onDone:()=>void }) {
+  const { err, busy, run } = useSave();
+  return <Modal title="End stand-in?" onClose={onClose} footer={<><button className="btn btn-ghost" disabled={busy} onClick={onClose}>Cancel</button><button className="btn btn-danger" disabled={busy} onClick={() => void run(async () => { await post(`/delegations/${d.id}/revoke`); onDone(); return 'Stand-in ended.'; })}>End stand-in</button></>}><p>{d.to_user.display_name} will no longer be able to act for {d.from_user.display_name}.</p><ErrBox error={err} /></Modal>;
+}

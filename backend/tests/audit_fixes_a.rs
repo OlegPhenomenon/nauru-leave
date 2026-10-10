@@ -710,7 +710,9 @@ async fn f02_monthly_http_requires_month_and_preserves_fact() {
     let mut c = f.client();
     c.start().await;
     c.login("Maria Santos").await;
-    let policy = json!({"valid_from":"2026-01-01","annual_entitlement_min":7200,"accrual_mode":"monthly","advance_publish_months":0,"carryover_allowed":false,"explanation":"Fictional monthly rule"});
+    // Monthly fact behavior is exercised in a year without a seeded annual grant.
+    c.ok("POST", "/api/demo/clock", json!({"date":"2027-10-08"})).await;
+    let policy = json!({"valid_from":"2027-01-01","annual_entitlement_min":7200,"accrual_mode":"monthly","advance_publish_months":0,"carryover_allowed":false,"explanation":"Fictional monthly rule"});
     c.ok("POST", "/api/leave-types/3/policies", policy.clone())
         .await;
     for month in [Value::Null, json!(0), json!(13), json!("1")] {
@@ -718,7 +720,7 @@ async fn f02_monthly_http_requires_month_and_preserves_fact() {
             c.call(
                 "POST",
                 "/api/accruals/run",
-                json!({"leave_type_id":3,"period_year":2026,"month":month})
+                json!({"leave_type_id":3,"period_year":2027,"month":month})
             )
             .await
             .0,
@@ -729,7 +731,7 @@ async fn f02_monthly_http_requires_month_and_preserves_fact() {
         .ok(
             "POST",
             "/api/accruals/run",
-            json!({"leave_type_id":3,"period_year":2026,"month":9}),
+            json!({"leave_type_id":3,"period_year":2027,"month":9}),
         )
         .await;
     assert_eq!(first["posted"], 13);
@@ -738,7 +740,7 @@ async fn f02_monthly_http_requires_month_and_preserves_fact() {
         .ok(
             "POST",
             "/api/accruals/run",
-            json!({"leave_type_id":3,"period_year":2026,"month":9}),
+            json!({"leave_type_id":3,"period_year":2027,"month":9}),
         )
         .await;
     assert_eq!(replay["posted"], 0);
@@ -746,7 +748,7 @@ async fn f02_monthly_http_requires_month_and_preserves_fact() {
     let conn = db_for(&f, &c);
     let sum: i64 = conn
         .query_row(
-            "SELECT SUM(minutes) FROM ledger_entries WHERE op_key LIKE 'accrual:%:3:2026-09'",
+            "SELECT SUM(minutes) FROM ledger_entries WHERE op_key LIKE 'accrual:%:3:2027-09'",
             [],
             |r| r.get(0),
         )

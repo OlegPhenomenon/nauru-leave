@@ -194,23 +194,29 @@ pub fn seed_template(conn: &mut Connection, files_dir: &Path) -> Res<()> {
         params![u_rita, u_ben],
     )?;
 
-    // ------------------------------------------------------------- opening balances
-    for emp in [alexei, olga, tom, sam_emp, rita, ben, nia, maria, elena, david, pavel, grace] {
-        ledger::post_opening(conn, emp, annual, 2026, 9600, if emp == tom { d("2025-12-10") } else { d("2026-01-01") },
-            "Opening balance 2026 (20 days)", Some(u_maria), "2026-01-01T09:00:00Z")?;
-        ledger::post_opening(conn, emp, sick, 2026, 4800, d("2026-01-01"),
-            "Opening balance 2026", Some(u_maria), "2026-01-01T09:00:00Z")?;
-        ledger::post_opening(conn, emp, family, 2026, 2400, d("2026-01-01"),
-            "Opening balance 2026", Some(u_maria), "2026-01-01T09:00:00Z")?;
-    }
-    // Lina works the part-time Mon–Thu 6 h schedule (360 min/day), so her
-    // openings are posted in her own days, not full-time minutes.
-    ledger::post_opening(conn, lina, annual, 2026, 7200, d("2026-01-01"),
-        "Opening balance 2026 (20 days), pro-rated to the part-time schedule (fictional demo rule)", Some(u_maria), "2026-01-01T09:00:00Z")?;
-    ledger::post_opening(conn, lina, sick, 2026, 3600, d("2026-01-01"),
-        "Opening balance 2026 (10 days), pro-rated to the part-time schedule (fictional demo rule)", Some(u_maria), "2026-01-01T09:00:00Z")?;
-    ledger::post_opening(conn, lina, family, 2026, 1800, d("2026-01-01"),
-        "Opening balance 2026 (5 days), pro-rated to the part-time schedule (fictional demo rule)", Some(u_maria), "2026-01-01T09:00:00Z")?;
+    // Current-year entitlement is an accrual fact, not a carry-over opening.
+    let seed_clock = at("2026-01-01");
+    let hr = actor(conn, u_maria, &seed_clock)?;
+    crate::db::write_tx(conn, |tx| {
+        crate::authz::require(tx, &hr, crate::authz::Action::RunAccrual, &crate::authz::Resource::Global)?;
+        for emp in [alexei, olga, tom, lina, sam_emp, rita, ben, nia, maria, elena, david, pavel, grace] {
+            for (leave_type, full_minutes) in [(annual, 9600), (sick, 4800), (family, 2400)] {
+                let minutes = if emp == lina { full_minutes * 3 / 4 } else { full_minutes };
+                let account_id = ledger::ensure_account(tx, emp, leave_type, 2026)?;
+                ledger::post_accrual_fact(tx, &ledger::PostEntry {
+                    account_id, minutes, kind: "accrual",
+                    effective_date: if emp == tom && leave_type == annual { d("2025-12-10") } else { d("2026-01-01") },
+                    request_id: None, revision_id: None, reverses_entry_id: None,
+                    adjustment_id: None, import_batch_id: None,
+                    basis: "2026 entitlement".into(), author_user_id: Some(u_maria),
+                    op_key: String::new(),
+                }, None, "2026-01-01T09:00:00Z")?;
+            }
+        }
+        crate::audit::log(tx, "2026-01-01T09:00:00Z", Some(u_maria), None, "accrual.run", "leave_type", None, serde_json::json!({"period_year":2026,"posted":39}))?;
+        notify::record_change(tx, &seed_clock, u_maria, "accrual.run")?;
+        Ok(())
+    })?;
     ledger::post_opening(conn, tom, annual, 2025, 9600, d("2025-01-01"),
         "Opening balance 2025 (20 days)", Some(u_maria), "2025-01-01T09:00:00Z")?;
 

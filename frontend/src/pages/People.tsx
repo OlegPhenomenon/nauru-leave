@@ -123,7 +123,7 @@ export default function People() {
           e.has_login
             ? { label: 'Access…', onSelect: () => void goForUser(e.id, (u) => `/settings/users?user=${u}`) }
             : { label: 'Access…', disabled: true, hint: 'No sign-in' },
-          { label: 'Enter paper form', to: `/requests/new?employee=${e.id}` },
+          { label: 'Enter paper form…', to: `/requests/new?employee=${e.id}` },
           { label: '', divider: true },
           e.active
             ? { label: 'End employment…', danger: true, onSelect: () => setDialog({ kind: 'end', employee: e }) }
@@ -149,7 +149,7 @@ export default function People() {
     { label: 'Manager', render: (e) => e.manager?.full_name ?? '—' },
     { label: 'Work pattern', render: (e) => e.schedule?.name ?? '—' },
     ...(canEdit
-      ? [{ label: '', className: 'nowrap', render: (e: EmployeeListItem) => <span className="btn-row" onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog({ kind: 'edit', employee: e })}>Edit</button>{rowMenu(e)}</span> } satisfies Column<EmployeeListItem>]
+      ? [{ label: '', className: 'row-actions nowrap', render: (e: EmployeeListItem) => <span className="btn-row" onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog({ kind: 'edit', employee: e })}>Edit…</button>{rowMenu(e)}</span> } satisfies Column<EmployeeListItem>]
       : []),
   ];
 
@@ -159,7 +159,7 @@ export default function People() {
       title: true,
       render: (u) => (
         <>
-          {orgUnitName(u.name)} {u.active ? null : <Tag>Not in use</Tag>}
+          <span className={sp.get('highlight') === String(u.id) ? 'unit-added' : ''}>{orgUnitName(u.name)}</span> {u.active ? null : <Tag>Not in use</Tag>}
         </>
       ),
     },
@@ -184,10 +184,10 @@ export default function People() {
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                aria-label={`Rename ${u.name}`}
+                aria-label={`Edit ${u.name}`}
                 onClick={() => setDialog({ kind: 'unit', unit: u })}
               >
-                Rename…
+                Edit unit…
               </button>
             ),
           } satisfies Column<OrgUnit>,
@@ -203,7 +203,7 @@ export default function People() {
           canEdit ? (
             tab === 'people' ? (
               <><button type="button" className="btn" onClick={() => setAdding(true)}>
-                Add person
+                Add person…
               </button></>
             ) : (
               <button
@@ -211,14 +211,14 @@ export default function People() {
                 className="btn"
                 onClick={() => setDialog({ kind: 'unit', unit: null })}
               >
-                Add unit
+                Add unit…
               </button>
             )
           ) : undefined
         }
         more={
           canEdit && tab === 'people'
-            ? [{ label: 'Enter paper form', onSelect: () => navigate('/requests/new?paper=1') }, { label: 'Add unit', onSelect: () => setDialog({ kind: 'unit', unit: null }) }, { label: 'Import people…', onSelect: () => setImporting(true) }]
+            ? [{ label: 'Enter paper form…', onSelect: () => navigate('/requests/new?paper=1') }, { label: 'Add unit…', onSelect: () => setDialog({ kind: 'unit', unit: null }) }, { label: 'Import people…', onSelect: () => setImporting(true) }]
             : undefined
         }
       />
@@ -247,7 +247,7 @@ export default function People() {
       {tab === 'people' ? (
         <div className="panel">
           <div className="toolbar">
-            <Field label="Search">
+            <Field label="Find a person">
               <input
                 type="search"
                 value={q}
@@ -291,7 +291,7 @@ export default function People() {
           {listQ.data ? (
             <DataTable<EmployeeListItem>
               columns={peopleColumns}
-              rows={listQ.data}
+              rows={[...listQ.data].sort((a, b) => a.full_name.localeCompare(b.full_name))}
               rowLink={(e) => `/people/${e.id}`}
               empty={
                 q || unit || former
@@ -319,7 +319,7 @@ export default function People() {
                         className="btn"
                         onClick={() => setDialog({ kind: 'unit', unit: null })}
                       >
-                        Add unit
+                        Add unit…
                       </button>
                     ) : undefined
                   }
@@ -337,8 +337,7 @@ export default function People() {
           people={everyone.filter((e) => e.active)}
           today={today}
           onClose={() => setAdding(false)}
-          onSaved={(id, name) => {
-            toast(`${name} added.`);
+          onSaved={(id) => {
             void allQ.reload();
             void listQ.reload();
             navigate(`/people/${id}?new=1`);
@@ -400,8 +399,9 @@ export default function People() {
           unit={dialog.unit}
           units={units}
           onClose={() => setDialog(null)}
-          onSaved={(msg) => {
+          onSaved={(msg, id) => {
             setDialog(null);
+            setParams({ tab: 'units', highlight: id ? String(id) : null });
             toast(msg);
             void unitsQ.reload();
           }}

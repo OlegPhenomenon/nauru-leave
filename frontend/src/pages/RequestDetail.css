@@ -93,3 +93,15 @@
 .rq-check { min-height: 44px; padding: var(--sp-2) 0; }
 .rq-page .rq-card { padding: var(--sp-4); }
 .rq-page .page-header h1 { overflow-wrap: anywhere; }
+
+.rq-messages:not(.rq-messages-answer) { margin-top: var(--sp-2); }
+.rq-messages:not(.rq-messages-answer) > .disclosure { margin-top: 0; }
+.rq-details > .disclosure > summary, .rq-messages > .disclosure > summary { min-height: 57px; padding: var(--sp-3) 0; }
+.rq-check-label { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); }
+.rq-check-label .field-label { margin: 0; }
+.rq-check-label .link-button { padding: 0; color: var(--brand); font: inherit; background: none; border: 0; text-decoration: underline; cursor: pointer; min-height: 44px; }
+@media (max-width: 640px) {
+  .rq-page .page-header .actions { flex-wrap: wrap; }
+  .rq-page .page-header .actions > .btn { white-space: nowrap; }
+  .rq-page .page-header .actions > .btn:not(.btn-secondary):not(.btn-ghost) { flex: 1 0 100%; }
+}

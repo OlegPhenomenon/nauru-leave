@@ -35,14 +35,14 @@ test('N38 + walkthrough: new employee, fictional policy, full lifecycle', async 
   await modal.getByRole('button', { name: 'Add person' }).click();
   await expect(page.locator('.modal')).toHaveCount(0);
   await goTo(page, '/people');
-  await page.locator('.field:has-text("Search") input').fill(serviceId);
+  await page.locator('.field:has-text("Find a person") input').fill(serviceId);
   await expect(
     page.getByRole('row', { name: new RegExp(`${fullName}.*Infrastructure Unit`) }),
   ).toBeVisible();
 
   // ---------- A fictional leave type and its first rule ----------
   await goTo(page, '/settings/leave-types');
-  await page.getByRole('button', { name: 'Add leave type', exact: true }).click();
+  await page.getByRole('button', { name: 'Add leave type…', exact: true }).click();
   modal = page.locator('.modal');
   await modal.getByLabel('Name', { exact: true }).fill(typeName);
   await modal.getByLabel('Rules start on').fill('2026-01-01');
@@ -64,7 +64,7 @@ test('N38 + walkthrough: new employee, fictional policy, full lifecycle', async 
   // ---------- Opening balance through a CSV import ----------
   await goTo(page, '/balances');
   await more(page, 'Import opening balances…');
-  const imports = page.locator('.modal');
+  const imports = page.getByRole('dialog', { name: 'Import opening balances' });
   await imports.locator('input[type=file]').setInputFiles({
     name: 'openings.csv',
     mimeType: 'text/csv',
@@ -121,7 +121,7 @@ test('N38 + walkthrough: new employee, fictional policy, full lifecycle', async 
     .locator('.field:has-text("Last day") input')
     .fill('2026-11-11');
   await modal
-    .locator('.field:has-text("Why? (required)") input')
+    .locator('.field:has-text("Why? (required)") textarea')
     .fill('Course shortened — three days only');
   await modal.getByRole('button', { name: 'Send change for approval' }).click();
   await page.waitForURL(

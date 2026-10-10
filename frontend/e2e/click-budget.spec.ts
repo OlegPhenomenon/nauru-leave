@@ -119,7 +119,7 @@ test('click budgets: manager recommendation, refusal, HR certificate and final a
   d = await submitted(page, '2026-12-08'); await pick(page, 'Olga');
   await test.step('manager refuse ≤3', async () => {
     const b = budget(page, 'Manager refuse', 3); const row = queue(page, String(d.id));
-    await b.click(row.getByText('More', { exact: true })); await b.click(row.getByRole('menuitem', { name: 'Recommend refusal…', exact: true }));
+    await b.click(row.locator('.queue-row-toggle')); await b.click(row.getByRole('button', { name: 'Recommend refusal…', exact: true }));
     await row.getByRole('textbox').fill('Minimum team coverage needed.'); await plain(page);
     await b.click(row.getByRole('button', { name: 'Recommend refusal', exact: true }));
     await expect(row).toHaveCount(0); await b.done(3);
@@ -162,7 +162,7 @@ test('click budgets: HR correction, holiday, person and unit/month CSV', async (
   await pick(page, 'Maria');
   await test.step('add person ≤3', async () => {
     const b = budget(page, 'HR add person', 3);
-    await b.click(nav(page, 'People')); await b.click(page.getByRole('button', { name: 'Add person', exact: true }));
+    await b.click(nav(page, 'People')); await b.click(page.getByRole('button', { name: 'Add person…', exact: true }));
     const m = page.locator('.modal'); await m.getByLabel('Name', { exact: true }).fill('Budget Person'); await m.getByLabel('Staff number').fill('NPS-9201');
     await m.getByLabel('Start date').fill('2026-10-08'); await m.getByRole('combobox', { name: 'Unit', exact: true }).selectOption('2');
     await m.getByRole('combobox', { name: 'Work pattern', exact: true }).selectOption('1'); await plain(page);
@@ -193,8 +193,8 @@ test('HR person shortcuts preserve employee and user context across pages', asyn
   const person = await apiGet<any>(page, '/employees/8');
   async function action(name: string) {
     await goTo(page, '/people');
-    await page.getByLabel('Search', { exact: true }).fill('NPS-1001');
-    const row = page.getByRole('row', { name: /Alexei Novak/ });
+    await page.getByLabel('Find a person', { exact: true }).fill('NPS-1001');
+    const row = page.getByRole('row').nth(1).filter({ hasText: 'NPS-1001' });
     await row.locator('summary').click(); await row.getByRole('menuitem', { name, exact: true }).click();
   }
   await action('Correct balance…');
@@ -208,7 +208,7 @@ test('HR person shortcuts preserve employee and user context across pages', asyn
   await expect(page.getByRole('dialog', { name: 'Alexei Novak', exact: true })).toBeVisible();
   expect(new URL(page.url()).searchParams.get('user')).toBe(String(person.user.id));
   await page.getByRole('button', { name: 'Close panel' }).click();
-  await action('Enter paper form');
+  await action('Enter paper form…');
   await expect(page.locator('.picker-selected')).toContainText('Alexei Novak');
   expect(new URL(page.url()).searchParams.get('employee')).toBe('8');
   await goTo(page, '/people');

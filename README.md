@@ -16,13 +16,13 @@ and history stay correct and explainable.
 
 ## Using the desk
 
-Choose **Start demo**, then a person. The demo strip identifies fictional data and rules. Use its person menu to switch roles; **Demo tools** contains the mailbox, **Move date forward…**, and **Reset demo…**.
+Choose **Start demo** on **Try the demo**, then a person. The demo strip identifies fictional data and rules. Use its person menu to switch roles; **Demo tools** contains the mailbox, **Move date forward…**, and **Reset demo…**.
 
 - **Request leave:** on **My leave**, check **Days left**, choose **Request leave**, enter dates and select morning or afternoon for a half day. **Send request** starts approval. **Show day by day** explains the calculation.
 - **Answer or change a request:** answer a question directly on **My leave**. Open a request for **Change dates**, **Cancel days**, documents and messages. **More → Print** opens the printable record; **Changes** and **History** contain earlier records.
-- **Review leave:** open a row in **Approvals**, read its documents, then **Recommend approval**, **Mark as checked**, or **Approve** for your step. Refusals and questions reveal a text field in the same card.
-- **Manage staff:** HR uses **People → Add person**. The person's row menu offers changes to their manager or work pattern, a paper form, balance correction, access and a stand-in. The **Units** tab manages units; **More → Import people…** opens CSV import.
-- **Manage leave amounts:** **Balances** shows days left and corrections awaiting a second HR officer. Use **Correct balance…**, **Add entitlement…**, **Close year…**, or **Import…**. **How is this worked out?** explains an employee's balance.
+- **Review leave:** open a row in **Approvals**, read its documents, then **Recommend approval**, **Mark as checked**, or **Approve** for your step. Refusals and questions reveal a text field in the same card. On sensitive leave, reviewers see their own questions and the replies; other messages and reasons stay with the employee and HR. Medical documents require the employee's own access or medical HR permission.
+- **Manage staff:** HR uses **People → Add person…**. The person's row menu offers changes to their manager or work pattern, a paper form, balance correction, access and a stand-in. The **Units** tab manages units; **More → Import people…** opens CSV import.
+- **Manage leave amounts:** **Balances** shows days left and corrections awaiting a second HR officer. **Approvals** also links to corrections waiting for you through **Review**. Use **Correct balance…**, **Add entitlement…**, **Close year…**, **Import opening balances…**, or **Import past leave…**. **How is this worked out?** explains an employee's balance, including the hours-to-days conversion after a work-pattern change; **Details** opens the full record.
 - **Set rules:** **Settings** opens leave types, work patterns, public holidays, the approval route, users and access, and stand-ins. **System** shows email delivery and retry controls.
 - **Download a report:** **Reports** lets you choose a unit and month, then **Download CSV**. **Payroll files** creates a hand-over file and records when it was sent. **Calendar** shows who's away; restricted leave says **Away**.
 - **Trace a request:** auditors land on **History**. Search its request number and open the result to see that request's history.
@@ -138,8 +138,8 @@ nauru-leave user reset-totp --email employee@example.org
 nauru-leave user revoke-sessions --email employee@example.org
 ```
 
-Then, signed in as HR: create org units, schedules, holidays, leave types and **confirmed** policies (Settings),
-import employees and opening balances from CSV (Reports → Imports; preview first, then commit), and link logins
+Then, signed in as HR: create org units, schedules, holidays, leave types and policies (**Settings**, then **Mark rules as checked**),
+import employees from **People → More → Import people…** and balances from **Balances → Import opening balances…** (preview first, then apply), and link logins
 with `--employee-service-id`. Employees without a login can be served by HR through paper requests.
 
 ### Backup and restore

@@ -15,6 +15,14 @@ export async function waitOutRateLimit(page: Page) {
 
 export async function pick(page: Page, name: string) {
   await page.keyboard.press('Escape');
+  const strip = page.locator('.demo-strip');
+  if (await strip.count() && (await strip.textContent())?.includes(`Viewing as ${name}`)) {
+    await page.getByRole('banner').getByRole('link', { name: 'Nauru Leave Desk', exact: true }).click();
+    await expect(page.locator('.demo-strip')).toContainText(`Viewing as ${name}`);
+    await expect(page.locator('.modal')).toHaveCount(0);
+    await page.waitForTimeout(300);
+    return;
+  }
   const card = page.locator('.persona-card', { hasText: name }).first();
   if (!(await card.isVisible().catch(() => false))) {
     const direct = page.getByRole('button', { name: /^Viewing as/ });
@@ -35,11 +43,21 @@ export async function pick(page: Page, name: string) {
 }
 
 export async function openDetails(page: Page, title: string) {
-  const details = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: new RegExp(`^${title}(?: \\(|$)`) }) }).first();
+  const details = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: new RegExp(`^${title}(?: [(]|$)`) }) }).first();
+  await expect(details.locator(':scope > summary').or(page.getByRole('heading', { name: title, exact: true })).first()).toBeVisible();
+  if (!(await details.count())) {
+    await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+    return;
+  }
   if ((await details.getAttribute('open')) === null) await details.locator(':scope > summary').click();
 }
 
 export async function more(page: Page, name: string) {
+  const direct = page.getByRole('button', { name, exact: true });
+  if (await direct.isVisible()) {
+    await direct.click();
+    return;
+  }
   await page.locator('.page-header').getByText('More', { exact: true }).click();
   await page.getByRole('menuitem', { name }).click();
 }

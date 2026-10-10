@@ -12,9 +12,11 @@ import { useApi } from '../../lib/useApi';
 export function ActionNeeded({
   request,
   onDone,
+  primary = true,
 }: {
   request: RequestSummary;
   onDone: () => void;
+  primary?: boolean;
 }) {
   const detail = useApi(() => api<RequestDetail>(`/requests/${request.id}`), [request.id]);
   const [body, setBody] = useState('');
@@ -75,7 +77,7 @@ export function ActionNeeded({
           <div className="btn-row">
             <button
               type="button"
-              className="btn"
+              className={primary ? 'btn' : 'btn btn-secondary'}
               disabled={busy || !body.trim()}
               onClick={() => void send()}
             >

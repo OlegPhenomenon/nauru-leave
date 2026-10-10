@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import type { Adjustment, AuditEvent, EmployeeListItem, LeaveType, RequestSummary } from '../api/types';
 import { Details, EmptyState, ErrBox, Field, Loading, PageHeader } from '../components/ui';
-import { auditSentence, fmtDateTime, fmtDuration } from '../lib/format';
+import { auditSentence, fmtDateTime, fmtDuration, fmtRange } from '../lib/format';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 import { readAll } from './settings/data';
 import './History.css';
-import { AuditDetails } from '../components/AuditDetails';
+import { AuditDetails, auditDetailRows } from '../components/AuditDetails';
 
 const WHAT = [
   { value: '', label: 'All changes', entities: [] },
@@ -79,7 +79,7 @@ export default function History() {
       || (e.entity === 'adjustment' && personIds.has(adjustmentById.get(e.entity_id ?? -1)?.employee.id ?? -1))
       || (typeof d.employee_id === 'number' && personIds.has(d.employee_id))
       || [e.actor?.display_name, e.acting_for?.display_name, related?.employee.full_name, related?.employee.service_id, related?.number].some((text) => text?.toLowerCase().includes(search.toLowerCase()));
-  }).sort((a, b) => b.id - a.id);
+  }).sort((a, b) => b.at.localeCompare(a.at) || b.id - a.id);
 
   function setFilter(key: string, value: string) {
     const next = new URLSearchParams(params);
@@ -94,6 +94,12 @@ export default function History() {
     const safeEntity = ['request', 'employee', 'user', 'org-unit', 'org_unit', 'leave-type', 'leave_type', 'schedule', 'calendar-exception', 'calendar_exception', 'delegation', 'policy', 'role-grant', 'role_grant', 'notification', 'settings', 'adjustment', 'attachment', 'export_batch', 'import_batch', 'account', 'ledger'].includes(entity);
     const action = e.action === 'policie.post' ? 'policy.put' : e.action;
     let text = auditSentence({ ...e, entity, action: safeEntity || /^(session|demo)\./.test(action) ? action : 'settings.put', details: { ...d, ...(request ? { number: request.number } : {}) } });
+    if (e.action === 'step.decide') {
+      const verbs: Record<string,string> = { approve:'approved', reject:'refused', recommend_approve:'recommended approval of', recommend_reject:'recommended refusal of', checked_ok:'checked', checked_problem:'flagged a problem with', needs_information:'asked a question about' };
+      const verb = verbs[String(d.outcome)] ?? 'made a decision on';
+      text = `${e.actor?.display_name ?? 'The system'} ${verb} ${request?.number ?? d.number ?? 'a request'}${d.outcome === 'checked_ok' ? ' — OK' : ''}${e.acting_for ? `, acting for ${e.acting_for.display_name}` : ''}.`;
+    }
+    if (e.action === 'export.create' && typeof d.from === 'string' && typeof d.to === 'string') text = `${e.actor?.display_name ?? 'The system'} created the payroll file for ${fmtRange(d.from,d.to)}.`;
     if (request && request.employee.full_name !== e.actor?.display_name) text = `${text.slice(0, -1)} for ${request.employee.full_name}.`;
     if (e.entity === 'employee') {
       const person = people.data?.find((p) => p.id === e.entity_id);
@@ -114,6 +120,7 @@ export default function History() {
 
   return (
     <>
+      {hasRole('hr') ? <Link className="muted small" to="/settings">Settings › History</Link> : null}
       <PageHeader title="History" subtitle="Find a request or see who changed what." />
       <form className="toolbar" onSubmit={(e) => { e.preventDefault(); setFilter('q', draft.trim()); }}>
         <Field label="Request number, person or staff number"><input type="search" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="e.g. NLD-2026-00008" /></Field>
@@ -122,7 +129,7 @@ export default function History() {
         <Field label="Who"><select value={who} onChange={(e) => setFilter('who', e.target.value)}><option value="">Anyone</option>{actors.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></Field>
       </form>
       {all.error ? <ErrBox error={all.error} /> : null}
-      {loading ? <Loading label="Finding history…" /> : error ? <ErrBox error={error} /> : !rows.length ? <EmptyState text="No visible changes match. Try another person, request number or filter." /> : (
+      {loading ? <Loading label="Finding history…" /> : error ? <ErrBox error={error} /> : !rows.length ? <EmptyState text="No changes match. Try another person, request number or filter." /> : (
         <ol className="history-list">
           {rows.slice(0, shown).map((e) => {
             const request = requestById.get(requestId(e) ?? -1);
@@ -133,7 +140,7 @@ export default function History() {
               <time className="muted small" dateTime={e.at}>{fmtDateTime(e.at)}</time>
               <p>{number && at >= 0 ? <>{text.slice(0, at)}<Link to={`/requests/${request.id}?history=open`}>{number}</Link>{text.slice(at + number.length)}</> : <>{text}{request ? <> <Link to={`/requests/${request.id}?history=open`}>Open {request.number}</Link></> : null}</>}</p>
               {e.entity === 'adjustment' && adjustmentById.get(e.entity_id ?? -1) ? <Link to={`/balances/${adjustmentById.get(e.entity_id ?? -1)!.employee.id}/explain?leave_type_id=${adjustmentById.get(e.entity_id ?? -1)!.leave_type.id}`}>View balance</Link> : null}
-              <Details title="Details"><AuditDetails details={e.details} />{hasRole('tech_admin') ? <Details title="Technical details"><pre className="history-json">{JSON.stringify(e.details, null, 2)}</pre></Details> : null}</Details>
+              {auditDetailRows(e.details).length ? <Details title="Details"><AuditDetails details={e.details} /></Details> : null}
             </li>;
           })}
         </ol>

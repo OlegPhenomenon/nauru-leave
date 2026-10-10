@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router';
 import { api, ApiError, post, unwrapList } from '../api/client';
 import type { ExportBatch, OrgUnit, RequestSummary } from '../api/types';
@@ -25,7 +26,7 @@ import {
   statusLabel,
   stepLabel,
 } from '../lib/format';
-import { IntentKeys } from '../lib/domain';
+import { fmtBalance, IntentKeys } from '../lib/domain';
 import { isValidDate } from '../lib/errors';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
@@ -73,6 +74,7 @@ interface Col {
   title?: boolean | undefined;
   /** plain text — also what the CSV download writes */
   text: (r: Row) => string;
+  csvText?: (r: Row) => string;
   render?: ((r: Row) => ReactNode) | undefined;
 }
 
@@ -86,9 +88,9 @@ const reqCol = (label: string, title = false): Col => ({
 const ABS_COLS: Col[] = [
   { label: 'Date', title: true, text: (r) => fmtDate(str(r['date'])) },
   { label: 'Person', text: (r) => str(r['employee']) },
-  { label: 'Leave type', text: (r) => str(r['leave_type']) },
+  { label: 'Leave type (sick leave details are hidden)', text: (r) => str(r['leave_type']) },
   { label: 'Part of day', text: (r) => partLabel(str(r['part'])) },
-  { label: 'Days', className: 'num', text: (r) => fmtDuration(num(r['minutes']), num(r['minutes_per_day']) || 480) },
+  { label: 'Days', className: 'num', text: (r) => fmtDuration(num(r['minutes']), num(r['minutes_per_day']) || 480), csvText:r => String(num(r['minutes']) / (num(r['minutes_per_day']) || 480)) },
   reqCol('Request'),
 ];
 
@@ -98,15 +100,17 @@ const BAL_COLS: Col[] = [
   {
     label: 'Days left',
     className: 'num',
-    text: (r) => fmtDuration(num(r['available_minutes']), num(r['minutes_per_day']) || 480),
+    csvText: r => String(num(r['available_minutes']) / (num(r['minutes_per_day']) || 480)),
+    text: (r) => fmtBalance(num(r['available_minutes']), num(r['minutes_per_day']) || 480),
     render: (r) => (
-      <strong>{fmtDuration(num(r['available_minutes']), num(r['minutes_per_day']) || 480)}</strong>
+      <strong>{fmtBalance(num(r['available_minutes']), num(r['minutes_per_day']) || 480)}</strong>
     ),
   },
   {
-    label: 'Waiting for approval',
+    label: 'On hold for requests',
     className: 'num',
-    text: (r) => fmtDuration(num(r['reserved_minutes']), num(r['minutes_per_day']) || 480),
+    text: (r) => num(r['reserved_minutes']) ? fmtDuration(num(r['reserved_minutes']), num(r['minutes_per_day']) || 480) : '—',
+    csvText: r => String(num(r['reserved_minutes']) / (num(r['minutes_per_day']) || 480)),
   },
 ];
 
@@ -173,7 +177,7 @@ function downloadCsvFile(name: string, cols: Col[], rows: Row[]) {
     return /[",\r\n]/.test(t) ? `"${t.replaceAll('"', '""')}"` : t;
   };
   const lines = [cols.map((c) => esc(c.label)).join(',')];
-  for (const r of rows) lines.push(cols.map((c) => esc(c.text(r))).join(','));
+  for (const r of rows) lines.push(cols.map((c) => esc((c.csvText ?? c.text)(r))).join(','));
   downloadCsvText(name, lines.join('\r\n'));
 }
 
@@ -191,12 +195,14 @@ const ISO_MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 export default function Reports() {
   const { config, hasRole } = useSession();
-  const toast = useToast();
   const today = config?.business_date ?? '';
   const [sp, setSp] = useSearchParams();
+  const [payrollHeader, setPayrollHeader] = useState<HTMLSpanElement | null>(null);
+  const canPayroll = hasRole('hr');
+  const availableReports = REPORTS.filter(r => r.id !== 'payroll' || canPayroll);
 
   const rawR = sp.get('r') ?? 'absences';
-  const report = (REPORTS.some((r) => r.id === rawR) ? rawR : 'absences') as ReportId;
+  const report = (availableReports.some((r) => r.id === rawR) ? rawR : 'absences') as ReportId;
   const unit = sp.get('unit') ?? '';
   const month = ISO_MONTH.test(sp.get('month') ?? '') ? sp.get('month')! : today.slice(0, 7);
   const custom = sp.get('custom') === '1';
@@ -293,7 +299,7 @@ export default function Reports() {
           COLS[report],
           rows,
         );
-        toast('Report downloaded.');
+
       } catch (e) {
         if (viewSequence.current === seq) setViewErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
       } finally {
@@ -398,19 +404,11 @@ export default function Reports() {
                 >
                   Download CSV
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  disabled={viewBusy || (def.dates === 'month' && !validRange) || (def.dates === 'date' && !isValidDate(date))}
-                  onClick={() => void showHere()}
-                >
-                  {viewBusy ? 'Loading…' : view ? 'Refresh' : 'Show here'}
-                </button>
                 <button type="button" className="btn btn-ghost" disabled={viewBusy || (def.dates === 'month' && !validRange) || (def.dates === 'date' && !isValidDate(date))} onClick={() => void printReport()}>Print</button>
-      </> : undefined} />
+      </> : <span ref={setPayrollHeader} />} />
       <div className="reports-layout">
         <nav className="reports-nav subnav" aria-label="Reports">
-          {REPORTS.map((r) => (
+          {availableReports.map((r) => (
             <button
               key={r.id}
               type="button"
@@ -436,6 +434,7 @@ export default function Reports() {
               exportsQ={exportsQ}
               canManage={hasRole('hr')}
               filters={filters}
+              headerTarget={payrollHeader}
             />
           ) : (
             <>
@@ -475,6 +474,7 @@ function PayrollPanel({
   exportsQ,
   canManage,
   filters,
+  headerTarget,
 }: {
   units: OrgUnit[];
   unit: string;
@@ -483,6 +483,7 @@ function PayrollPanel({
   exportsQ: { data: ExportBatch[] | null; error: ApiError | null; loading: boolean; reload: () => void };
   canManage: boolean;
   filters: ReactNode;
+  headerTarget: HTMLSpanElement | null;
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -510,10 +511,11 @@ function PayrollPanel({
         keys.current.forIntent(`export:${unit}:${from}:${to}`),
       );
       keys.current.reset(`export:${unit}:${from}:${to}`);
-      toast(`Payroll file created — ${plural(r.row_count, 'row')} for ${unitName(r.org_unit_id)}.`);
+
       exportsQ.reload();
       const csv = await api<string>(`/exports/${r.id}/download`);
       downloadCsvText(`payroll-${r.from}-${r.to}.csv`, csv);
+      toast(`Payroll file created for ${fmtRange(r.from, r.to)} (${plural(r.row_count, 'leave day')}) and downloaded.`);
     } catch (e) {
       const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
       if (ae.status !== 0) keys.current.reset(`export:${unit}:${from}:${to}`);
@@ -564,34 +566,23 @@ function PayrollPanel({
 
   return (
     <>
-      <div className="page-header"><h2>Payroll files</h2>{canManage ? <div className="actions">
-        <button
-          type="button"
-          className="btn"
-          disabled={busy || !isValidDate(from) || !isValidDate(to) || from > to}
-          onClick={() => void createFile()}
-        >
-          {creating ? 'Creating…' : 'Create payroll file'}
-        </button>
-      </div> : <p className="muted small">HR creates and sends payroll files.</p>}</div>
-      {filters}
-      <p className="muted small">
-        A CSV of approved leave for {fmtRange(from, to)}
-        {unit ? ` · ${unitName(Number(unit))}` : ' · the whole service'}.
-      </p>
+      <h2>Payroll files</h2>
+      {canManage && headerTarget ? createPortal(<button type="button" className="btn" disabled={busy || !isValidDate(from) || !isValidDate(to) || from > to} onClick={() => void createFile()}>{creating ? 'Creating…' : 'Create payroll file'}</button>, headerTarget) : null}
+      {canManage ? <>{filters}<p className="muted small">A CSV of approved leave for {fmtRange(from,to)}{unit ? ` · ${unitName(Number(unit))}` : ' · the whole service'}.</p></> : null}
+      <p className="muted small">Sick leave details are hidden. The payroll CSV retains system columns for transfer; its Leave type column is readable.</p>
       {err && markId === null ? <ErrBox error={err} /> : null}
       {exportsQ.loading ? <Loading /> : null}
       {exportsQ.error ? <ErrBox error={exportsQ.error} /> : null}
       {exportsQ.data ? (
         <DataTable<ExportBatch>
           columns={[
-            { label: 'Period', title: true, render: (x) => fmtRange(x.from, x.to) },
+            { label: 'Period', className:'nowrap', title: true, render: (x) => fmtRange(x.from, x.to) },
             {
               label: 'Unit',
               render: (x) => (x.org_unit_id ? unitName(x.org_unit_id) : 'Whole service'),
             },
-            { label: 'Rows', className: 'num', render: (x) => x.row_count },
-            { label: 'Created', render: (x) => fmtDateTime(x.created_at) },
+            { label: 'Leave days', className: 'num', render: (x) => x.row_count },
+            { label: 'Created', className:'nowrap', render: (x) => fmtDateTime(x.created_at) },
             {
               label: 'Status',
               render: (x) =>
@@ -606,23 +597,11 @@ function PayrollPanel({
             },
             {
               label: '',
+              className:'row-actions',
               render: (x) => (
                 <>
                   <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void downloadFile(x)}>Download</button>
-                  {!x.transferred_at ? (
-                    <>
-                      {' · '}
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        disabled={busy}
-                        onClick={() => void markSent(x.id, '')}
-                      >
-                        Mark as sent
-                      </button>
-                      <Menu label="More" items={[{ label: 'Mark as sent with a note…', disabled: busy, onSelect: () => { setErr(null); setMarkId(x.id); setMarkNote(''); } }]} />
-                    </>
-                  ) : null}
+                  {canManage && !x.transferred_at ? <><button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void markSent(x.id,'')}>Mark as sent</button><Menu className="row-menu" label={<><span className="visually-hidden">Actions for payroll file {fmtRange(x.from,x.to)}</span>⋯</>} items={[{ label:'Mark as sent with a note…', disabled:busy, onSelect:() => { setErr(null); setMarkId(x.id); setMarkNote(''); } }]} /></> : null}
                 </>
               ),
             },
@@ -638,16 +617,7 @@ function PayrollPanel({
           Marking a file as sent is a manual confirmation — the file itself is not proof of
           payroll posting.
         </p>
-        {batches.length ? (
-          <ul className="small">
-            {batches.map((x) => (
-              <li key={x.id}>
-                {fmtDateTime(x.created_at)} — fingerprint{' '}
-                <code className="mono">{x.sha256}</code>
-              </li>
-            ))}
-          </ul>
-        ) : null}
+
       </Details>
 
       {markId !== null ? (

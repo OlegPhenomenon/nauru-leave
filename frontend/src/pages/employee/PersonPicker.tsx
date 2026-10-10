@@ -87,6 +87,8 @@ export function PersonPicker({
       <input
         type="text"
         role="combobox"
+        id="paper-employee"
+        aria-label="Employee"
         aria-expanded={open}
         aria-controls="person-picker-list"
         aria-autocomplete="list"

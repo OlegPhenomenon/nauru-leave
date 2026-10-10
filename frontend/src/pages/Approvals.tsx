@@ -1,20 +1,20 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { Link, useOutletContext } from 'react-router';
 import { api, ApiError, unwrapList } from '../api/client';
 import type { ApprovalsResp, RequestSummary, Outcome, RequestDetail as RD } from '../api/types';
 import { DecisionCard } from '../components/DecisionCard';
 import { Details, EmptyState, ErrBox, Loading, Menu, PageHeader, Tag, useToast } from '../components/ui';
 import { useSession } from '../lib/session';
-import { isHr } from '../lib/nav';
-import { fmtDuration, fmtRange, plural } from '../lib/format';
+import { isHr, type NavCounts } from '../lib/nav';
+import { fmtDay, fmtDuration, fmtRange, plural } from '../lib/format';
 import { useApi } from '../lib/useApi';
 import { AssignModal, type ModalCtx } from './request/modals';
-import { decisionToast, firstName, fmtStampDay, verbsFor } from './request/text';
+import { cancellationDays, decisionToast, firstName, fmtStampDay, verbsFor } from './request/text';
 import './Approvals.css';
 
-type Item = ApprovalsResp['items'][number];
+type Item = ApprovalsResp['items'][number] & { cancelledDates?: string[] };
 
-function rowFlags(it: Item): ReactNode {
+function rowFlags(it: Item, today: string): ReactNode {
   const overlap = it.warnings.find(w => w.code === 'team_overlap');
   const names = Array.isArray(overlap?.details)
     ? (overlap.details as { name?: string }[]).flatMap(x => x.name ? [x.name] : []) : [];
@@ -24,6 +24,7 @@ function rowFlags(it: Item): ReactNode {
     {names.length ? <Tag tone="warn">Overlaps with {names.join(', ')}</Tag> : null}
     {it.warnings.some(w => w.code === 'late_notice') ? <Tag tone="warn">Short notice</Tag> : null}
     {it.source === 'paper' ? <Tag>Paper form</Tag> : null}
+    {today && it.end_date < today ? <Tag tone="warn">Dates already passed</Tag> : null}
   </span>;
 }
 
@@ -34,22 +35,17 @@ function QueueRow({ it, waiting, open, onOpen, onDecided }: {
   onOpen: (id: number | null) => void;
   onDecided: (it: Item, outcome: Outcome) => void;
 }) {
-  const [panel, setPanel] = useState<'refuse' | 'question' | null>(null);
+  const { config } = useSession();
   const [load, setLoad] = useState(false);
   // Load detail once the row or its menu is used; retain it while collapsed.
-  const q = useApi(() => load ? api<RD>(`/requests/${it.id}`) : Promise.resolve(null), [load]);
+  const q = useApi(() => load ? api<RD>(`/requests/${it.id}`) : Promise.resolve(null), [load, it.version]);
   const verbs = verbsFor(it.step.kind, ['recommend_approve', 'recommend_reject', 'checked_ok', 'checked_problem', 'approve', 'reject', 'needs_information']);
-  function expand(which: 'refuse' | 'question' | null) {
+  function expand() {
     setLoad(true);
-    setPanel(which);
-    onOpen(which || !open ? it.id : null);
+    onOpen(open ? null : it.id);
   }
   const extras = q.data?.allowed_actions ?? [];
   const more = [
-    ...(!waiting && !open ? [
-      { label: verbs.refuseLabel, onSelect: () => expand('refuse') },
-      { label: 'Ask a question…', onSelect: () => expand('question') },
-    ] : []),
     ...(extras.includes('amend') ? [{ label: 'Change dates for employee…', to: `/requests/${it.id}?action=amend` }] : []),
     ...(extras.includes('revise') && it.kind !== 'cancellation' ? [{ label: 'Change dates for employee…', to: `/requests/${it.id}?action=respond-change` }] : []),
     ...(extras.includes('respond') ? [{ label: "Record employee’s answer…", to: `/requests/${it.id}?action=record` }] : []),
@@ -61,20 +57,20 @@ function QueueRow({ it, waiting, open, onOpen, onDecided }: {
   const sent = q.data?.current_revision.submitted_at;
   return <article className={`queue-row${open ? ' open' : ''}`}>
     <div className="queue-row-head">
-      <button type="button" className="queue-row-toggle" aria-expanded={open} aria-controls={`request-${it.id}`} onClick={() => expand(null)}>
+      <button type="button" className="queue-row-toggle" aria-expanded={open} aria-controls={`request-${it.id}`} onClick={() => expand()}>
         <span className="qr-l1"><strong>{it.employee.full_name}</strong> — {it.leave_type_name}</span>
-        <span className="qr-l2">{fmtRange(it.start_date, it.end_date)} · {fmtDuration(it.total_minutes, it.minutes_per_day)}</span>
-        <span className="qr-l3">{waiting ? `Waiting for ${firstName(it.employee.full_name)} to answer` : verbs.yourStep}{it.acting_for ? ` · standing in for ${it.acting_for.display_name}` : ''}{sent ? ` · sent ${fmtStampDay(sent)}` : ''}</span>
-        {rowFlags(it)}
+        <span className="qr-l2">{it.kind === 'cancellation' ? `Cancels ${(it.cancelledDates ?? []).map(fmtDay).join(', ') || fmtRange(it.start_date, it.end_date)}` : fmtRange(it.start_date, it.end_date)} · {fmtDuration(it.total_minutes, it.minutes_per_day)}</span>
+        <span className="qr-l3">{waiting ? `Waiting for ${firstName(it.employee.full_name)} to answer` : verbs.yourStep}{it.acting_for ? ` · standing in for ${it.acting_for.display_name}` : ''}{sent ? ` · sent ${fmtStampDay(sent)}` : ''} · {it.number}</span>
+        {rowFlags(it, config?.business_date ?? '')}
         <span className="qr-l3 queue-review-label">{open ? 'Hide review' : 'Review ›'}</span>
       </button>
       <div className="queue-row-actions no-print" onClickCapture={() => setLoad(true)}>
-        <Menu label="More" align="end" items={more} />
+        {more.length === 1 ? <Link className="btn btn-ghost btn-sm" to={`/requests/${it.id}`}>Open full request</Link> : <Menu label="More" align="end" items={more} />}
       </div>
     </div>
     {open ? <div id={`request-${it.id}`} className="queue-expand">
       {q.loading || !load ? <Loading label="Loading request…" /> : q.error ? <><ErrBox error={q.error} /><button className="btn btn-secondary" onClick={q.reload}>Reload request</button></> : q.data ?
-        <DecisionCard request={q.data} initialPanel={panel} openLink onRefresh={q.reload} onDecided={outcome => onDecided(it, outcome)} /> : null}
+        <DecisionCard request={q.data} openLink onRefresh={q.reload} onDecided={outcome => onDecided(it, outcome)} /> : null}
     </div> : null}
   </article>;
 }
@@ -96,8 +92,8 @@ function Assignment({ id, onClose, onDone }: { id: number; onClose: () => void; 
 }
 
 export default function Approvals() {
-  const { me } = useSession();
-  const navigate = useNavigate();
+  const { me, config } = useSession();
+  const counts = useOutletContext<NavCounts>();
   const q = useApi(async () => {
     const queue = await api<ApprovalsResp>('/approvals');
     const requests = unwrapList<RequestSummary>(await api('/requests', { query: { scope: 'all', status: 'needs_information', limit: 500 } }));
@@ -108,8 +104,14 @@ export default function Approvals() {
       const step = d.steps.find(s => s.status === 'pending');
       if (question?.author?.id === me?.user.id && step) queue.items.push({ ...d, step, acting_for: null });
     }
-    return queue;
-  }, [me?.user.id]);
+    const items: Item[] = await Promise.all(queue.items.map(async it => {
+      if (it.kind !== 'cancellation') return it;
+      const detail = await api<RD>(`/requests/${it.id}`);
+      const days = cancellationDays(detail);
+      return { ...it, cancelledDates: days.map(day => day.date), total_minutes: days.reduce((sum, day) => sum + day.minutes, 0) };
+    }));
+    return { ...queue, items };
+  }, [me?.user.id, config?.business_date]);
   const toast = useToast();
   const [removed, setRemoved] = useState<Set<number>>(new Set());
   const [openId, setOpenId] = useState<number | null>(null);
@@ -135,14 +137,8 @@ export default function Approvals() {
     });
   }
   return <>
-    <PageHeader title="Approvals" more={me && isHr(me) ? [
-      { label: 'Enter paper form', onSelect: () => navigate('/requests/new?paper=1') },
-      { label: 'Add unit', onSelect: () => navigate('/people?action=add-unit') },
-      { label: 'Add entitlement…', onSelect: () => navigate('/balances?action=entitlement') },
-      { label: 'Close year…', onSelect: () => navigate('/balances?action=close') },
-      { label: 'Import opening balances…', onSelect: () => navigate('/balances?action=opening_balances') },
-      { label: 'Import past leave…', onSelect: () => navigate('/balances?action=historical_leave') },
-    ] : undefined} subtitle={actionable.length ? `${plural(actionable.length, 'request')} need${actionable.length === 1 ? 's' : ''} you` : undefined} />
+    <PageHeader title="Approvals" primary={me && isHr(me) ? <Link className="btn btn-secondary" to="/requests/new?paper=1&from=approvals">Enter paper form…</Link> : undefined} subtitle={actionable.length ? `${plural(actionable.length, 'request')} need${actionable.length === 1 ? 's' : ''} you` : undefined} />
+    {counts.corrections > 0 ? <p>{counts.corrections} balance {counts.corrections === 1 ? 'correction' : 'corrections'} waiting for you — <Link to="/balances">Review</Link></p> : null}
     <div id="queue-summary" tabIndex={-1} className="visually-hidden">{actionable.length ? `${plural(actionable.length, 'request')} waiting` : 'No requests waiting for a decision'}</div>
     {!actionable.length ? <EmptyState text="Nothing is waiting for your decision." /> : null}
     <div className="queue" ref={listRef}>{actionable.map(it => <QueueRow key={`${it.id}-${it.step.id}`} it={it} open={openId === it.id} onOpen={setOpenId} onDecided={finish} />)}</div>

@@ -75,18 +75,18 @@ async function allItems<T>(path: string, query: Record<string, number> = {}): Pr
 /* Templates (generated client-side: header + one example row)         */
 /* ------------------------------------------------------------------ */
 
-function templateFor(kind: ImportKind, ctx: Ctx): { name: string; csv: string } {
+export function templateFor(kind: ImportKind, ctx: Ctx): { name: string; csv: string } {
   const esc = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s);
   const row = (cells: (string | number)[]) => cells.map((c) => esc(String(c))).join(',');
   const unit = ctx.units[0]?.code ?? 'UNIT';
   const schedule = ctx.schedules[0]?.name ?? 'Standard week';
-  const type = ctx.types.find((t) => t.uses_balance)?.code ?? ctx.types[0]?.code ?? 'ANNUAL';
+  const type = ctx.types.find((t) => t.uses_balance)?.name ?? ctx.types[0]?.name ?? 'Annual leave';
   switch (kind) {
     case 'employees':
       return {
         name: 'people-template.csv',
         csv:
-          row(['service_id', 'full_name', 'email', 'start_date', 'org_unit', 'schedule', 'manager_service_id']) +
+          row(['staff_number', 'full_name', 'email', 'start_date', 'org_unit', 'schedule', 'manager_service_id']) +
           '\n' +
           row(['NPS-3001', 'Kim Tao', 'kim.tao@example.gov.nr', ctx.today, unit, schedule, '']),
       };
@@ -94,17 +94,17 @@ function templateFor(kind: ImportKind, ctx: Ctx): { name: string; csv: string } 
       return {
         name: 'opening-balances-template.csv',
         csv:
-          row(['service_id', 'leave_type', 'period_year', 'minutes', 'basis']) +
+          row(['staff_number', 'leave_type', 'year', 'days', 'basis']) +
           '\n' +
-          row([ctx.people[0]?.service_id ?? 'NPS-1001', type, ctx.today.slice(0, 4), 20 * dayLengthFor(ctx.people[0]?.service_id ?? '', ctx), 'Opening balance sheet']),
+          row([ctx.people[0]?.service_id ?? 'NPS-1001', type, ctx.today.slice(0, 4), 12.5, 'Opening balance sheet']),
       };
     case 'historical_leave':
       return {
         name: 'past-leave-template.csv',
         csv:
-          row(['service_id', 'leave_type', 'start_date', 'end_date']) +
+          row(['staff_number', 'leave_type', 'start_date', 'end_date']) +
           '\n' +
-          row([ctx.people[0]?.service_id ?? 'NPS-1001', type, `${ctx.today.slice(0, 4)}-03-02`, `${ctx.today.slice(0, 4)}-03-06`]),
+          row([ctx.people[0]?.service_id ?? 'NPS-1001', ctx.types[0]?.code ?? 'ANNUAL', `${ctx.today.slice(0, 4)}-03-02`, `${ctx.today.slice(0, 4)}-03-06`]),
       };
   }
 }
@@ -130,8 +130,8 @@ function ColumnHelp({ kind }: { kind: ImportKind; ctx: Ctx }) {
     ['Employment date', 'First day employed, written as YYYY-MM-DD.'], ['Unit', 'The unit the person belongs to.'],
     ['Work pattern', 'The name of their work pattern.'], ['Email', 'Optional contact address.'], ['Manager', "Optional manager's staff number."],
   ] : kind === 'opening_balances' ? [
-    ['Staff number', 'The person whose balance is being set.'], ['Leave type', 'The type of leave this balance covers.'],
-    ['Year', 'The year the starting balance belongs to.'], ['Amount', 'This file uses the existing payroll format. Ask HR for the recorded amount; see Technical details for units.'],
+    ['Staff number', 'The person whose balance is being set.'], ['Leave type', 'The leave type name or code; letter case does not matter.'],
+    ['Year', 'The year the starting balance belongs to.'], ['Days', 'Days in this person’s work pattern, including half-days such as 12.5.'],
     ['Reference', 'The document supporting the starting balance.'],
   ] : [['Staff number', 'The person who took the leave.'], ['Leave type', 'The type of leave taken.'], ['Dates', 'First and last day, written as YYYY-MM-DD.']];
   return (
@@ -432,9 +432,9 @@ export function ImportDialog({
       </p>
       <ColumnHelp kind={kind} ctx={ctx} />
       <Details title="Technical details">
-        <p>The CSV must keep the template's column headers. Leave type and unit values use the codes below.</p>
+        <p>Use the template’s column headers. Older files using service_id, period_year and minutes are also accepted. Units use the codes below.</p>
         <pre>{templateFor(kind, ctx).csv.split('\n')[0]}</pre>
-        {kind === 'opening_balances' ? <p>The minutes column requires whole minutes: multiply days by the person's full working day in minutes. Days cannot be uploaded directly.</p> : null}
+        {kind === 'opening_balances' ? <p>Use exactly one amount column: days (12 or 12.5) or whole minutes. Days use each person’s current work pattern. Leave types accept names or codes.</p> : null}
         <table><thead><tr><th>Name</th><th>CSV value</th></tr></thead><tbody>
           {ctx.types.map(t => <tr key={`type-${t.id}`}><td>{t.name}</td><td>{t.code}</td></tr>)}
           {ctx.units.map(u => <tr key={`unit-${u.id}`}><td>{u.name}</td><td>{u.code}</td></tr>)}

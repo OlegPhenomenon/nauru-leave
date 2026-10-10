@@ -13,7 +13,7 @@ test('F11 round2: edit leave type identity', async ({ page }) => {
 });
 test('F11 round2: add schedule version', async ({ page }) => {
   await page.goto('/'); await pick(page, 'Maria'); await goTo(page, '/settings/schedules');
-  await page.getByRole('button', { name: 'New version from a date…', exact: true }).first().click();
+  await page.getByRole('button', { name: 'New version…', exact: true }).first().click();
   const modal=page.locator('.modal'); await modal.locator('input[type=date]').fill('2026-11-01');
   const response=page.waitForResponse(r=>r.request().method()==='POST' && r.url().includes('/versions'));
   await modal.getByRole('button',{name:'Save version',exact:true}).click(); expect((await response).status()).toBe(200);
@@ -55,6 +55,6 @@ test('F05 round2: actual correction confirms second approval and preserves adjus
 });
 test('F07 round2: export scope and transfer author',async ({page})=>{
   await page.goto('/');await pick(page,'Maria');await goTo(page,'/reports?r=payroll');
-  await page.getByRole('combobox', { name: 'Unit', exact: true }).selectOption('2');await page.getByRole('button',{name:'Create payroll file'}).click();await expect(page.locator('.toast-region')).toContainText('Infrastructure');await expect(page.getByRole('row').last()).toContainText('Infrastructure');
+  await page.getByRole('combobox', { name: 'Unit', exact: true }).selectOption('2');await page.getByRole('button',{name:'Create payroll file'}).click();await expect(page.locator('.toast-region')).toContainText('Payroll file created for 1–31 Oct 2026');await expect(page.getByRole('row').last()).toContainText('Infrastructure');
   await page.getByRole('button',{name:'Mark as sent'}).click();await expect(page.getByRole('row').last()).toContainText('by Maria Santos');
 });

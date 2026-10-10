@@ -20,6 +20,9 @@ import {
   Tag,
   useToast,
 } from '../components/ui';
+import { fmtBalance } from '../lib/domain';
+import { CorrectDialog } from './Balances';
+import './People.css';
 import { fmtDate, fmtDuration, fmtRange, orgUnitName } from '../lib/format';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
@@ -31,7 +34,7 @@ import {
   type AffectedRequest,
 } from './people/dialogs';
 
-type Dialog = 'edit' | 'transfer' | 'pattern' | 'end' | null;
+type Dialog = 'correct' | 'edit' | 'transfer' | 'pattern' | 'end' | null;
 
 /** The API returns schedule history rows flat: {id, name, valid_from, valid_to}. */
 type SchedHist = { id: number; name: string; valid_from: string; valid_to: string | null };
@@ -60,6 +63,8 @@ export default function PersonDetail() {
     [id],
   );
 
+  const [correctTypeId, setCorrectTypeId] = useState(0);
+  const typesQ = useApi(() => api<unknown>('/leave-types').then(d => unwrapList<import('../api/types').LeaveType>(d)), []);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [affected, setAffected] = useState<AffectedRequest[]>([]);
@@ -153,7 +158,7 @@ export default function PersonDetail() {
   ];
 
   return (
-    <>
+    <div className="stack person-page">
       <PageHeader
         back={{ to: '/people', label: 'People' }}
         title={
@@ -173,7 +178,7 @@ export default function PersonDetail() {
         more={
           canEdit
             ? [
-                { label: 'Edit name or email', onSelect: openEdit },
+                { label: 'Edit name or email…', onSelect: openEdit },
                 e.active
                   ? { label: 'End employment…', danger: true, onSelect: () => setDialog('end') }
                   : { label: 'Reinstate…', onSelect: () => void reinstate() },
@@ -196,7 +201,7 @@ export default function PersonDetail() {
             <dd>
               {e.email ?? 'No email'}{' '}
               {canEdit ? (
-                <button type="button" className="btn btn-ghost btn-sm" onClick={openEdit}>
+                <button type="button" className="btn btn-ghost btn-sm link-sm" onClick={openEdit}>
                   Change…
                 </button>
               ) : null}
@@ -208,7 +213,7 @@ export default function PersonDetail() {
               {unit ?? '—'}
               {e.manager ? ` · reports to ${e.manager.full_name}` : ''}{' '}
               {canEdit ? (
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDialog('transfer')}>
+                <button type="button" className="btn btn-ghost btn-sm link-sm" onClick={() => setDialog('transfer')}>
                   Change…
                 </button>
               ) : null}
@@ -219,7 +224,7 @@ export default function PersonDetail() {
             <dd>
               {e.schedule?.name ?? '—'}{' '}
               {canEdit ? (
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDialog('pattern')}>
+                <button type="button" className="btn btn-ghost btn-sm link-sm" onClick={() => setDialog('pattern')}>
                   Change…
                 </button>
               ) : null}
@@ -232,7 +237,7 @@ export default function PersonDetail() {
                 ? `${fmtDate(e.start_date)} – ${fmtDate(e.end_date)}`
                 : `since ${fmtDate(e.start_date)}`}{' '}
               {canEdit && e.active ? (
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDialog('end')}>
+                <button type="button" className="btn btn-ghost btn-sm link-sm" onClick={() => setDialog('end')}>
                   End…
                 </button>
               ) : null}
@@ -263,7 +268,7 @@ export default function PersonDetail() {
                 <div className="kv-row" key={b.leave_type.id}>
                   <dt>{b.leave_type.name}</dt>
                   <dd>
-                    <strong>{fmtDuration(b.available_minutes, b.minutes_per_day)} left</strong>
+                    <strong>{fmtBalance(b.available_minutes, b.minutes_per_day)} left</strong>
                     {b.reserved_minutes > 0 ? (
                       <span className="muted">
                         {' '}
@@ -271,12 +276,10 @@ export default function PersonDetail() {
                       </span>
                     ) : null}{' '}
                     {canEdit ? (
-                      <Link className="small" to={`/balances?employee=${e.id}&correct=1`}>
-                        Correct…
-                      </Link>
+                      <button className="btn btn-ghost btn-sm link-sm" onClick={() => { setCorrectTypeId(b.leave_type.id); setDialog('correct'); }}>Correct…</button>
                     ) : null}{' '}
                     <Link
-                      className="small"
+                      className="link-sm"
                       to={`/balances/${e.id}/explain?leave_type_id=${b.leave_type.id}`}
                     >
                       How is this worked out?
@@ -395,6 +398,7 @@ export default function PersonDetail() {
         )}
       </Details>
 
+      {dialog === 'correct' && typesQ.data ? <CorrectDialog employee={e} types={typesQ.data} initialTypeId={correctTypeId} initialMinutesPerDay={e.balances?.find(b => b.leave_type.id === correctTypeId)?.minutes_per_day} businessYear={Number(today.slice(0,4))} onClose={() => setDialog(null)} onDone={() => { setDialog(null); q.reload(); }} /> : null}
       {dialog === 'edit' ? (
         <Modal
           title="Edit name or email"
@@ -479,6 +483,6 @@ export default function PersonDetail() {
           }}
         />
       ) : null}
-    </>
+    </div>
   );
 }

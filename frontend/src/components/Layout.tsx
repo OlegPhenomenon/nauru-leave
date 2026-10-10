@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
-import { api, ApiError, post } from '../api/client';
-import type { AppConfig, MailboxItem, Me } from '../api/types';
+import { api, ApiError, beginPersonaSwitch, finishPersonaSwitch, post } from '../api/client';
+import type { AppConfig, MailboxItem, Me, Persona } from '../api/types';
 import {
   delegationScopeLabel,
   fmtDate,
@@ -18,7 +19,6 @@ import {
 } from '../lib/nav';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
-import PersonaPicker from './PersonaPicker';
 import {
   Details,
   Empty,
@@ -28,6 +28,7 @@ import {
   Menu,
   Modal,
   ToastRegion,
+  Tag,
   useToast,
 } from './ui';
 
@@ -148,6 +149,7 @@ function MoveDateModal({ config, onClose }: { config: AppConfig; onClose: () => 
       await post('/demo/clock', { date });
       await refreshConfig();
       await refreshMe();
+      window.dispatchEvent(new Event('nld:counts-changed'));
       toast(`Demo date moved to ${fmtDate(date)}.`);
       onClose();
     } catch (e) {
@@ -312,19 +314,19 @@ function DemoStrip({
           <InfoPopover />
         </div>
         <span className="spacer" />
-        <span className="demo-today">Today {fmtDate(config.business_date)}</span>
-        <button type="button" className="btn btn-ghost desktop-persona" onClick={onSwitch}>Viewing as {me.user.display_name} ({personRoleLabel(me)}) ▾</button>
-        <div className="only-mobile">        <Menu
+        <span className="demo-today"><span className="demo-date-full">Today {fmtDate(config.business_date)}</span><span className="demo-date-short">{fmtDate(config.business_date).replace(/ \d{4}$/, '')}</span></span>
+        <button type="button" className="btn btn-ghost desktop-persona" onClick={onSwitch}>Viewing as {me.user.display_name} ({personRoleLabel(me)})</button>
+        <div className="only-mobile">
+          <Menu
           label={
             <>
-              <span className="demo-view-full">Viewing as </span>
-              {me.user.display_name} ({personRoleLabel(me)})
+              {me.user.display_name.trim().split(/\s+/)[0]}
             </>
           }
           align="end"
           items={toolItems}
         />
-</div>
+        </div>
         <span className="demo-tools-slot">
           <Menu
             label="Demo tools"
@@ -345,6 +347,52 @@ function DemoStrip({
 /* Layout                                                              */
 /* ------------------------------------------------------------------ */
 
+// Keep the old page unmounted throughout the change of session and route.
+function SwitchPersonPicker({ onBusy, onDone }: { onBusy: (busy: boolean) => void; onDone: () => void }) {
+  const { me, adoptMe } = useSession();
+  const navigate = useNavigate();
+  const q = useApi(() => api<Persona[]>('/demo/personas'), []);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  async function pick(userId: number) {
+    if (busy !== null || userId === me?.user.id) return;
+    setBusy(userId);
+    setError(null);
+    onBusy(true);
+    beginPersonaSwitch();
+    try {
+      await post('/demo/login', { user_id: userId });
+      const next = await api<Me>('/me');
+      finishPersonaSwitch();
+      const counts = await fetchNavCounts(next);
+      flushSync(() => navigate(homeFor(next, counts), { replace: true }));
+      flushSync(() => adoptMe(next));
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e : new Error(String(e)));
+    } finally {
+      finishPersonaSwitch();
+      onBusy(false);
+      setBusy(null);
+    }
+  }
+  if (q.loading) return <Loading label="Loading demo people…" />;
+  if (q.error) return <ErrBox error={q.error} />;
+  return <>
+    <ErrBox error={error} />
+    <div className="persona-grid">{(q.data ?? []).map(person => <button
+      key={person.user_id} type="button" className="persona-card"
+      disabled={busy !== null || person.user_id === me?.user.id}
+      onClick={() => void pick(person.user_id)}>
+      <span className="name">{person.display_name}</span>
+      <span className="title">{person.title}</span>
+      <span className="story">{person.story}</span>
+      {person.user_id === me?.user.id ? <Tag>Current</Tag> : null}
+      {busy === person.user_id ? <span className="muted small">Switching…</span> : null}
+    </button>)}</div>
+  </>;
+}
+
 export default function Layout() {
   const { me, config, logout } = useSession();
   const navigate = useNavigate();
@@ -354,6 +402,7 @@ export default function Layout() {
   const [counts, setCounts] = useState<NavCounts>({ approvals: 0, corrections: 0 });
   const [sheetOpen, setSheetOpen] = useState(false);
   const [switcher, setSwitcher] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [mailboxOpen, setMailboxOpen] = useState(false);
   const [moveDateOpen, setMoveDateOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
@@ -367,6 +416,7 @@ export default function Layout() {
     return () => window.removeEventListener('nld:counts-changed', refresh);
   }, []);
   useEffect(() => {
+    if (switching) return;
     if (!me) {
       setCounts({ approvals: 0, corrections: 0 });
       return;
@@ -379,7 +429,7 @@ export default function Layout() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meId, location.pathname, countsVersion]);
+  }, [me, location.pathname, countsVersion, switching]);
 
   // Close the mobile sheet on navigation and Escape.
   useEffect(() => setSheetOpen(false), [location.pathname]);
@@ -394,12 +444,12 @@ export default function Layout() {
 
   const mailbox = useApi(
     () =>
-      isDemo && meId
+      isDemo && meId && !switching
         ? api<{ items: MailboxItem[] }>('/demo/mailbox')
         : Promise.resolve(null),
     // Refresh the count as the demo day / persona / page changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isDemo, meId, location.pathname],
+    [isDemo, meId, location.pathname, switching],
   );
   const myMailCount =
     me && mailbox.data
@@ -488,7 +538,7 @@ export default function Layout() {
         </div>
       ) : null}
       <main id="main" tabIndex={-1} className="page">
-        <Outlet key={me?.user.id ?? 'anon'} />
+        {switching ? <Loading label="Switching person…" /> : <Outlet key={me?.user.id ?? 'anon'} context={counts} />}
       </main>
       <footer className="app-footer no-print">
         Nauru Leave Desk{config?.app_version ? ` v${config.app_version}` : ''} ·{' '}
@@ -554,8 +604,8 @@ export default function Layout() {
       ) : null}
       {resetOpen ? <ResetModal onClose={() => setResetOpen(false)} /> : null}
       {switcher ? (
-        <Modal title="Switch person" onClose={() => setSwitcher(false)} wide>
-          <PersonaPicker onDone={afterPersonaPick} />
+        <Modal title="Switch person" onClose={() => { if (!switching) setSwitcher(false); }} wide>
+          <SwitchPersonPicker onBusy={value => flushSync(() => setSwitching(value))} onDone={afterPersonaPick} />
         </Modal>
       ) : null}
       <ToastRegion />

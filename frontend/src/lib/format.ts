@@ -26,12 +26,19 @@ export function plural(n: number, singular: string, pluralForm?: string): string
   return `${n} ${form}`;
 }
 
+export function fmtDays(minutes: number, minutesPerDay = 480): string {
+  const days = minutes / minutesPerDay;
+  return `${days.toLocaleString('en', { maximumFractionDigits: 2 })} ${Math.abs(days) === 1 ? 'day' : 'days'}`;
+}
+
+
 /**
  * Render minutes as days/hours for a schedule day length.
  * 2400 @480 → "5 days"; 240 @480 → "½ day"; 4560 @480 → "9½ days";
  * 600 @480 → "1 day 2 h"; 0 → "0 days".
  * Never renders minutes to normal users; keeps the sign for corrections.
  */
+
 export function fmtDuration(minutes: number, minutesPerDay = 480): string {
   const sign = minutes < 0 ? '−' : '';
   const m = Math.abs(minutes);

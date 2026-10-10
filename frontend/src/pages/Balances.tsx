@@ -5,6 +5,7 @@ import type {
   Adjustment,
   BalanceRow,
   BalanceSummary,
+  ClosePreview,
   EmployeeDetail,
   EmployeeListItem,
   EmployeeRef,
@@ -12,6 +13,7 @@ import type {
   OrgUnit,
   PolicyVersion,
 } from '../api/types';
+import './Balances.css';
 import { ImportDialog } from '../components/ImportDialog';
 import {
   DataTable,
@@ -19,7 +21,6 @@ import {
   ErrBox,
   Field,
   Loading,
-  Menu,
   Modal,
   PageHeader,
   useToast,
@@ -29,10 +30,12 @@ import {
   fmtDate,
   fmtDateTime,
   fmtDuration,
+  fmtDays,
   orgUnitName,
   plural,
 } from '../lib/format';
 import {
+  fmtBalance,
   accrualPlanFor,
   daysToMinutes,
   IntentKeys,
@@ -197,8 +200,8 @@ export default function Balances() {
       r.employee.full_name.toLowerCase().includes(needle) ||
       r.employee.service_id.toLowerCase().includes(needle)
     );
-  });
-  const anyReserved = rows.some((r) => r.summary.reserved_minutes > 0);
+  }).sort((a, b) => a.employee.full_name.localeCompare(b.employee.full_name));
+  const anyReserved = rows.some((r) => r.summary.reserved_minutes > 0) || (waitingQ.data ?? []).some(a => a.leave_type.id === selTypeId);
 
   const waiting = waitingQ.data ?? [];
   const waitingForMe = waiting.filter((a) => a.proposed_by.id !== me?.user.id);
@@ -245,26 +248,20 @@ export default function Balances() {
         primary={
           canEdit ? (
             <>
-              <button type="button" className={isApprover && waitingForMe.length ? 'btn btn-secondary' : 'btn'} disabled={selTypeId === null || !businessDate} onClick={() => {
+              <button type="button" className="btn" disabled={selTypeId === null || !businessDate} onClick={() => {
                 if (selTypeId !== null) setCorrect({ employee: null, leaveTypeId: selTypeId });
               }}>Correct balance…</button>
             </>
           ) : undefined
         }
-        more={
-          canEdit
-            ? [
-                { label: 'Add entitlement…', onSelect: () => setModal('entitlement') },
-                { label: 'Close year…', onSelect: () => setModal('close') },
-                {
-                  label: 'Import opening balances…',
-                  onSelect: () => setImportKind('opening_balances'),
-                },
-                { label: 'Import past leave…', onSelect: () => setImportKind('historical_leave') },
-              ]
-            : undefined
-        }
+
       />
+      {canEdit ? <div className="balance-tools" aria-label="Entitlement and records">
+        <button className="btn btn-secondary btn-sm" onClick={() => setModal('entitlement')}>Add entitlement…</button>
+        <button className="btn btn-secondary btn-sm" onClick={() => setModal('close')}>Close year…</button>
+        <button className="btn btn-secondary btn-sm" onClick={() => setImportKind('opening_balances')}>Import opening balances…</button>
+        <button className="btn btn-secondary btn-sm" onClick={() => setImportKind('historical_leave')}>Import past leave…</button>
+      </div> : null}
       {bannerErr ? <ErrBox error={bannerErr} /> : null}
       {waitingQ.error ? <ErrBox error={waitingQ.error} /> : null}
 
@@ -323,7 +320,7 @@ export default function Balances() {
                 <div className="btn-row">
                   <button
                     type="button"
-                    className="btn btn-sm"
+                    className="btn btn-secondary btn-sm"
                     disabled={busy}
                     onClick={() => void decide(a, 'apply', '')}
                   >
@@ -357,7 +354,7 @@ export default function Balances() {
         {typesQ.error ? <ErrBox error={typesQ.error} /> : null}
         {unitsQ.error ? <ErrBox error={unitsQ.error} /> : null}
         <div className="toolbar">
-          <Field label="Search person">
+          <Field label="Find a person">
             <input
               type="search"
               value={q}
@@ -411,22 +408,19 @@ export default function Balances() {
                 className: 'num',
                 render: (r) => (
                   <strong>
-                    {fmtDuration(r.summary.available_minutes, r.summary.minutes_per_day)}
+                    {fmtBalance(r.summary.available_minutes, r.summary.minutes_per_day)}
                   </strong>
                 ),
               },
               ...(anyReserved
                 ? [
                     {
-                      label: 'Waiting for approval',
+                      label: 'On hold for requests',
                       className: 'num',
-                      render: (r: BalanceRow) =>
-                        r.summary.reserved_minutes
-                          ? fmtDuration(
-                              r.summary.reserved_minutes,
-                              r.summary.minutes_per_day,
-                            )
-                          : '—',
+                      render: (r: BalanceRow) => <>
+                        {r.summary.reserved_minutes ? fmtDuration(r.summary.reserved_minutes, r.summary.minutes_per_day) : '—'}
+                        {waiting.filter(a => a.employee.id === r.employee.id && a.leave_type.id === selTypeId).map(a => <div className="small muted" key={a.id}>{a.minutes > 0 ? '+' : ''}{fmtDuration(a.minutes, a.minutes_per_day)} (correction waiting)</div>)}
+                      </>,
                     },
                   ]
                 : []),
@@ -439,29 +433,7 @@ export default function Balances() {
                           onClick={(e) => e.stopPropagation()}
                           onMouseDown={(e) => e.stopPropagation()}
                         >
-                          <Menu
-                            align="end"
-                            label={
-                              <>
-                                <span className="visually-hidden">
-                                  Actions for {r.employee.full_name}
-                                </span>
-                                <span aria-hidden="true">⋯</span>
-                              </>
-                            }
-                            items={[
-                              {
-                                label: 'Correct…',
-                                onSelect: () =>
-                                  selTypeId !== null &&
-                                  setCorrect({
-                                    employee: r.employee,
-                                    leaveTypeId: selTypeId,
-                                    minutesPerDay: r.summary.minutes_per_day,
-                                  }),
-                              },
-                            ]}
-                          />
+                          <button className="btn btn-ghost btn-sm" onClick={() => selTypeId !== null && setCorrect({ employee: r.employee, leaveTypeId: selTypeId, minutesPerDay: r.summary.minutes_per_day })}>Correct…</button>
                         </span>
                       ),
                     },
@@ -624,7 +596,7 @@ export default function Balances() {
 /* Correct balance                                                     */
 /* ------------------------------------------------------------------ */
 
-function CorrectDialog({
+export function CorrectDialog({
   employee,
   types,
   initialTypeId,
@@ -798,7 +770,8 @@ function EntitlementDialog({
   const balanceTypes = types.filter((t) => t.uses_balance || t.policies?.some((p) => p.uses_balance));
   const [year, setYear] = useState(businessYear);
   const [month, setMonth] = useState(businessMonth || 1);
-  const [ticked, setTicked] = useState<Set<number>>(() => new Set(balanceTypes.map((t) => t.id)));
+  const [chooseNext, setChooseNext] = useState(true);
+  const [ticked, setTicked] = useState<Set<number>>(() => new Set(balanceTypes.filter(t => !!accrualPlanFor(t, businessYear, businessMonth || 1)).map((t) => t.id)));
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<RunResult[] | null>(null);
   const keys = useRef(new IntentKeys());
@@ -806,6 +779,21 @@ function EntitlementDialog({
   const plans = balanceTypes.map((t) => ({ t, plan: accrualPlanFor(t, year, month) }));
   const isRunnable = (p: (typeof plans)[number]) =>
     !!p.plan && businessDate >= p.plan.runnableFrom;
+  const preview = useApi(async () => ({ year, month, items: Object.fromEntries(await Promise.all(plans.filter(p => p.plan).map(async ({ t, plan }) => {
+    const value = await api<{ eligible: number; skipped_existing: number; entitlement_minutes: number }>('/accruals/preview', { query: { leave_type_id: t.id, period_year: year, ...(plan?.kind === 'monthly' ? { month } : {}) } });
+    return [t.id, value] as const;
+  }))) }), [year, month]);
+  useEffect(() => {
+    if (!chooseNext || preview.loading || !preview.data || preview.data.year !== year || preview.data.month !== month || preview.error) return;
+    const values = Object.values(preview.data.items);
+    if (values.length && values.every(p => p.eligible === 0) && values.some(p => p.skipped_existing > 0) && year < 2100) {
+      setYear(year + 1);
+    } else {
+      setChooseNext(false);
+      setTicked(new Set(plans.filter(p => p.plan && isRunnable(p)).map(p => p.t.id)));
+    }
+  }, [chooseNext, preview.data, preview.loading, preview.error, year]);
+  const previewReady = !preview.loading && preview.data?.year === year && preview.data?.month === month && !preview.error;
   // Keep month selection reachable when a monthly rule starts later in the year.
   const needsMonth = balanceTypes.some((t) => ticked.has(t.id) &&
     MONTH_NAMES.some((_, i) => accrualPlanFor(t, year, i + 1)?.kind === 'monthly'));
@@ -816,7 +804,7 @@ function EntitlementDialog({
   );
 
   async function run() {
-    if (busy) return;
+    if (busy || !previewReady || chooseNext) return;
     setBusy(true);
     const out: RunResult[] = results?.filter((r) => r.ok) ?? [];
     for (const { t, plan } of plans) {
@@ -838,7 +826,7 @@ function EntitlementDialog({
         out.push({
           typeId: t.id,
           ok: true,
-          text: `${t.name} — added the ${period} entitlement for ${plural(r.posted ?? 0, 'person', 'people')} (${r.skipped_existing ?? 0} already had it).`,
+          text: r.posted === 0 ? `${t.name} — Everyone already has the ${period} entitlement.` : `${t.name} — added the ${period} entitlement for ${plural(r.posted ?? 0, 'person', 'people')} (${r.skipped_existing ?? 0} already had it).`,
         });
       } catch (e) {
         const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
@@ -848,7 +836,7 @@ function EntitlementDialog({
     }
     setResults(out);
     setBusy(false);
-    if (out.some((r) => r.ok)) toast(out.some((r) => !r.ok) ? 'Some entitlements were added. Check the remaining leave types.' : `Entitlements added for ${periodLabel}.`);
+    if (out.some((r) => r.ok) && out.some(r => r.text.includes('added the'))) toast(out.some((r) => !r.ok) ? 'Some entitlements were added. Check the remaining leave types.' : `Entitlements added for ${periodLabel}.`);
     onDone();
   }
 
@@ -870,7 +858,7 @@ function EntitlementDialog({
             <button
               type="button"
               className="btn"
-              disabled={busy || !anyRunnable}
+              disabled={busy || !anyRunnable || !previewReady || chooseNext}
               onClick={() => void run()}
             >
               {busy ? 'Adding…' : 'Add'}
@@ -895,7 +883,7 @@ function EntitlementDialog({
                 min={2000}
                 max={2100}
                 value={year}
-                onChange={(e) => setYear(Number(e.target.value))}
+                onChange={(e) => { setChooseNext(false); setYear(Number(e.target.value)); }}
               />
             </Field>
             {needsMonth ? (
@@ -910,6 +898,12 @@ function EntitlementDialog({
               </Field>
             ) : null}
           </div>
+          {!previewReady && !preview.error || chooseNext && !preview.error ? <Loading label="Checking who already has this entitlement…" /> : null}
+          <ErrBox error={preview.error} />
+          {previewReady && !chooseNext && preview.data ? <ul className="sum-list">{plans.filter(p => ticked.has(p.t.id) && isRunnable(p)).map(({t}) => {
+            const p = preview.data?.items[t.id];
+            return p ? <li key={t.id}>{p.eligible ? `Adds ${fmtDuration(p.entitlement_minutes)} ${t.name} to ${plural(p.eligible, 'person', 'people')}. ${p.skipped_existing} already have it and will be skipped.` : `Everyone already has the ${periodLabel} entitlement for ${t.name}.`}</li> : null;
+          })}</ul> : null}
           <fieldset disabled={busy}>
             <legend>Leave types</legend>
             {plans.map(({ t, plan }) => {
@@ -924,7 +918,8 @@ function EntitlementDialog({
                   <label>
                     <input
                       type="checkbox"
-                      checked={ticked.has(t.id)}
+                      disabled={!runnable}
+                      checked={runnable && ticked.has(t.id)}
                       onChange={(e) => {
                         const next = new Set(ticked);
                         if (e.target.checked) next.add(t.id);
@@ -990,6 +985,9 @@ function CloseYearDialog({
   const businessYear = Number(businessDate.slice(0, 4));
   const balanceTypes = types.filter((t) => t.uses_balance || t.policies?.some((p) => p.uses_balance));
   const [year, setYear] = useState(businessYear - 1);
+  const [previews, setPreviews] = useState<ClosePreview[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(true);
+  const [previewError, setPreviewError] = useState<ApiError | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<RunResult[] | null>(null);
@@ -1002,11 +1000,31 @@ function CloseYearDialog({
   }));
   const postable = lines.filter((l) => l.policy?.uses_balance);
 
+  useEffect(() => {
+    let active = true;
+    setPreviews([]);
+    setPreviewError(null);
+    setPreviewLoading(ended);
+    if (ended) {
+      const eligible = types.filter(t => policyInForceOn(t, `${year}-12-31`)?.uses_balance);
+      void Promise.all(eligible.map(t => api<ClosePreview>('/periods/close', {
+        query: { leave_type_id: t.id, period_year: year },
+      }))).then(data => {
+        if (active) setPreviews(data);
+      }).catch((e: unknown) => {
+        if (active) setPreviewError(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
+      }).finally(() => { if (active) setPreviewLoading(false); });
+    }
+    return () => { active = false; };
+  }, [types, year, ended, businessDate]);
+
+  const unclosed = postable.filter(l => previews.some(p => p.period_year === year && p.leave_type_id === l.t.id && !p.already_closed));
+
   async function run() {
-    if (busy || !ended || !confirm) return;
+    if (busy || !ended || !confirm || previewLoading || previewError || !unclosed.length) return;
     setBusy(true);
     const out: RunResult[] = results?.filter((r) => r.ok) ?? [];
-    for (const { t } of postable) {
+    for (const { t } of unclosed) {
       if (out.some((r) => r.typeId === t.id)) continue;
       const intent = `close:${t.id}:${year}`;
       try {
@@ -1025,7 +1043,7 @@ function CloseYearDialog({
     }
     setResults(out);
     setBusy(false);
-    if (out.some((r) => r.ok)) toast(out.some((r) => !r.ok) ? 'Some leave types were closed. Check the remaining types.' : out.every(r => r.text.includes('no balance changes')) ? 'No balance changes.' : `${year} closed.`);
+    if (out.some((r) => r.ok) && out.some(r => r.text.includes('added the'))) toast(out.some((r) => !r.ok) ? 'Some leave types were closed. Check the remaining types.' : out.every(r => r.text.includes('no balance changes')) ? 'No balance changes.' : `${year} closed.`);
     onDone();
   }
 
@@ -1047,7 +1065,7 @@ function CloseYearDialog({
             <button
               type="button"
               className="btn"
-              disabled={busy || !ended || !confirm || !postable.length}
+              disabled={busy || !ended || !confirm || previewLoading || !!previewError || !unclosed.length}
               onClick={() => void run()}
             >
               {busy ? 'Closing…' : `Close ${year}`}
@@ -1075,6 +1093,18 @@ function CloseYearDialog({
             ))}
             {!lines.length ? <li>No leave types use balances.</li> : null}
           </ul>
+          {previewLoading ? <Loading /> : null}
+          {previewError ? <ErrBox error={previewError} /> : null}
+          {previews.map(preview => <section key={preview.leave_type_id}>
+            <h3>{types.find(t => t.id === preview.leave_type_id)?.name}</h3>
+            {preview.already_closed ? <p>Already closed</p> : null}
+            <DataTable rows={preview.items} empty="No balances for this year." columns={[
+              { label: 'Person', render: row => <>{row.full_name}{row.already_closed ? ' · Already closed' : ''}</> },
+              { label: 'Days left', render: row => fmtDays(row.left_minutes, row.minutes_per_day) },
+              { label: 'Carries over', render: row => fmtDays(row.carried_minutes, row.minutes_per_day) },
+              { label: 'Removed', render: row => fmtDays(row.removed_minutes, row.minutes_per_day) },
+            ]} />
+          </section>)}
           <div>
             <label>
               <input

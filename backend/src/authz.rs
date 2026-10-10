@@ -417,7 +417,13 @@ pub fn view_level(conn: &Connection, actor: &Actor, req: &RequestCtx) -> Res<Vie
         &["hr", "hr_medical", "final_approver", "auditor"],
         req.org_unit_id,
     )? {
-        return Ok(ViewLevel::Full); // staff see the type; medical files are a separate gate
+        // Sensitive reasons and documents stay with the employee and HR.
+        // Final approvers/auditors retain request access with masked details.
+        return Ok(if actor.any_role_in_scope(conn, &["hr", "hr_medical"], req.org_unit_id)? {
+            ViewLevel::Full
+        } else {
+            masked
+        });
     }
     if actor.is_manager_of(req.employee_id) {
         return Ok(masked);

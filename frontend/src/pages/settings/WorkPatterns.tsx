@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { post } from '../../api/client';
 import type { Schedule, ScheduleVersion } from '../../api/types';
 import {
+  DataTable,
   Details,
   EmptyState,
   ErrBox,
@@ -143,7 +144,7 @@ export default function WorkPatterns() {
         primary={
           canEdit ? (
             <button type="button" className="btn" onClick={() => setNewOpen(true)}>
-              Add work pattern
+              Add work pattern…
             </button>
           ) : undefined
         }
@@ -155,44 +156,12 @@ export default function WorkPatterns() {
 
         />
       ) : (
-        <div className="card-grid">
-          {patterns.map((s) => {
-            const cur = inForce(s, today);
-            const versions = [...(s.versions ?? [])].sort((a, b) =>
-              b.valid_from.localeCompare(a.valid_from),
-            );
-            return (
-              <div key={s.id} className="card">
-                <h3>{s.name}</h3>
-                <p>{cur ? weekSentence(weekArray(cur.week)) : 'No work pattern in force yet.'}</p>
-                {canEdit ? (
-                  <p>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => setVersionFor(s)}
-                    >
-                      New version from a date…
-                    </button>
-                  </p>
-                ) : null}
-                {versions.length ? (
-                  <Details title="Pattern history" count={versions.length}>
-                    <ul className="sentence-list">
-                      {versions.map((v) => (
-                        <li key={v.id}>
-                          <span>
-                            From {fmtDate(v.valid_from)} — {weekSentence(weekArray(v.week))}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </Details>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
+        <DataTable<Schedule> rows={patterns} columns={[
+          { label:'Work pattern', title:true, render:s => s.name },
+          { label:'Working week', render:s => { const cur = inForce(s, today); return cur ? weekSentence(weekArray(cur.week)) : 'No work pattern in force yet.'; } },
+          { label:'History', render:s => <Details title="Pattern history"><ul className="sentence-list">{[...(s.versions ?? [])].sort((a,b) => b.valid_from.localeCompare(a.valid_from)).map(v => <li key={v.id}>From {fmtDate(v.valid_from)} — {weekSentence(weekArray(v.week))}</li>)}</ul></Details> },
+          { label:'', className:'row-actions', render:s => canEdit ? <button className="btn btn-ghost btn-sm" onClick={() => setVersionFor(s)}>New version…</button> : null },
+        ]} />
       )}
 
       {newOpen && today ? (
@@ -236,7 +205,7 @@ export function PatternModal({
   const [hours, setHours] = useState<number[]>([...PRESETS[0]!.hours]);
 
   return (
-    <Modal title="Add work pattern" onClose={onClose} wide footer={<> <button type="button" className="btn btn-secondary" onClick={onClose}>
+    <Modal title="Add work pattern" onClose={onClose} wide footer={<> <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
         </button>
         <button
@@ -268,7 +237,7 @@ export function PatternModal({
   );
 }
 
-function VersionModal({
+export function VersionModal({
   s,
   businessDate,
   onClose,
@@ -290,7 +259,7 @@ function VersionModal({
   );
 
   return (
-    <Modal title={`New version — ${s.name}`} onClose={onClose} wide footer={<> <button type="button" className="btn btn-secondary" onClick={onClose}>
+    <Modal title={`New version — ${s.name}`} onClose={onClose} wide footer={<> <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
         </button>
         <button

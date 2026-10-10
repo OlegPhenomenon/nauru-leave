@@ -499,6 +499,7 @@ export interface ScheduleWeek {
   sun: number;
 }
 export interface ScheduleVersion {
+  valid_to?: string | null;
   id: number;
   version: number;
   valid_from: string;
@@ -601,9 +602,29 @@ export interface ImportBatch {
 
 // --- Operations ---
 
+export interface ClosePreview {
+  leave_type_id: number;
+  period_year: number;
+  already_closed: boolean;
+  items: {
+    account_id: number;
+    employee_id: number;
+    service_id: string;
+    full_name: string;
+    minutes_per_day: number;
+    left_minutes: number;
+    carried_minutes: number;
+    removed_minutes: number;
+    already_closed: boolean;
+  }[];
+}
+
 export interface NotificationItem {
   id: number;
   to_email: string;
+  recipient_name: string | null;
+  request_number: string | null;
+  request_id: number | null;
   subject: string;
   status: string;
   attempts: number;

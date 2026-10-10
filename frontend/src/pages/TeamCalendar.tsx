@@ -211,10 +211,11 @@ export default function TeamCalendar() {
       </div>
 
       <div className="panel">
-        <div className="toolbar">
+        <div className="toolbar cal-toolbar">
+          <div className="cal-period">
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
+            className="btn btn-secondary"
             aria-label="Earlier"
             onClick={() => shift(-1)}
           >
@@ -225,12 +226,13 @@ export default function TeamCalendar() {
           </strong>
           <button
             type="button"
-            className="btn btn-secondary btn-sm"
+            className="btn btn-secondary"
             aria-label="Later"
             onClick={() => shift(1)}
           >
             ›
           </button>
+          </div>
             <Field label="Team">
               <select value={team} onChange={(e) => setTeam(e.target.value)}>
                 <option value="">Everyone</option>
@@ -286,7 +288,7 @@ export default function TeamCalendar() {
         ) : null}
 
         {data && view === 'month' && people.length > 0 ? (
-          <div className="cal-scroll">
+          <div className="cal-scroll" role="region" aria-label="Monthly absences; scroll to see all dates" tabIndex={0}>
             <div className="cal-legend">
               <span>
                 <span className="sw sw-a" />

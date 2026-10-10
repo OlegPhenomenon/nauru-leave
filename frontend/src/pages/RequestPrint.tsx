@@ -1,6 +1,6 @@
 import { useParams } from 'react-router';
 import { api } from '../api/client';
-import type { DayRow, RequestDetail } from '../api/types';
+import type { DayRow, Decision, RequestDetail } from '../api/types';
 import {
   Details,
   Empty,
@@ -9,10 +9,9 @@ import {
   PageHeader,
   StatusBadge,
 } from '../components/ui';
-import { inForceRevision } from '../lib/domain';
+import { inForceRevision, remainingRanges } from '../lib/domain';
 import {
   fmtDate,
-  fmtDateTime,
   fmtDuration,
   fmtRange,
   outcomeLabel,
@@ -22,6 +21,7 @@ import {
 } from '../lib/format';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
+import { fmtStampDay } from './request/text';
 
 // Merge consecutive days with the same part into one "2–6 Nov" row so a
 // two-week leave prints as a few lines instead of fourteen.
@@ -65,23 +65,34 @@ export default function RequestPrint() {
   const history = (d.revisions ?? []).filter((r) => r.id !== rev.id);
   const changedBy = (d.children ?? []).filter((c) => c.status === 'approved');
   const groups = groupDays(rev.days ?? []);
+  const showPart = groups.some(g => !!partNote(g.part));
+  const decisionGroups = new Map<string, { requestId: number; decisions: Decision[] }>();
+  for (const x of d.decisions ?? []) {
+    const record = x as Decision & { request?: { id: number }; revision_id?: number };
+    const requestId = record.request?.id ?? d.id;
+    const key = `${requestId}:${record.revision_id ?? x.revision_no}`;
+    const group = decisionGroups.get(key) ?? { requestId, decisions: [] };
+    group.decisions.push(x);
+    decisionGroups.set(key, group);
+  }
+  const dates = remainingRanges(rev).map(([a, b]) => fmtRange(a, b)).join(', ') || fmtRange(rev.start_date, rev.end_date);
+  const decisionHeading = (group: { requestId: number; decisions: Decision[] }): string => {
+    const kind = group.requestId === d.id ? d.kind : d.children.find(c => c.id === group.requestId)?.kind;
+    const approved = group.decisions.find(x => x.outcome === 'approve');
+    if (kind === 'amendment' || kind === 'cancellation')
+      return `${kind === 'amendment' ? 'Change of dates' : 'Cancellation of days'}${approved ? ` (approved ${fmtStampDay(approved.created_at)})` : ''}`;
+    return group.requestId === d.id && group.decisions[0]?.revision_no === 1 ? 'Original request' : 'Revised request';
+  };
 
   return (
     <>
-      <div className="no-print">
+      <div className="panel print-card">
         <PageHeader
-          title={`Request ${d.number}`}
+          title={`${d.leave_type_name} · ${dates}`}
+          subtitle={d.number}
           back={{ to: `/requests/${id}`, label: 'Back to the request' }}
-          primary={
-            <button type="button" className="btn" onClick={() => window.print()}>
-              Print
-            </button>
-          }
+          primary={<button type="button" className="btn no-print" onClick={() => window.print()}>Print</button>}
         />
-      </div>
-
-      <div className="panel">
-        <h1>Leave request {d.number}</h1>
         <p>
           <StatusBadge status={d.status} label={d.status_label} />
         </p>
@@ -100,7 +111,7 @@ export default function RequestPrint() {
           <div className="kv-row">
             <dt>Dates</dt>
             <dd>
-              {fmtRange(rev.start_date, rev.end_date)}
+              {dates}
               {rev.start_date === rev.end_date && rev.start_part !== 'full'
                 ? ` · ${partLabel(rev.start_part)} only`
                 : ''}
@@ -118,7 +129,7 @@ export default function RequestPrint() {
           </div>
           {rev.change_reason ? (
             <div className="kv-row">
-              <dt>Latest change</dt>
+              <dt>Reason for change</dt>
               <dd>{rev.change_reason}</dd>
             </div>
           ) : null}
@@ -145,7 +156,7 @@ export default function RequestPrint() {
               <tr>
                 <th>Dates</th>
                 <th className="num">Counted</th>
-                <th>Part</th>
+                {showPart ? <th>Part</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -155,7 +166,7 @@ export default function RequestPrint() {
                   <td className="num">
                     {g.minutes > 0 ? fmtDuration(g.minutes, mpd) : '—'}
                   </td>
-                  <td className="small">{partNote(g.part)}</td>
+                  {showPart ? <td className="small">{partNote(g.part)}</td> : null}
                 </tr>
               ))}
             </tbody>
@@ -165,7 +176,9 @@ export default function RequestPrint() {
         <h2>Decisions</h2>
         {(d.decisions ?? []).length === 0 ? (
           <Empty>No decisions recorded yet.</Empty>
-        ) : (
+        ) : ([...decisionGroups.entries()].map(([key, group]) => (
+          <section key={key} className="print-decisions">
+          <h3>{decisionHeading(group)}</h3>
           <table>
             <thead>
               <tr>
@@ -176,7 +189,7 @@ export default function RequestPrint() {
               </tr>
             </thead>
             <tbody>
-              {d.decisions.map((x) => (
+              {group.decisions.map((x) => (
                 <tr key={x.id}>
                   <td>{stepLabel(x.step_kind)}</td>
                   <td>
@@ -187,15 +200,16 @@ export default function RequestPrint() {
                     {x.actor.display_name}
                     {x.acting_for ? ` for ${x.acting_for.display_name}` : ''}
                   </td>
-                  <td className="nowrap">{fmtDateTime(x.created_at)}</td>
+                  <td className="nowrap">{fmtStampDay(x.created_at)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-        )}
+          </section>
+        )))}
 
         {history.length || changedBy.length ? (
-          <Details title="Earlier versions and record details">
+          <Details title="Earlier versions and record details" className="print-history">
             {changedBy.length ? (
               <p className="small">
                 Brought into force by an approved{' '}

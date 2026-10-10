@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
-import { useParams, useSearchParams } from 'react-router';
+import { Link, useParams, useSearchParams } from 'react-router';
 import { api, unwrapList } from '../api/client';
-import type { ExplainResponse, LedgerEntry, RequestSummary } from '../api/types';
+import type { EmployeeRef, ExplainResponse, LedgerEntry, RequestSummary, Schedule } from '../api/types';
 import {
   DataTable,
   Details,
@@ -9,20 +9,44 @@ import {
   ErrBox,
   Loading,
   PageHeader,
-  ReqLink,
 } from '../components/ui';
-import { fmtDate, fmtDateTime, fmtDuration } from '../lib/format';
+import { fmtDate, fmtDateTime, fmtDuration, fmtRange } from '../lib/format';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 import './Explain.css';
 
 type ByNumber = Map<string, RequestSummary>;
+type PatternHistory = EmployeeRef & {
+  schedules: { id: number; valid_from: string; valid_to: string | null }[];
+};
+
+function dayLengthChanged(person: PatternHistory, schedules: Schedule[], today: string): string | null {
+  const periods = person.schedules.flatMap(assignment => {
+    const schedule = schedules.find(s => s.id === assignment.id);
+    return (schedule?.versions ?? []).flatMap(version => {
+      const from = assignment.valid_from > version.valid_from ? assignment.valid_from : version.valid_from;
+      const ends = [assignment.valid_to, version.valid_to].filter((d): d is string => !!d);
+      const to = ends.sort()[0];
+      if (from > today || (to && from > to)) return [];
+      const week = Array.isArray(version.week) ? version.week : Object.values(version.week);
+      return [{ from, to, mpd: Math.max(...week), version: version.id }];
+    });
+  }).sort((a, b) => a.from.localeCompare(b.from) || a.version - b.version);
+  let previous: number | undefined;
+  let changed: string | null = null;
+  for (const period of periods) {
+    if (previous !== undefined && previous !== period.mpd) changed = period.from;
+    previous = period.mpd;
+  }
+  const current = periods.at(-1);
+  return current && (!current.to || current.to >= today) ? changed : null;
+}
 
 function whatHappened(e: LedgerEntry, byNumber: ByNumber): ReactNode {
   const req = e.request_number ? byNumber.get(e.request_number) : undefined;
   const link = e.request_number ? (
     req ? (
-      <ReqLink id={req.id} number={req.number} />
+      <Link to={`/requests/${req.id}`}>Leave {fmtRange(req.start_date, req.end_date)}</Link>
     ) : (
       <span>{e.request_number}</span>
     )
@@ -33,11 +57,9 @@ function whatHappened(e: LedgerEntry, byNumber: ByNumber): ReactNode {
     case 'accrual':
       return `Allowance for ${e.period_year}`;
     case 'consumption':
-      return req ? (
-        <>Leave approved — <ReqLink id={req.id} number={req.number} /></>
-      ) : (
-        <>Leave approved{link ? <> — {link}</> : null}</>
-      );
+      // The ledger records the original approval. Summary dates may now be
+      // amended, so do not relabel that immutable posting with today's dates.
+      return <>Leave approved{e.request_number ? <> — {req ? <Link to={`/requests/${req.id}`}>{e.request_number}</Link> : e.request_number}</> : null}</>;
     case 'return':
       return (
         <>
@@ -73,8 +95,10 @@ export default function Explain() {
       }),
     [employeeId, leaveTypeId],
   );
+  const personQ = useApi(() => api<PatternHistory>(`/employees/${employeeId}`), [employeeId]);
+  const schedulesQ = useApi(() => api<unknown>('/schedules').then(d => unwrapList<Schedule>(d)), []);
 
-  // Request numbers → ids/dates so entries can say "Leave 2–13 Nov approved".
+  // Match ledger request numbers to their current request links.
   const reqsQ = useApi(
     () =>
       api<unknown>('/requests', {
@@ -99,11 +123,14 @@ export default function Explain() {
   const used = -entries.filter(e => e.kind === 'consumption' || e.kind === 'return' || e.kind === 'historical').reduce((s, e) => s + e.minutes, 0);
   const corrections = entries.filter(e => e.kind === 'adjustment' || e.kind === 'carryover_expiry').reduce((s, e) => s + e.minutes, 0);
   const showYears = summary.accounts.length > 1;
+  const changedFrom = personQ.data && schedulesQ.data
+    ? dayLengthChanged(personQ.data, schedulesQ.data, config?.business_date ?? '') : null;
+  const personName = personQ.data?.full_name ?? reqsQ.data?.[0]?.employee.full_name;
 
   return (
     <div className="stack">
       <PageHeader
-        title={`${summary.leave_type.name}: how ${mine ? 'your' : 'the'} balance of ${fmtDuration(summary.available_minutes, mpd)} is worked out`}
+        title={mine ? `${summary.leave_type.name}: how your balance of ${fmtDuration(summary.available_minutes, mpd)} is worked out` : `${personName ?? 'Employee'} — ${summary.leave_type.name}: ${fmtDuration(summary.available_minutes, mpd)} left`}
         back={
           mine
             ? { to: '/my', label: 'My leave' }
@@ -112,6 +139,7 @@ export default function Explain() {
       />
 
       <section className="panel">
+        {changedFrom && personName && (summary.available_minutes * 2) % mpd !== 0 ? <p>From {fmtDate(changedFrom)} {personName}'s days are {mpd / 60} h, so {summary.available_minutes / 60} h is {fmtDuration(summary.available_minutes, mpd)}.</p> : null}
         <ul className="sum-list">
           <li>
             {mine ? 'You were' : 'They were'} given{' '}
@@ -119,7 +147,7 @@ export default function Explain() {
           </li>
           {used > 0 ? (
             <li>
-              −{fmtDuration(used, mpd)} went to approved leave, after returned days.
+              {fmtDuration(used, mpd)} used.
             </li>
           ) : null}
           {corrections !== 0 ? <li>{corrections > 0 ? '+' : '−'}{fmtDuration(Math.abs(corrections), mpd)} from corrections and expired carry-over.</li> : null}
@@ -166,7 +194,7 @@ export default function Explain() {
         ) : (
           <DataTable<LedgerEntry>
             columns={[
-              { label: 'Date', title: true, render: (e) => fmtDate(e.effective_date) },
+              { label: 'Date', title: true, render: (e) => fmtDate(e.kind === 'opening' && e.effective_date < `${e.period_year}-01-01` ? `${e.period_year}-01-01` : e.effective_date) },
               { label: 'What happened', render: (e) => whatHappened(e, byNumber) },
               {
                 label: 'Change',
@@ -198,7 +226,7 @@ export default function Explain() {
               return (
                 <li key={r.id}>
                   {req ? (
-                    <ReqLink id={req.id} number={req.number} />
+                    <Link to={`/requests/${req.id}`}>Leave {fmtRange(req.start_date, req.end_date)}</Link>
                   ) : (
                     r.request_number
                   )}{' '}
@@ -210,7 +238,7 @@ export default function Explain() {
         </section>
       ) : null}
 
-      <Details title="More detail (year, basis, recorded)">
+      <Details title="Details">
         <div className="table-wrap">
           <table className="small">
             <thead>
@@ -224,7 +252,7 @@ export default function Explain() {
             <tbody>
               {entries.map((e) => (
                 <tr key={e.id}>
-                  <td className="nowrap">{fmtDate(e.effective_date)}</td>
+                  <td className="nowrap">{fmtDate(e.kind === 'opening' && e.effective_date < `${e.period_year}-01-01` ? `${e.period_year}-01-01` : e.effective_date)}</td>
                   <td>{e.period_year}</td>
                   <td className="small">{e.basis?.replace(/\s*\(policy #\d+\)/g, '') || '—'}</td>
                   <td className="small muted">

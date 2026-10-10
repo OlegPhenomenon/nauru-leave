@@ -24,6 +24,23 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn;
 }
 
+// A persona change invalidates reads made under the previous session.
+let sessionEpoch = 0;
+let sessionChanging = false;
+const pendingReads = new Set<AbortController>();
+const cancelled = () => new ApiError(0, 'cancelled', 'Request cancelled.');
+
+export function beginPersonaSwitch() {
+  sessionChanging = true;
+  sessionEpoch += 1;
+  for (const controller of pendingReads) controller.abort();
+  pendingReads.clear();
+}
+
+export function finishPersonaSwitch() {
+  sessionChanging = false;
+}
+
 type Query = Record<string, string | number | boolean | undefined | null>;
 
 function qs(q?: Query): string {
@@ -46,6 +63,20 @@ export interface RequestOpts {
 }
 
 export async function api<T>(path: string, opts: RequestOpts = {}): Promise<T> {
+  if (sessionChanging && (opts.method ?? 'GET') === 'GET' && path !== '/me') throw cancelled();
+  const epoch = sessionEpoch;
+  const controller = new AbortController();
+  const read = (opts.method ?? 'GET') === 'GET';
+  if (read) pendingReads.add(controller);
+  try {
+    return await requestApi<T>(path, opts, controller.signal, epoch);
+  } finally {
+    pendingReads.delete(controller);
+  }
+}
+
+async function requestApi<T>(path: string, opts: RequestOpts, signal: AbortSignal, epoch: number): Promise<T> {
+  const checkSession = () => { if (signal.aborted || epoch !== sessionEpoch) throw cancelled(); };
   const headers: Record<string, string> = {};
   const method = opts.method ?? 'GET';
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -57,20 +88,30 @@ export async function api<T>(path: string, opts: RequestOpts = {}): Promise<T> {
     res = await fetch(`/api${path}${qs(opts.query)}`, {
       method,
       credentials: 'same-origin',
+      signal,
       headers,
       body: opts.formData ?? (opts.body !== undefined ? JSON.stringify(opts.body) : null),
     });
   } catch {
+    checkSession();
     throw new ApiError(0, 'network', 'Could not reach the server. Check your connection.');
   }
 
+  checkSession();
   if (res.status === 401) {
     onUnauthorized?.();
     throw new ApiError(401, 'unauthenticated', 'You are signed out.');
   }
   if (res.status === 204) return undefined as T;
 
-  const text = await res.text();
+  let text: string;
+  try {
+    text = await res.text();
+  } catch {
+    checkSession();
+    throw new ApiError(0, 'network', 'Could not read the response. Check your connection.');
+  }
+  checkSession();
   let data: unknown = undefined;
   if (text) {
     try {
@@ -89,7 +130,7 @@ export async function api<T>(path: string, opts: RequestOpts = {}): Promise<T> {
       err?.details,
     );
   }
-  if (method !== 'GET' && !path.startsWith('/demo/login')) window.dispatchEvent(new Event('nld:counts-changed'));
+  if (method !== 'GET' && !path.startsWith('/demo/login') && path !== '/demo/clock') window.dispatchEvent(new Event('nld:counts-changed'));
   return data as T;
 }
 

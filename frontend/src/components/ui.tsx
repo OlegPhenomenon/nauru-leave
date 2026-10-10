@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { Link, useNavigate } from 'react-router';
+import { createPortal } from 'react-dom';
 import type { ApiError } from '../api/client';
 import type { PolicyVersion, Status, Step, Warning } from '../api/types';
 import { describeError } from '../lib/errors';
@@ -280,7 +281,7 @@ export function Empty({ children }: { children: ReactNode }) {
 }
 
 export function ErrBox({ error }: { error: ApiError | Error | null }) {
-  if (!error) return null;
+  if (!error || ('code' in error && error.code === 'cancelled')) return null;
   const { message, technical } = describeError(error);
   return (
     <div className="alert alert-error" role="alert">
@@ -341,7 +342,9 @@ export function Modal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onCloseRef.current();
+        e.preventDefault();
+        if (dirtyRef.current) setAskDiscard(true);
+        else onCloseRef.current();
         return;
       }
       if (e.key === 'Tab' && el) {
@@ -379,7 +382,7 @@ export function Modal({
     else onCloseRef.current();
   };
 
-  return (
+  return createPortal(
     <div className="modal-overlay" onClick={requestClose}>
       <div
         className={`modal ${wide ? 'modal-wide' : ''}`}
@@ -420,7 +423,8 @@ export function Modal({
           ) : null}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -445,7 +449,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastMsg[]>([]);
   const push = useCallback<Push>((text, tone = 'ok') => {
     const id = ++toastSeq;
-    setToasts((t) => [...t, { id, text, tone }]);
+    setToasts([{ id, text, tone }]);
     window.setTimeout(() => {
       setToasts((t) => t.filter((x) => x.id !== id));
     }, 5000);

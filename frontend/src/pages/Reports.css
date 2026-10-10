@@ -73,3 +73,10 @@
     border-bottom-color: var(--brand);
   }
 }
+
+.reports-page > .page-header { min-height:52px; }
+.reports-page .page-header button { white-space:nowrap; }
+.reports-page td { vertical-align:middle; }
+.reports-page .row-actions { text-align:right; white-space:nowrap; }
+.reports-page .row-menu > summary::after { content:none; }
+.reports-page .row-menu { display:inline-block; }

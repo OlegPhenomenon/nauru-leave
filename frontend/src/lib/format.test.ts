@@ -7,6 +7,7 @@ import {
   fmtDateTime,
   fmtDay,
   fmtDuration,
+  fmtDays,
   fmtHours,
   fmtRange,
   fmtWeekday,
@@ -139,5 +140,15 @@ describe('auditSentence', () => {
         details: { step: 'hr_check', outcome: 'needs_information', number: 'NLD-2026-00008' },
       }),
     ).toBe('Maria Santos asked a question on NLD-2026-00008 (HR check).');
+  });
+});
+
+// Close-year tables express the entire amount in this employee's days.
+describe('close-year days', () => {
+  it('shows half-days and part-time carry-over limits in days', () => {
+    expect(fmtDays(6000)).toBe('12.5 days');
+    expect(fmtDays(4500, 360)).toBe('12.5 days');
+    expect(fmtDays(4800, 360)).toBe('13.33 days');
+    expect(fmtDays(0)).toBe('0 days');
   });
 });

@@ -1077,9 +1077,13 @@ fn write(
             )?;
             Ok(json!({"posted":r.posted,"skipped_existing":r.skipped_existing}))
         }
-        ("periods", _, _) => Ok(
-            json!({"posted":ledger::close_period(conn,clock,a,admin::integer(v,"leave_type_id")?,admin::period_year(v)?)?}),
-        ),
+        ("periods", _, _) => Ok(serde_json::to_value(ledger::close_period_with_preview(
+            conn,
+            clock,
+            a,
+            admin::integer(v, "leave_type_id")?,
+            admin::period_year(v)?,
+        )?)?),
         ("exports", None, _) => {
             let r = ie::create_export_scoped(
                 conn,
@@ -1146,6 +1150,17 @@ fn read(
                     .map(|id| view::leave_type(conn, id, a.today))
                     .collect::<Res<Vec<_>>>()?
             )
+        }
+        ("accruals", _, _) if p.get(1) == Some(&"preview") => {
+            let lt = qid(q, "leave_type_id")?.ok_or_else(|| DomainError::validation("leave_type_id required"))?;
+            let year = qid(q, "period_year")?.ok_or_else(|| DomainError::validation("period_year required"))?;
+            serde_json::to_value(ledger::preview_accrual(conn, a, lt, year, qid(q, "month")?)?)?
+        }
+        ("periods", _, _) if p.get(1) == Some(&"close") => {
+            let leave_type_id = qid(q, "leave_type_id")?.ok_or_else(|| DomainError::validation("leave_type_id required"))?;
+            let period_year = qid(q, "period_year")?.ok_or_else(|| DomainError::validation("period_year required"))?;
+            if !(1900..=2200).contains(&period_year) { return Err(DomainError::validation("invalid period year")); }
+            serde_json::to_value(ledger::preview_close_period(conn, &crate::clock::Clock::fixed(a.today), a, leave_type_id, period_year)?)?
         }
         ("balances", _, _) => {
             let employee = if p.get(1) == Some(&"me") {
@@ -1465,11 +1480,17 @@ fn read(
                                     || a.role_in_scope(conn, "hr", None).unwrap_or(false),
                             )
                     });
-                    for n in &mut rows {
-                        n["to_email"] = json!("***@***");
-                    }
                 }
                 for n in &mut rows {
+                    let recipient_name: Option<String> = conn.query_row(
+                        "SELECT COALESCE((SELECT display_name FROM users WHERE id=?1), (SELECT full_name FROM employees WHERE email=?2 ORDER BY id LIMIT 1), (SELECT display_name FROM users WHERE email=?2))",
+                        params![n["recipient_user_id"].as_i64(),n["to_email"].as_str()], |r| r.get(0),
+                    )?;
+                    n["recipient_name"] = json!(recipient_name);
+                    let request = n["link_path"].as_str().and_then(|s| s.strip_prefix("/requests/")).and_then(|s| s.parse::<i64>().ok()).and_then(|id| view::summary(conn,a,id).ok());
+                    n["request_number"] = request.as_ref().map(|r| r["number"].clone()).unwrap_or(Value::Null);
+                    n["request_id"] = request.as_ref().map(|r| r["id"].clone()).unwrap_or(Value::Null);
+                    if !a.has_role("tech_admin") { n["to_email"] = json!("***@***"); }
                     n.as_object_mut().unwrap().remove("recipient_user_id");
                     n.as_object_mut().unwrap().remove("link_path");
                 }

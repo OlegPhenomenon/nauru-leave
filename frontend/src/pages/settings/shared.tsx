@@ -4,6 +4,10 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
+import { useApi } from '../../lib/useApi';
+import { readAll } from './data';
+import { fmtRange } from '../../lib/format';
+import type { RequestSummary } from '../../api/types';
 import { ApiError } from '../../api/client';
 import { roleLabel } from '../../lib/format';
 import type { Role } from '../../api/types';
@@ -168,5 +172,7 @@ export function AffectedRequests({ requests }: { requests: AffectedRequest[] }) 
   </div>;
 }
 function RequestHistoryLink({ request }: { request: AffectedRequest }) {
-  return <Link to={`/requests/${request.id}`}>{request.number}</Link>;
+  const q = useApi(() => readAll<RequestSummary>('/requests', { scope:'all' }), []);
+  const r = q.data?.find(r => r.id === request.id);
+  return <>{r ? `${r.employee.full_name} · ${fmtRange(r.start_date,r.end_date)} · ` : `${request.number} · `}<Link to={`/requests/${request.id}`}>Review</Link></>;
 }

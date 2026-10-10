@@ -68,3 +68,18 @@ table.cal :is(th, td) { min-width: 0; padding: var(--sp-1) 0; }
 table.cal :is(th, td).cal-name { width: 9rem; min-width: 0; white-space: normal; padding: var(--sp-2); }
 table.cal td a { display: block; min-height: 2rem; }
 @media (max-width: 700px) { table.cal { min-width: 48rem; } }
+
+.cal-toolbar { align-items: flex-end; }
+.cal-period { display: flex; align-items: center; gap: var(--sp-3); min-height: 40px; }
+.cal-period > .btn { min-height: 40px; height: 40px; }
+.cal-period .cal-range { display: flex; align-items: center; min-height: 40px; }
+.cal-toolbar .field { margin: 0; }
+.cal-scroll { width: 100%; max-width: 100%; min-width: 0; overflow-x: auto; }
+.cal-scroll > table.cal { min-width: 72rem; }
+.cal-scroll > table.cal :is(th, td):not(.cal-name) { white-space: nowrap; }
+.cal-scroll > table.cal .cal-name { position: sticky; left: 0; z-index: 1; background: var(--surface); }
+@media (max-width: 640px) {
+  .cal-toolbar { gap: var(--sp-3); }
+  .cal-period { width: 100%; justify-content: space-between; gap: var(--sp-2); }
+  .cal-toolbar .field, .cal-toolbar select { width: 100%; }
+}

@@ -148,6 +148,7 @@ pub fn totals(
 
 // ------------------------------------------------------------------ posting
 
+#[derive(Clone)]
 pub struct PostEntry<'a> {
     pub account_id: i64,
     pub minutes: i64,
@@ -649,38 +650,15 @@ pub fn run_accrual(
 
         for emp in emps {
             let acc = ensure_account(tx, emp, leave_type_id, period_year)?;
-            let (minutes, op_key) = match policy.accrual_mode.as_str() {
-                "annual_upfront" => (
-                    policy.annual_entitlement_min,
-                    format!("accrual:{emp}:{leave_type_id}:{period_year}"),
-                ),
-                _ => {
-                    let m = month.unwrap();
-                    let slice = policy.annual_entitlement_min * m / 12
-                        - policy.annual_entitlement_min * (m - 1) / 12;
-                    (
-                        slice,
-                        format!("accrual:{emp}:{leave_type_id}:{period_year}-{m:02}"),
-                    )
-                }
+            let minutes = match month {
+                Some(m) => policy.annual_entitlement_min * m / 12 - policy.annual_entitlement_min * (m - 1) / 12,
+                None => policy.annual_entitlement_min,
             };
-            let legacy_pattern = match month {
-                Some(m) => format!("accrual:%:{emp}:{period_year}:{m}"),
-                None => format!("accrual:%:{emp}:{period_year}"),
-            };
-            let existing:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE account_id=?1 AND kind='accrual' AND (op_key=?2 OR (op_key LIKE ?3 AND length(op_key)-length(replace(op_key,':',''))=?4)))",params![acc,op_key,legacy_pattern,if month.is_some(){4}else{3}],|r|r.get(0))?;
-            let annual_key = format!("accrual:{emp}:{leave_type_id}:{period_year}");
-            let legacy_annual = format!("accrual:%:{emp}:{period_year}");
-            let covered: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE account_id=?1 AND kind='accrual' AND
-                 (op_key=?2 OR (op_key LIKE ?3 AND length(op_key)-length(replace(op_key,':',''))=3)
-                 OR (?4 IS NULL AND (op_key LIKE ?5 OR (op_key LIKE ?6 AND length(op_key)-length(replace(op_key,':',''))=4)))))",
-                params![acc,annual_key,legacy_annual,month,format!("{annual_key}-%"),format!("accrual:%:{emp}:{period_year}:%")], |r|r.get(0))?;
-            if existing || covered {
+            if accrual_granted(tx, acc, emp, leave_type_id, period_year, month)? {
                 run.skipped_existing += 1;
                 continue;
             }
-            let outcome = post_entry(
+            let outcome = post_accrual_fact(
                 tx,
                 &PostEntry {
                     account_id: acc,
@@ -692,10 +670,11 @@ pub fn run_accrual(
                     reverses_entry_id: None,
                     adjustment_id: None,
                     import_batch_id: None,
-                    basis: format!("Accrual {} (policy #{})", lt.code, policy.id),
+                    basis: format!("{} entitlement {period_year}", lt.name),
                     author_user_id: Some(actor.user_id),
-                    op_key,
+                    op_key: String::new(),
                 },
+                month,
                 &now_ts,
             )?;
             if outcome.inserted {
@@ -719,90 +698,281 @@ pub fn run_accrual(
     })
 }
 
-/// Close a period: write `carryover_expiry` entries for accounts whose policy
-/// sets `carryover_expiry_months` and whose grace window has ended. Idempotent.
-pub fn close_period(
+/// One fact path for seeded entitlements and ordinary accrual runs.
+pub(crate) fn post_accrual_fact(conn: &Connection, entry: &PostEntry, month: Option<i64>, now: &str) -> Res<PostOutcome> {
+    let (emp, lt, year): (i64, i64, i64) = conn.query_row("SELECT employee_id,leave_type_id,period_year FROM leave_accounts WHERE id=?1", [entry.account_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let mut fact = entry.clone();
+    fact.kind = "accrual";
+    fact.op_key = accrual_key(emp, lt, year, month);
+    post_entry(conn, &fact, now)
+}
+
+fn accrual_key(emp: i64, leave_type_id: i64, period_year: i64, month: Option<i64>) -> String {
+    match month {
+        Some(m) => format!("accrual:{emp}:{leave_type_id}:{period_year}-{m:02}"),
+        None => format!("accrual:{emp}:{leave_type_id}:{period_year}"),
+    }
+}
+
+fn accrual_granted(conn: &Connection, acc: i64, emp: i64, leave_type_id: i64, period_year: i64, month: Option<i64>) -> Res<bool> {
+    let op_key = accrual_key(emp, leave_type_id, period_year, month);
+    let legacy_pattern = match month {
+        Some(m) => format!("accrual:%:{emp}:{period_year}:{m}"),
+        None => format!("accrual:%:{emp}:{period_year}"),
+    };
+    let existing:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE account_id=?1 AND kind='accrual' AND (op_key=?2 OR (op_key LIKE ?3 AND length(op_key)-length(replace(op_key,':',''))=?4)))",params![acc,op_key,legacy_pattern,if month.is_some(){4}else{3}],|r|r.get(0))?;
+    let annual_key = format!("accrual:{emp}:{leave_type_id}:{period_year}");
+    let legacy_annual = format!("accrual:%:{emp}:{period_year}");
+    let covered: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE account_id=?1 AND kind='accrual' AND
+         (op_key=?2 OR (op_key LIKE ?3 AND length(op_key)-length(replace(op_key,':',''))=3)
+         OR (?4 IS NULL AND (op_key LIKE ?5 OR (op_key LIKE ?6 AND length(op_key)-length(replace(op_key,':',''))=4)))))",
+        params![acc,annual_key,legacy_annual,month,format!("{annual_key}-%"),format!("accrual:%:{emp}:{period_year}:%")], |r|r.get(0))?;
+    Ok(existing || covered)
+}
+
+#[derive(Serialize)]
+pub struct AccrualPreview {
+    pub eligible: usize,
+    pub skipped_existing: usize,
+    pub entitlement_minutes: i64,
+}
+
+/// Read-only preview uses the same fact coverage test as the committing run.
+pub fn preview_accrual(conn: &Connection, actor: &Actor, leave_type_id: i64, year: i64, month: Option<i64>) -> Res<AccrualPreview> {
+    authz::require(conn, actor, Action::RunAccrual, &Resource::Global)?;
+    if !(2000..=2100).contains(&year) || month.is_some_and(|m| !(1..=12).contains(&m)) {
+        return Err(DomainError::validation("invalid entitlement period"));
+    }
+    let first = Date::from_calendar_date(year as i32, time::Month::try_from(month.unwrap_or(1) as u8).unwrap(), 1).unwrap();
+    let policy = model::policy_for(conn, leave_type_id, first)?.ok_or_else(|| DomainError::validation("no policy"))?;
+    if !policy.uses_balance || policy.accrual_mode == "none" || (policy.accrual_mode == "monthly") != month.is_some() {
+        return Err(DomainError::validation("choose an entitlement period matching the leave rules"));
+    }
+    let mut st = conn.prepare("SELECT e.id, a.id FROM employees e LEFT JOIN leave_accounts a ON a.employee_id=e.id AND a.leave_type_id=?1 AND a.period_year=?2 WHERE e.active=1 AND e.start_date<=?3 AND (e.end_date IS NULL OR e.end_date>=?4)")?;
+    let people = st.query_map(params![leave_type_id, year, format!("{year}-12-31"), format!("{year}-01-01")], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,Option<i64>>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut skipped = 0;
+    for (emp, acc) in &people {
+        if let Some(acc) = acc {
+            if accrual_granted(conn, *acc, *emp, leave_type_id, year, month)? { skipped += 1; }
+        }
+    }
+    let minutes = month.map_or(policy.annual_entitlement_min, |m| policy.annual_entitlement_min*m/12-policy.annual_entitlement_min*(m-1)/12);
+    Ok(AccrualPreview { eligible: people.len()-skipped, skipped_existing: skipped, entitlement_minutes: minutes })
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CloseRow {
+    pub account_id: i64,
+    pub employee_id: i64,
+    pub service_id: String,
+    pub full_name: String,
+    pub minutes_per_day: i64,
+    pub left_minutes: i64,
+    pub carried_minutes: i64,
+    pub removed_minutes: i64,
+    pub already_closed: bool,
+    #[serde(skip)]
+    limit_removed: i64,
+    #[serde(skip)]
+    expiry_removed: i64,
+    #[serde(skip)]
+    cap: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ClosePreview {
+    pub leave_type_id: i64,
+    pub period_year: i64,
+    pub already_closed: bool,
+    pub items: Vec<CloseRow>,
+}
+
+#[derive(Serialize)]
+pub struct CloseResult {
+    pub posted: usize,
+    #[serde(flatten)]
+    pub preview: ClosePreview,
+}
+
+// The same pure arithmetic drives both the preview and the real postings.
+fn close_amounts(
+    free: i64,
+    used: i64,
+    policy: &model::Policy,
+    limit_applied: bool,
+    expired: bool,
+    expiry_posted: bool,
+) -> (i64, i64, i64) {
+    let cap = if policy.carryover_allowed {
+        policy
+            .carryover_limit_min
+            .map(|limit| free.min((limit - used).max(0)))
+            .unwrap_or(free)
+    } else {
+        0
+    };
+    let limit_removed = if limit_applied { 0 } else { free - cap };
+    let expiry_removed = if expired && !expiry_posted {
+        free - limit_removed
+    } else {
+        0
+    };
+    (cap, limit_removed, expiry_removed)
+}
+
+fn close_plan(
+    conn: &Connection,
+    today: Date,
+    leave_type_id: i64,
+    period_year: i64,
+) -> Res<(ClosePreview, model::Policy, Option<Date>)> {
+    let year =
+        i32::try_from(period_year).map_err(|_| DomainError::validation("invalid period year"))?;
+    let end = Date::from_calendar_date(year, time::Month::December, 31)
+        .map_err(|_| DomainError::validation("invalid period year"))?;
+    if today <= end {
+        return Err(DomainError::validation("period has not ended"));
+    }
+    let policy = model::policy_for(conn, leave_type_id, end)?
+        .ok_or_else(|| DomainError::NoPolicy(format!("type {leave_type_id}")))?;
+    let expiry = if policy.carryover_allowed {
+        carryover_expiry_date(&policy, period_year)
+    } else {
+        end.next_day()
+    };
+    let mut st = conn.prepare("SELECT ac.id,e.id,e.service_id,e.full_name FROM leave_accounts ac JOIN employees e ON e.id=ac.employee_id WHERE ac.leave_type_id=?1 AND ac.period_year=?2 ORDER BY e.full_name,e.id")?;
+    let accounts = st.query_map(params![leave_type_id, period_year], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut items = Vec::new();
+    for account in accounts {
+        let (acc, employee_id, service_id, full_name) = account?;
+        let free = (balance_at(conn, acc, today)? - reserved(conn, acc)?).max(0);
+        let (closure_exists, limit_posted, legacy_expiry): (bool, bool, bool) = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM period_closures WHERE account_id=?1),
+             EXISTS(SELECT 1 FROM ledger_entries WHERE op_key=?2),
+             EXISTS(SELECT 1 FROM ledger_entries WHERE account_id=?1 AND op_key LIKE ?3)",
+            params![
+                acc,
+                format!("carryover-limit:{acc}"),
+                format!("expiry:{acc}:%")
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let already_closed = closure_exists || limit_posted || legacy_expiry;
+        let expiry_posted: bool = match expiry {
+            Some(date) => conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE op_key=?1)",
+                [format!("expiry:{acc}:{}", date_s(&date))],
+                |r| r.get(0),
+            )?,
+            None => false,
+        };
+        let (cap, limit_removed, expiry_removed) = close_amounts(
+            free,
+            carryover_used(conn, acc, None)?,
+            &policy,
+            closure_exists || limit_posted,
+            expiry.is_some_and(|date| today >= date),
+            expiry_posted,
+        );
+        items.push(CloseRow {
+            account_id: acc,
+            employee_id,
+            service_id,
+            full_name,
+            minutes_per_day: crate::queries::minutes_per_day(conn, employee_id, today)?,
+            left_minutes: free,
+            carried_minutes: free - limit_removed - expiry_removed,
+            removed_minutes: limit_removed + expiry_removed,
+            already_closed,
+            limit_removed,
+            expiry_removed,
+            cap,
+        });
+    }
+    let already_closed = if items.is_empty() {
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM audit_events WHERE action='period.close' AND entity_id=?1 AND json_extract(details_json,'$.period_year')=?2)",params![leave_type_id,period_year],|r|r.get(0))?
+    } else {
+        items.iter().all(|row| row.already_closed)
+    };
+    Ok((
+        ClosePreview {
+            leave_type_id,
+            period_year,
+            already_closed,
+            items,
+        },
+        policy,
+        expiry,
+    ))
+}
+
+/// Read-only: no lazy account creation, audit, outbox or idempotency receipt.
+pub fn preview_close_period(
+    conn: &Connection,
+    clock: &Clock,
+    actor: &Actor,
+    leave_type_id: i64,
+    period_year: i64,
+) -> Res<ClosePreview> {
+    authz::require(conn, actor, Action::ClosePeriod, &Resource::Global)?;
+    Ok(close_plan(conn, clock.today(conn)?, leave_type_id, period_year)?.0)
+}
+
+/// Close a period atomically using precisely the plan returned by preview.
+pub fn close_period_with_preview(
     conn: &mut Connection,
     clock: &Clock,
     actor: &Actor,
     leave_type_id: i64,
     period_year: i64,
-) -> Res<usize> {
+) -> Res<CloseResult> {
     let today = clock.today(conn)?;
     let now_ts = clock.now_ts();
     crate::db::write_tx(conn, |tx| {
         authz::require(tx, actor, Action::ClosePeriod, &Resource::Global)?;
-        let end = Date::from_calendar_date(period_year as i32, time::Month::December, 31)
-            .map_err(|_| DomainError::validation("invalid period year"))?;
-        if today <= end {
-            return Err(DomainError::validation("period has not ended"));
-        }
-        let policy = model::policy_for(tx, leave_type_id, end)?
-            .ok_or_else(|| DomainError::NoPolicy(format!("type {leave_type_id}")))?;
-        let expiry = if policy.carryover_allowed {
-            carryover_expiry_date(&policy, period_year)
-        } else {
-            end.next_day()
-        };
-        let accs: Vec<i64> = tx
-            .prepare("SELECT id FROM leave_accounts WHERE leave_type_id=?1 AND period_year=?2")?
-            .query_map(params![leave_type_id, period_year], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
+        let (preview, policy, expiry) = close_plan(tx, today, leave_type_id, period_year)?;
         let mut posted = 0;
-        for acc in accs {
-            let free = (balance_at(tx, acc, today)? - reserved(tx, acc)?).max(0);
-            let cap = if policy.carryover_allowed {
-                match policy.carryover_limit_min {
-                    Some(limit) => free.min((limit - carryover_used(tx, acc, None)?).max(0)),
-                    None => free,
-                }
-            } else {
-                0
-            };
-            let inserted=tx.execute("INSERT OR IGNORE INTO period_closures(account_id,closed_on,policy_version_id,carryover_min) VALUES(?1,?2,?3,?4)",params![acc,date_s(&today),policy.id,cap])?;
-            let excess = free - cap;
-            if inserted > 0 && excess > 0 {
-                let result = post_entry(
-                    tx,
-                    &PostEntry {
-                        account_id: acc,
-                        minutes: -excess,
-                        kind: "carryover_expiry",
-                        effective_date: today,
-                        request_id: None,
-                        revision_id: None,
-                        reverses_entry_id: None,
-                        adjustment_id: None,
-                        import_batch_id: None,
-                        basis: format!("Carryover limit for {period_year} (policy #{})", policy.id),
-                        author_user_id: Some(actor.user_id),
-                        op_key: format!("carryover-limit:{acc}"),
-                    },
-                    &now_ts,
-                )?;
-                posted += usize::from(result.inserted);
-            }
-            if let Some(expiry) = expiry.filter(|date| today >= *date) {
-                let remaining = (balance_at(tx, acc, today)? - reserved(tx, acc)?).max(0);
-                if remaining > 0 {
+        for row in &preview.items {
+            let acc = row.account_id;
+            tx.execute("INSERT OR IGNORE INTO period_closures(account_id,closed_on,policy_version_id,carryover_min) VALUES(?1,?2,?3,?4)",params![acc,date_s(&today),policy.id,row.cap])?;
+            for (minutes, effective_date, basis, op_key) in [
+                (
+                    row.limit_removed,
+                    today,
+                    format!("Carryover limit for {period_year} (policy #{})", policy.id),
+                    format!("carryover-limit:{acc}"),
+                ),
+                (
+                    row.expiry_removed,
+                    expiry.unwrap_or(today),
+                    format!("Carryover of {period_year} expired (policy #{})", policy.id),
+                    format!("expiry:{acc}:{}", date_s(&expiry.unwrap_or(today))),
+                ),
+            ] {
+                if minutes > 0 {
                     let result = post_entry(
                         tx,
                         &PostEntry {
                             account_id: acc,
-                            minutes: -remaining,
+                            minutes: -minutes,
                             kind: "carryover_expiry",
-                            effective_date: expiry,
+                            effective_date,
                             request_id: None,
                             revision_id: None,
                             reverses_entry_id: None,
                             adjustment_id: None,
                             import_batch_id: None,
-                            basis: format!(
-                                "Carryover of {period_year} expired (policy #{})",
-                                policy.id
-                            ),
+                            basis,
                             author_user_id: Some(actor.user_id),
-                            op_key: format!("expiry:{acc}:{}", date_s(&expiry)),
+                            op_key,
                         },
                         &now_ts,
                     )?;
@@ -818,11 +988,22 @@ pub fn close_period(
             "period.close",
             "leave_type",
             Some(leave_type_id),
-            serde_json::json!({"period_year": period_year, "expired_accounts": posted}),
+            serde_json::json!({"period_year":period_year,"expired_accounts":posted}),
         )?;
         crate::notify::record_change(tx, clock, actor.user_id, "period.close")?;
-        Ok(posted)
+        Ok(CloseResult { posted, preview })
     })
+}
+
+/// Backwards-compatible domain entry point.
+pub fn close_period(
+    conn: &mut Connection,
+    clock: &Clock,
+    actor: &Actor,
+    leave_type_id: i64,
+    period_year: i64,
+) -> Res<usize> {
+    Ok(close_period_with_preview(conn, clock, actor, leave_type_id, period_year)?.posted)
 }
 
 // ------------------------------------------------------------------ adjustments

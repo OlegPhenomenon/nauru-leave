@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router';
 import { newIdempotencyKey, post, put, type ApiError } from '../../api/client';
 import type { LeaveType, PolicyVersion } from '../../api/types';
 import {
+  DataTable,
   Details,
   EmptyState,
   ErrBox,
@@ -350,7 +351,7 @@ export default function LeaveTypes() {
         primary={
           canEdit ? (
             <button type="button" className="btn" onClick={() => setAddOpen(true)}>
-              Add leave type
+              Add leave type…
             </button>
           ) : undefined
         }
@@ -362,55 +363,15 @@ export default function LeaveTypes() {
 
         />
       ) : (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Paid</th>
-                <th>Days a year</th>
-                <th>Half days</th>
-                <th>Notice</th>
-                <th>Status</th>
-                {canEdit ? <th>Action</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {types.map((t) => {
-                const pv = t.policy;
-                const upcoming = upcomingVersions(t, config?.business_date ?? '');
-                return (
-                  <tr key={t.id} className="row-link" onClick={() => openPanel(t.id)}>
-                    <td>
-                      <Link onClick={(e) => e.stopPropagation()} to={`/settings/leave-types?type=${t.id}`}>{t.name}</Link>{' '}
-                      {t.sensitive ? <Tag>Sensitive</Tag> : null}
-                    </td>
-                    <td>{pv ? (pv.paid ? 'Paid' : 'Unpaid') : '—'}</td>
-                    <td>{pv?.uses_balance ? daysAYear(pv) : '—'}</td>
-                    <td>{pv ? (pv.allow_half_day ? 'Yes' : 'Whole days only') : '—'}</td>
-                    <td>
-                      {pv
-                        ? pv.min_notice_days > 0
-                          ? plural(pv.min_notice_days, 'day')
-                          : 'None'
-                        : '—'}
-                    </td>
-                    <td>
-                      {!t.active ? (
-                        <Tag>Inactive</Tag>
-                      ) : !pv ? (
-                        <Tag tone="warn">No rules yet</Tag>
-                      ) : upcoming.length ? (
-                        <Tag tone="warn">Changes on {fmtDate(upcoming[0]!.valid_from)}</Tag>
-                      ) : <Tag>Active</Tag>}
-                    </td>
-                    {canEdit ? <td><button type="button" className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); setChangeFor(t); }}>Change rules</button></td> : null}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <DataTable<LeaveType> rows={types} columns={[
+          { label:'Name', title:true, render:t => <><Link to={`/settings/leave-types?type=${t.id}`} onClick={() => openPanel(t.id)}>{t.name}</Link>{t.sensitive ? <> <Tag>Sensitive</Tag></> : null}</> },
+          { label:'Paid', render:t => t.policy ? t.policy.paid ? 'Paid' : 'Unpaid' : '—' },
+          { label:'Days a year', render:t => t.policy?.uses_balance ? daysAYear(t.policy) : '—' },
+          { label:'Half days', render:t => t.policy ? t.policy.allow_half_day ? 'Yes' : 'Whole days only' : '—' },
+          { label:'Notice', render:t => t.policy?.min_notice_days ? plural(t.policy.min_notice_days,'day') : 'None' },
+          { label:'Status', render:t => { const upcoming = upcomingVersions(t, config?.business_date ?? ''); return <Tag tone={!t.policy || upcoming.length ? 'warn' : undefined}>{!t.active ? 'Inactive' : !t.policy ? 'No rules yet' : upcoming.length ? `Changes on ${fmtDate(upcoming[0]!.valid_from)}` : 'Active'}</Tag>; } },
+          { label:'', className:'row-actions', render:t => canEdit ? <button className="btn btn-ghost btn-sm" onClick={() => setChangeFor(t)}>Change rules…</button> : null },
+        ]} />
       )}
 
       {sel ? (
@@ -541,7 +502,7 @@ function TypePanel({
           ))}
         </ul>
       ) : (
-        <p className="muted">No rules yet — add them with “Change rules from a date…”.</p>
+        <p className="muted">No rules yet — add them with “Change rules…”.</p>
       )}
       {upcoming.map((pv) => (
         <p key={pv.id} className="small">
@@ -553,7 +514,7 @@ function TypePanel({
       {canEdit ? (
         <div className="btn-row">
           <button type="button" className="btn btn-secondary" onClick={onChangeRules} disabled={busy}>
-            Change rules from a date…
+            Change rules…
           </button>
           <Menu label="More" items={more} align="start" />
         </div>
@@ -610,7 +571,7 @@ export function AddTypeModal({
   for (let n = 2; existingCodes.includes(code); n++) code = `${baseCode}_${n}`;
 
   return (
-    <Modal title="Add leave type" onClose={onClose} wide footer={<> <button type="button" className="btn btn-secondary" onClick={onClose}>
+    <Modal title="Add leave type" onClose={onClose} wide footer={<> <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
         </button>
         <button
@@ -703,7 +664,7 @@ export function ChangeRulesModal({
         : null;
 
   return (
-    <Modal title={`Change rules — ${t.name}`} onClose={onClose} wide footer={<> <button type="button" className="btn btn-secondary" onClick={onClose}>
+    <Modal title={`Change rules — ${t.name}`} onClose={onClose} wide footer={<> <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
         </button>
         <button
@@ -766,7 +727,7 @@ function RenameModal({
   const [sensitive, setSensitive] = useState(t.sensitive);
 
   return (
-    <Modal title={`Rename ${t.name}`} onClose={onClose} footer={<> <button type="button" className="btn btn-secondary" onClick={onClose}>
+    <Modal title={`Rename ${t.name}`} onClose={onClose} footer={<> <button type="button" className="btn btn-ghost" onClick={onClose}>
           Cancel
         </button>
         <button

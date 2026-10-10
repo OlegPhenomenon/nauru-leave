@@ -325,7 +325,9 @@ export default function RequestNew() {
       <PageHeader
         title={paperMode ? 'Enter a paper form' : 'Request leave'}
         back={
-          paperOn || employeeParam > 0
+          sp.get('from') === 'approvals'
+            ? { to: '/approvals', label: 'Approvals' }
+            : paperOn || employeeParam > 0
             ? { to: '/people', label: 'People' }
             : { to: '/my', label: 'My leave' }
         }
@@ -344,7 +346,7 @@ export default function RequestNew() {
         {paperMode ? (
           <>
             <div className="field">
-              <span className="field-label">Employee</span>
+              <label className="field-label" htmlFor="paper-employee">Employee</label>
               <PersonPicker people={people} value={employeeId} onChange={setEmployeeId} />
               <span className="field-hint">
                 For someone without a login or who handed in the form on paper.{' '}
@@ -413,7 +415,8 @@ export default function RequestNew() {
         {lt?.requires_attachment ? <>
           <div className="field">
             <span className="field-label">Document</span>
-            <label className={`dropzone${drag ? ' drag' : ''}${file ? ' has-file' : ''}`}
+            <div className={`file-zone${file ? ' has-file' : ''}`}>
+              <label className={`dropzone${drag ? ' drag' : ''}${file ? ' has-file' : ''}`}
               onDragOver={(e) => {
                 e.preventDefault();
                 setDrag(true);
@@ -435,19 +438,11 @@ export default function RequestNew() {
               {file
                 ? `${file.name} · ${fmtBytes(file.size)}`
                 : 'Drop a file here, or press to choose one'}
-            </label>
+              </label>
+              {file ? <button type="button" className="btn btn-ghost btn-sm file-remove" onClick={() => setFile(null)}>Remove</button> : null}
+            </div>
             <span className="field-hint">
               PDF, PNG or JPEG.{' '}
-              {lt?.sensitive ? 'Only HR can open documents on this leave type. ' : ''}
-              {file ? (
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setFile(null)}
-                >
-                  Remove
-                </button>
-              ) : null}
               {lt?.requires_attachment ? (
                 <>
                   {' '}
@@ -459,7 +454,8 @@ export default function RequestNew() {
         </> : <Details title="Add a document" defaultOpen={!!file}>
           <div className="field">
             <span className="field-label">Document</span>
-            <label className={`dropzone${drag ? ' drag' : ''}${file ? ' has-file' : ''}`}
+            <div className={`file-zone${file ? ' has-file' : ''}`}>
+              <label className={`dropzone${drag ? ' drag' : ''}${file ? ' has-file' : ''}`}
               onDragOver={(e) => {
                 e.preventDefault();
                 setDrag(true);
@@ -481,19 +477,11 @@ export default function RequestNew() {
               {file
                 ? `${file.name} · ${fmtBytes(file.size)}`
                 : 'Drop a file here, or press to choose one'}
-            </label>
+              </label>
+              {file ? <button type="button" className="btn btn-ghost btn-sm file-remove" onClick={() => setFile(null)}>Remove</button> : null}
+            </div>
             <span className="field-hint">
               PDF, PNG or JPEG.{' '}
-              {lt?.sensitive ? 'Only HR can open documents on this leave type. ' : ''}
-              {file ? (
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setFile(null)}
-                >
-                  Remove
-                </button>
-              ) : null}
               {lt?.requires_attachment ? (
                 <>
                   {' '}

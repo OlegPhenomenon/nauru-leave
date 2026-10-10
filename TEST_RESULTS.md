@@ -1,20 +1,36 @@
 # Test results
 
-Backend results were recorded on 2026-10-09; frontend and browser results were refreshed on 2026-10-10. macOS arm64, Rust 1.98.1, Node 23.10 (the Docker build uses Node 22 and Rust 1.98.0).
+Backend, frontend and browser results were refreshed on 2026-10-10. macOS arm64, Rust 1.98.1, Node 23.10 (the Docker build uses Node 22 and Rust 1.98.0).
 Every result below comes from an actual run; the complete, unedited logs are in [`docs/test-logs/`](docs/test-logs/):
 
 | Log | Command | Result |
 |---|---|---|
-| [cargo-test.log](docs/test-logs/cargo-test.log) | `cd backend && cargo test` | **156 passed, 0 failed** |
+| [cargo-test.log](docs/test-logs/cargo-test.log) | `cd backend && cargo test` | **166 passed, 0 failed** |
 | [cargo-clippy.log](docs/test-logs/cargo-clippy.log) | `cargo clippy --all-targets -- -D warnings` | clean |
-| [frontend.log](docs/test-logs/frontend.log) | `npx tsc --noEmit && npx vitest run && npx vite build` | tsc clean, **58 passed**, build OK |
-| [e2e-playwright.log](docs/test-logs/e2e-playwright.log) | `E2E_BASE=… npx playwright test` against the release backend in demo mode, fresh sandboxes | **31 passed, 0 failed** |
+| [frontend.log](docs/test-logs/frontend.log) | `npx tsc --noEmit && npx vitest run && npx vite build` | tsc clean, **62 passed**, build OK |
+| [e2e-playwright.log](docs/test-logs/e2e-playwright.log) | `npx playwright test` against the rebuilt release backend in demo mode, fresh data directory and sandboxes on ports 18080/5173 | **33 passed, 0 failed** |
 | [release-build.log](docs/test-logs/release-build.log) | `touch build.rs && cargo build --release` after frontend build | release build OK |
 | [n36-backup-restore.log](docs/test-logs/n36-backup-restore.log) | production install → backup → restore into an empty directory → continue the request | all checks as expected |
 
-Backend suites: lib 8 · audit_fixes_a 25 · audit_fixes_b 12 · audit_round2 16 · authz_tests 7 · http 28 ·
-idempotency 4 · lifecycle 10 · original_acceptance 3 · provisioning 2 · reaudit_regressions 9 · regressions 18 · scenario 9 · system 5.
+Backend suites: lib 8 · audit_fixes_a 25 · audit_fixes_b 12 · audit_round2 16 · authz_tests 7 · final_admin_regressions 1 · http 28 ·
+idempotency 4 · lifecycle 10 · message_visibility 1 · original_acceptance 3 · provisioning 2 · reaudit_regressions 9 · regressions 18 · scenario 9 · system 5 · ux_backend 8.
 All tests use real SQLite databases and the real domain code; HTTP tests go through the real axum router.
+
+`message_visibility` exercises a sensitive request through the real router: each asker sees their own
+question and its replies, another manager/stand-in sees no other pair, a colleague is denied, and comments
+stay hidden even from their authors. Employee/HR retain all messages. Non-HR final approvers cannot read
+the reason through revision notes or decision reasons, and medical files remain restricted. Saved receipts
+keep their original messages with current redaction, and changing the leave type preserves earlier privacy.
+`final_admin_regressions` verifies seeded entitlement facts replay without increasing balances, the next
+year preview/run, employee denial and the opening-import guard.
+
+`ux_backend` adds eight real-router/SQLite tests for plain opening CSV headers, named leave types, whole/half-days,
+part-time conversion, invalid amounts, legacy files and staff-number aliases; read-only close plans equal the
+posted plan, preserve reservations and detect zero-posting/legacy closes and grace expiry; scoped HR notification
+identity stays filtered and masked, while tech-admin addresses stay intact; the accrual-preview HTTP route requires service-wide HR, returns existing/new entitlement counts and leaves the database unchanged. Four additional Vitest cases cover
+the plain templates and day-only preview formatting. A browser smoke check also verified the new import, preview,
+already-closed button and HR recipient/request-link flows. Playwright selectors follow renamed controls,
+tables and inline document sections; lifecycle, permission, privacy, retry and click-budget assertions remain enforced.
 
 Browser specs (Playwright, headless Chromium, release binary in demo mode):
 - `e2e/main-scenario.spec.ts` — 20 → 15 (5 reserved) → 15 → amend to 3 days → 17 → *Period ended*, still 17; then
@@ -33,7 +49,12 @@ Browser specs (Playwright, headless Chromium, release binary in demo mode):
 
 - `frontend/e2e/click-budget.spec.ts` — four tests measure thirteen task budgets and reject internal labels in visible body text. A fifth test checks employee/user context across People shortcuts, the shared import dialog and the Operations redirect. Measured click counts are printed in the browser log.
 - `frontend/e2e/review-regressions.spec.ts` — five tests: amendment balance, returned days, child rows and partial-cancellation dates agree with the server; the manager's pending question and the answer; nav badges follow decisions; admin shortcuts within three clicks; year defaults; chronological absence rows; payroll file in three clicks.
+- `frontend/e2e/final-integration.spec.ts` — two tests: the demo heading, sensitive question/answer pair in Approvals and Messages with other comments and reasons hidden; correction notice matches the navigation badge and links to Balances; another person's balance title, schedule-change conversion and Details disclosure.
 - `F05 round2: actual correction confirms second approval and preserves adjustment identity` replaces the old display-ID test name in `audit-round2.spec.ts`: the UI confirmation uses plain wording, while the created adjustment ID and amount are verified through the real API. Existing lifecycle, permission, privacy, ledger and retry assertions remain covered through the redesigned controls.
+
+Final integration also restored the accrual-preview route, corrected immutable consumption labels after an
+amendment, fixed half-day radio hit areas and allowed eligible employees to receive delegated approval
+authority. Empty valid reports remain downloadable as CSV; the original unit/month click-budget case covers this.
 
 L07 supporting-document notes: final approval uses the submitted revision's frozen requirement and checks clean-file presence independently of download authority. Router tests `r03_required_evidence_cannot_be_satisfied_only_by_quarantined_file`, `r03_pending_failed_quarantined_and_lost_clean_gate_frozen_rule` and `r03_failed_document_clean_replacement_parent_evidence_and_medical_privacy` cover pending, quarantined, scan-failed, lost-clean and replacement files, parent evidence and medical metadata/download denial. The UI explains the blocking requirement and disables final approval until a clean document exists.
 

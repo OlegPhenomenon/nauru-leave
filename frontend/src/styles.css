@@ -1146,6 +1146,10 @@ td.nowrap,
 
 /* ---------- landing ---------- */
 
+.landing-card {
+  margin-top: 24px;
+}
+
 .hero {
   max-width: 760px;
   margin: var(--sp-7) auto var(--sp-4);
@@ -1479,3 +1483,24 @@ td .btn-row { margin-top: 0; }
 .req-form > .field:first-child { margin-top: 0; }
 
 @media (max-width: 760px) { .desktop-persona { display: none; } }
+
+.menu-panel { min-width: 14rem; width: max-content; max-width: calc(100vw - 2rem); }
+.menu-panel .menu-item > span:first-child { white-space: nowrap; }
+.demo-strip .desktop-persona { font-size: var(--fs-meta); min-height: 32px; color: inherit; }
+.demo-date-short { display: none; }
+@media (max-width: 760px) {
+  .demo-date-full { display: none; }
+  .demo-date-short { display: inline; }
+  .demo-strip .demo-today { display: inline !important; white-space: nowrap; font-size: var(--fs-meta); }
+  .demo-strip .demo-note-tail { display: none; }
+  .demo-strip-inner { gap: var(--sp-2); flex-wrap: nowrap; }
+  .demo-strip .spacer { min-width: 0; }
+  .demo-strip .menu > summary { white-space: nowrap; }
+}
+@media print {
+  .print-card .back-link, .print-card .page-header .actions { display: none; }
+  .print-card .print-history { display: none; }
+  .print-decisions { break-inside: avoid; }
+}
+
+@media (max-width: 760px) { .demo-strip-inner > .only-mobile { display: block; } }
