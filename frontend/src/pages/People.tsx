@@ -106,7 +106,7 @@ export default function People() {
         className="row-menu"
         label={
           <>
-            <span className="visually-hidden">Actions for {e.full_name}</span>⋯
+            ⋯
           </>
         }
         align="end"
@@ -183,7 +183,7 @@ export default function People() {
             render: (u: OrgUnit) => (
               <button
                 type="button"
-                className="btn btn-ghost btn-sm"
+                className="btn btn-secondary btn-sm"
                 aria-label={`Edit ${u.name}`}
                 onClick={() => setDialog({ kind: 'unit', unit: u })}
               >

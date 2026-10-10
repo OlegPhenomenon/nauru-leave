@@ -201,7 +201,7 @@ export default function PersonDetail() {
             <dd>
               {e.email ?? 'No email'}{' '}
               {canEdit ? (
-                <button type="button" className="btn btn-ghost btn-sm link-sm" onClick={openEdit}>
+                <button type="button" className="btn btn-secondary btn-sm link-sm" onClick={openEdit}>
                   Change…
                 </button>
               ) : null}
@@ -213,7 +213,7 @@ export default function PersonDetail() {
               {unit ?? '—'}
               {e.manager ? ` · reports to ${e.manager.full_name}` : ''}{' '}
               {canEdit ? (
-                <button type="button" className="btn btn-ghost btn-sm link-sm" onClick={() => setDialog('transfer')}>
+                <button type="button" className="btn btn-secondary btn-sm link-sm" onClick={() => setDialog('transfer')}>
                   Change…
                 </button>
               ) : null}
@@ -224,7 +224,7 @@ export default function PersonDetail() {
             <dd>
               {e.schedule?.name ?? '—'}{' '}
               {canEdit ? (
-                <button type="button" className="btn btn-ghost btn-sm link-sm" onClick={() => setDialog('pattern')}>
+                <button type="button" className="btn btn-secondary btn-sm link-sm" onClick={() => setDialog('pattern')}>
                   Change…
                 </button>
               ) : null}
@@ -237,7 +237,7 @@ export default function PersonDetail() {
                 ? `${fmtDate(e.start_date)} – ${fmtDate(e.end_date)}`
                 : `since ${fmtDate(e.start_date)}`}{' '}
               {canEdit && e.active ? (
-                <button type="button" className="btn btn-ghost btn-sm link-sm" onClick={() => setDialog('end')}>
+                <button type="button" className="btn btn-secondary btn-sm link-sm" onClick={() => setDialog('end')}>
                   End…
                 </button>
               ) : null}
@@ -276,7 +276,7 @@ export default function PersonDetail() {
                       </span>
                     ) : null}{' '}
                     {canEdit ? (
-                      <button className="btn btn-ghost btn-sm link-sm" onClick={() => { setCorrectTypeId(b.leave_type.id); setDialog('correct'); }}>Correct…</button>
+                      <button className="btn btn-secondary btn-sm link-sm" onClick={() => { setCorrectTypeId(b.leave_type.id); setDialog('correct'); }}>Correct…</button>
                     ) : null}{' '}
                     <Link
                       className="link-sm"
@@ -319,7 +319,7 @@ export default function PersonDetail() {
             {e.assignments.length === 0 ? (
               <p className="empty">No history.</p>
             ) : (
-              <div className="table-wrap">
+              <div className="table-wrap table-stack">
                 <table className="small">
                   <thead>
                     <tr>
@@ -331,9 +331,9 @@ export default function PersonDetail() {
                   <tbody>
                     {e.assignments.map((a, i) => (
                       <tr key={i}>
-                        <td>{a.org_unit ? orgUnitName(a.org_unit.name) : '—'}</td>
-                        <td>{a.manager?.full_name ?? '—'}</td>
-                        <td className="nowrap">
+                        <td className="stack-title">{a.org_unit ? orgUnitName(a.org_unit.name) : '—'}</td>
+                        <td className="nowrap" data-label="Manager">{a.manager?.full_name ?? '—'}</td>
+                        <td className="nowrap" data-label="Period">
                           {fmtDate(a.valid_from)} – {a.valid_to ? fmtDate(a.valid_to) : 'now'}
                         </td>
                       </tr>
@@ -348,7 +348,7 @@ export default function PersonDetail() {
             {schedHistory.length === 0 ? (
               <p className="empty">No history.</p>
             ) : (
-              <div className="table-wrap">
+              <div className="table-wrap table-stack">
                 <table className="small">
                   <thead>
                     <tr>
@@ -359,8 +359,8 @@ export default function PersonDetail() {
                   <tbody>
                     {schedHistory.map((s) => (
                       <tr key={s.id}>
-                        <td>{s.name}</td>
-                        <td className="nowrap">
+                        <td className="stack-title nowrap">{s.name}</td>
+                        <td className="nowrap" data-label="Period">
                           {fmtDate(s.valid_from)} – {s.valid_to ? fmtDate(s.valid_to) : 'now'}
                         </td>
                       </tr>

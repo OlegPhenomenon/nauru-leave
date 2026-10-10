@@ -65,7 +65,7 @@ function QueueRow({ it, waiting, open, onOpen, onDecided }: {
         <span className="qr-l3 queue-review-label">{open ? 'Hide review' : 'Review ›'}</span>
       </button>
       <div className="queue-row-actions no-print" onClickCapture={() => setLoad(true)}>
-        {more.length === 1 ? <Link className="btn btn-ghost btn-sm" to={`/requests/${it.id}`}>Open full request</Link> : <Menu label="More" align="end" items={more} />}
+        {more.length === 1 ? <Link className="btn btn-secondary btn-sm" to={`/requests/${it.id}`}>Open full request</Link> : <Menu className="row-menu" label="⋯" align="end" items={more} />}
       </div>
     </div>
     {open ? <div id={`request-${it.id}`} className="queue-expand">

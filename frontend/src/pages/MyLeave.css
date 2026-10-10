@@ -6,12 +6,15 @@
   border-radius: var(--r-surface);
   padding: var(--sp-4) var(--sp-5);
 }
+
 .action-card h2 {
   margin-bottom: var(--sp-1);
 }
+
 .action-card .q {
   margin: var(--sp-2) 0;
 }
+
 .action-card .btn-row {
   margin-top: var(--sp-3);
 }
@@ -20,42 +23,36 @@
   display: flex;
   flex-direction: column;
 }
+
 .day-row {
   padding: var(--sp-2) 0 var(--sp-3);
   border-bottom: 1px solid var(--divider);
 }
+
 .day-row:last-child {
   border-bottom: none;
 }
+
 .day-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   gap: var(--sp-4);
 }
+
 .day-name {
   font-weight: var(--fw-strong);
 }
+
 .day-num {
   font-size: var(--fs-section);
   font-weight: var(--fw-strong);
   color: var(--brand);
   white-space: nowrap;
 }
+
 .day-note {
   color: var(--text-muted);
   font-size: var(--fs-meta);
   margin: 0;
-}
-
-.coming-up {
-  margin: 0;
-}
-
-.request-actions { text-align: right; width: 1%; white-space: nowrap; }
-@media (max-width: 640px) {
-  .table-stack tr:has(.request-actions > a) { position: relative; }
-  .table-stack tr:has(.request-actions > a) .stack-title { padding-right: 6.5rem; }
-  .table-stack td.request-actions { position: absolute; top: var(--sp-2); right: var(--sp-3); width: auto; padding: 0; }
-  .table-stack td.request-actions::before, .table-stack td.request-actions:empty { display: none; }
 }

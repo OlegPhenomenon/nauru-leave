@@ -39,12 +39,14 @@ export function PageHeader({
   subtitle,
   back,
   primary,
+  secondary,
   more,
 }: {
   title: ReactNode;
   subtitle?: ReactNode | undefined;
   back?: { to: string; label: string } | undefined;
   primary?: ReactNode | undefined;
+  secondary?: ReactNode | undefined;
   more?: MoreItem[] | undefined;
 }) {
   return (
@@ -58,9 +60,10 @@ export function PageHeader({
         <h1>{title}</h1>
         {subtitle ? <p className="subtitle">{subtitle}</p> : null}
       </div>
-      {primary || (more && more.length > 0) ? (
+      {primary || secondary || (more && more.length > 0) ? (
         <div className="actions">
           {primary}
+          {secondary}
           {more && more.length > 0 ? (
             <Menu
               label="More"
@@ -165,7 +168,7 @@ export function Menu({
       ref={ref}
       className={`menu ${align === 'end' ? 'menu-end' : ''} ${className ?? ''}`}
     >
-      <summary>{label}</summary>
+      <summary aria-label={className?.split(' ').includes('row-menu') ? 'More actions' : undefined}>{label}</summary>
       <div className="menu-panel" role="menu">
         {items.map((item, i) => {
           if (item.divider) {
@@ -506,6 +509,12 @@ export function DataTable<T>({
   empty?: ReactNode | undefined;
 }) {
   const navigate = useNavigate();
+  const columnClass = (c: Column<T>) => [
+    c.className,
+    /^(Date|Dates|Period|Created|When|Person|Name|Manager|Proposed by|Request|Work pattern|Part of day|Length)$/.test(c.label) ? 'nowrap' : '',
+    /^(Days|Days a year|Days left|On hold for requests|Length|Counted|People|Leave days|Change|Removed|Carries over|Waiting)$/.test(c.label) ? 'num' : '',
+    ['', 'Action', 'Actions'].includes(c.label) ? 'row-actions' : '',
+  ].filter(Boolean).join(' ');
   if (!rows.length) return <EmptyState text={typeof empty === 'string' ? empty : 'Nothing to show.'} action={typeof empty === 'string' ? undefined : empty} />;
   return (
     <div className="table-wrap table-stack">
@@ -513,7 +522,7 @@ export function DataTable<T>({
         <thead>
           <tr>
             {columns.map((c, i) => (
-              <th key={i} className={c.className}>
+              <th key={i} className={columnClass(c)}>
                 {c.label}
               </th>
             ))}
@@ -531,10 +540,10 @@ export function DataTable<T>({
                 {columns.map((c, j) => (
                   <td
                     key={j}
-                    className={`${c.className ?? ''} ${c.title || j === 0 ? 'stack-title' : ''}`.trim()}
+                    className={`${columnClass(c)} ${c.title || j === 0 ? 'stack-title' : ''}`.trim()}
                     data-label={c.title || j === 0 ? '' : c.label}
                   >
-                    {to && j === 0 ? <Link to={to}>{c.render(row)}</Link> : c.render(row)}
+                    <span className="cell-value">{to && j === 0 ? <Link to={to}>{c.render(row)}</Link> : c.render(row)}</span>
                   </td>
                 ))}
               </tr>

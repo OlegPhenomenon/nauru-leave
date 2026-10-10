@@ -68,7 +68,7 @@ export default function StandIns() {
     { label:'Approvals', render:d => delegationScopeLabel(d.scope) },
     { label:'Dates', render:d => fmtRange(d.valid_from,d.valid_to) },
     { label:'Status', render:d => <Tag tone={status(d,today) === 'Active' ? 'ok' : undefined}>{status(d,today)}</Tag> },
-    { label:'', className:'row-actions', render:d => status(d,today) !== 'Ended' && (manageOthers || d.from_user.id === me?.user.id) ? <button className="btn btn-ghost btn-sm" onClick={() => setEndFor(d)}>End…</button> : null },
+    { label:'', className:'row-actions', render:d => status(d,today) !== 'Ended' && (manageOthers || d.from_user.id === me?.user.id) ? <button className="btn btn-secondary btn-sm" onClick={() => setEndFor(d)}>End…</button> : null },
   ]} />;
 
   return (

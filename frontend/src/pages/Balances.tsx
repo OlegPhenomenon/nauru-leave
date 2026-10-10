@@ -13,7 +13,6 @@ import type {
   OrgUnit,
   PolicyVersion,
 } from '../api/types';
-import './Balances.css';
 import { ImportDialog } from '../components/ImportDialog';
 import {
   DataTable,
@@ -254,14 +253,15 @@ export default function Balances() {
             </>
           ) : undefined
         }
-
+        secondary={canEdit ? <>
+          <button className="btn btn-secondary" onClick={() => setModal('entitlement')}>Add entitlement…</button>
+          <button className="btn btn-secondary" onClick={() => setModal('close')}>Close year…</button>
+        </> : undefined}
+        more={canEdit ? [
+          { label: 'Import opening balances…', onSelect: () => setImportKind('opening_balances') },
+          { label: 'Import past leave…', onSelect: () => setImportKind('historical_leave') },
+        ] : undefined}
       />
-      {canEdit ? <div className="balance-tools" aria-label="Entitlement and records">
-        <button className="btn btn-secondary btn-sm" onClick={() => setModal('entitlement')}>Add entitlement…</button>
-        <button className="btn btn-secondary btn-sm" onClick={() => setModal('close')}>Close year…</button>
-        <button className="btn btn-secondary btn-sm" onClick={() => setImportKind('opening_balances')}>Import opening balances…</button>
-        <button className="btn btn-secondary btn-sm" onClick={() => setImportKind('historical_leave')}>Import past leave…</button>
-      </div> : null}
       {bannerErr ? <ErrBox error={bannerErr} /> : null}
       {waitingQ.error ? <ErrBox error={waitingQ.error} /> : null}
 
@@ -433,7 +433,7 @@ export default function Balances() {
                           onClick={(e) => e.stopPropagation()}
                           onMouseDown={(e) => e.stopPropagation()}
                         >
-                          <button className="btn btn-ghost btn-sm" onClick={() => selTypeId !== null && setCorrect({ employee: r.employee, leaveTypeId: selTypeId, minutesPerDay: r.summary.minutes_per_day })}>Correct…</button>
+                          <button className="btn btn-secondary btn-sm" onClick={() => selTypeId !== null && setCorrect({ employee: r.employee, leaveTypeId: selTypeId, minutesPerDay: r.summary.minutes_per_day })}>Correct…</button>
                         </span>
                       ),
                     },

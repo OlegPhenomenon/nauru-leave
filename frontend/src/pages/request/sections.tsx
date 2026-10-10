@@ -92,7 +92,7 @@ export function DaysDetails({ d }: { d: RD }) {
           <p className="muted small">
             {d.kind === 'cancellation' ? changeSummary(d)?.headline : <>{working} working {working === 1 ? 'day' : 'days'} counted,{' '}{fmtDuration(rev.total_minutes, d.minutes_per_day)} in total.</>}
           </p>
-          <div className="table-wrap">
+          <div className="table-wrap table-stack">
             <table>
               <thead>
                 <tr>
@@ -105,12 +105,12 @@ export function DaysDetails({ d }: { d: RD }) {
               <tbody>
                 {shownDays.map((day) => (
                   <tr key={day.date} className={day.minutes === 0 ? 'muted' : undefined}>
-                    <td>{fmtDateFull(day.date)}</td>
-                    <td>{partWords(day.part, day.explanation.startsWith('Cancelled by '))}{d.kind === 'amendment' && day.minutes > 0 && !d.parent_in_force_revision?.days.some(w => w.date === day.date && w.minutes > 0) ? ' · Added' : ''}</td>
-                    <td className="num">
+                    <td className="stack-title nowrap">{fmtDateFull(day.date)}</td>
+                    <td data-label="Day part">{partWords(day.part, day.explanation.startsWith('Cancelled by '))}{d.kind === 'amendment' && day.minutes > 0 && !d.parent_in_force_revision?.days.some(w => w.date === day.date && w.minutes > 0) ? ' · Added' : ''}</td>
+                    <td className="num" data-label="Counted">
                       {day.minutes > 0 ? fmtDuration(day.minutes, d.minutes_per_day) : '—'}
                     </td>
-                    <td className="small">{day.allocations.length ? [...new Set(day.allocations.map(a => `${a.period_year}${a.carryover ? ' (carried over)' : ''}`))].join(', ') : '—'}</td>
+                    <td className="small" data-label="Year">{day.allocations.length ? [...new Set(day.allocations.map(a => `${a.period_year}${a.carryover ? ' (carried over)' : ''}`))].join(', ') : '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -227,9 +227,9 @@ export function ChangesDetails({ d }: { d: RD }) {
         </p>
       ) : null}
       {hasVersions ? (
-        <table className="small"><thead><tr><th>Dates</th><th>Length</th><th>Status</th><th>Reason</th></tr></thead><tbody>
-          {ordered.map(r => <tr key={r.id}><td>{fmtRange(r.start_date, r.end_date)}</td><td>{fmtDuration(r.total_minutes, d.minutes_per_day)}</td><td>{r.id === (d.in_force_revision ?? d.current_revision).id ? 'In force' : 'Superseded'}</td><td>{r.change_reason ?? '—'}</td></tr>)}
-        </tbody></table>
+        <div className="table-wrap table-stack"><table className="small"><thead><tr><th>Dates</th><th>Length</th><th>Status</th><th>Reason</th></tr></thead><tbody>
+          {ordered.map(r => <tr key={r.id}><td className="stack-title nowrap">{fmtRange(r.start_date, r.end_date)}</td><td className="num" data-label="Length">{fmtDuration(r.total_minutes, d.minutes_per_day)}</td><td data-label="Status">{r.id === (d.in_force_revision ?? d.current_revision).id ? 'In force' : 'Superseded'}</td><td data-label="Reason">{r.change_reason ?? '—'}</td></tr>)}
+        </tbody></table></div>
       ) : null}
     </Details>
   );
@@ -314,7 +314,7 @@ export function HistoryDetails({ d, startOpen }: { d: RD; startOpen?: boolean | 
       )}
       {hasDetails ? (
         <Details title="Technical details" className="rq-tech">
-          <div className="table-wrap">
+          <div className="table-wrap table-stack">
             <table>
               <thead>
                 <tr>
@@ -326,9 +326,9 @@ export function HistoryDetails({ d, startOpen }: { d: RD; startOpen?: boolean | 
               <tbody>
                 {d.audit.map((e) => (
                   <tr key={e.id}>
-                    <td className="small">{fmtDateTime(e.at)}</td>
-                    <td className="small">{e.action}</td>
-                    <td className="small muted">
+                    <td className="small nowrap stack-title">{fmtDateTime(e.at)}</td>
+                    <td className="small" data-label="Action">{e.action}</td>
+                    <td className="small muted" data-label="Details">
                       {e.details ? (
                         <code className="mono">{JSON.stringify(e.details)}</code>
                       ) : (
@@ -408,11 +408,10 @@ export function Messages({
       {canAnswer && onChangeInstead ? <button type="button" className="btn btn-ghost" disabled={busy} onClick={onChangeInstead}>Change dates instead…</button> : null}
     </div>
   </div> : null;
-  return <section className={`rq-messages${canAnswer ? ' rq-messages-answer' : ''}`}>
+  return <section className={`panel rq-messages${canAnswer ? ' rq-messages-answer' : ''}`}>
     {canAnswer ? <><h2 className="rq-h2">Answer question</h2>{question ? <p className="rq-question"><strong>{question.author?.display_name ?? 'Reviewer'} asked:</strong> “{question.body}”</p> : null}{reply}</> : null}
-    {d.messages.length ? <Details title="Messages" count={d.messages.length}>
-      {thread}
-      {!canAnswer ? reply : null}
-    </Details> : !canAnswer ? reply : null}
+    <h2 className="rq-h2">Messages</h2>
+    {thread}
+    {!canAnswer ? reply : null}
   </section>;
 }

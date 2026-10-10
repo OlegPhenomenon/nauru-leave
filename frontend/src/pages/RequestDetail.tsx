@@ -312,14 +312,10 @@ export default function RequestDetail() {
         back={{ to: isOwner ? '/my' : '/approvals', label: isOwner ? 'My leave' : 'Approvals' }}
         title={isOwner ? ownerTitle(d) : reviewerTitle(d)}
         subtitle={subtitle}
-        primary={primary || printOnly ? <>{primary}{printOnly ? <Link className="btn btn-ghost" to={`/requests/${d.id}/print`}>Print</Link> : null}</> : undefined}
         more={more}
       />
 
-      <div className="btn-row no-print">
-        {employeeActions.map(({ action, label }) => <button key={action} type="button" className="btn btn-secondary" onClick={() => setModal(action)}>{label}</button>)}
-      </div>
-
+      <section className="panel rq-summary">
       <div className="rq-status">
         <StatusBadge status={d.status} label={chipLabel ?? (isOwner && d.status === 'needs_information' ? 'Question for you' : statusLabel(d.status))} />
         <span className="rq-status-text">{statusSentence(d, viewer, today)}</span>
@@ -330,8 +326,13 @@ export default function RequestDetail() {
       {activeChange ? <p className="rq-change-pending">A {activeChange.kind === 'cancellation' ? 'cancellation' : 'change'} is waiting for approval. <Link to={`/requests/${activeChange.id}`}>View request</Link></p> : null}
       {isOwner && pastLeave ? <p className="muted small">Past leave can be corrected by HR.</p> : null}
 
+      <div className="btn-row no-print">
+        {primary}
+        {printOnly ? <Link className="btn btn-secondary" to={`/requests/${d.id}/print`}>Print</Link> : null}
+        {employeeActions.map(({ action, label }) => <button key={action} type="button" className="btn btn-secondary" onClick={() => setModal(action)}>{label}</button>)}
+      </div>
       {decidable ? (
-        <div className="panel rq-card">
+        <div className="rq-card">
           <DecisionCard request={d} onDecided={onDecided} onRefresh={q.reload} />
         </div>
       ) : null}
@@ -344,6 +345,8 @@ export default function RequestDetail() {
         </ul>
       ) : null}
 
+      </section>
+
       <Messages
         d={d}
         canAnswer={canAnswer}
@@ -352,7 +355,7 @@ export default function RequestDetail() {
         onChangeInstead={canAnswer && canChange ? () => setModal('respond-change') : undefined}
       />
 
-      <div className="rq-details">
+      <div className="panel rq-details">
         <DaysDetails d={d} />
         <StepsDetails d={d} viewer={viewer} />
         <ChangesDetails d={d} />

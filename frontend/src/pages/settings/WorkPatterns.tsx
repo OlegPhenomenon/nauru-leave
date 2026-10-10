@@ -160,7 +160,7 @@ export default function WorkPatterns() {
           { label:'Work pattern', title:true, render:s => s.name },
           { label:'Working week', render:s => { const cur = inForce(s, today); return cur ? weekSentence(weekArray(cur.week)) : 'No work pattern in force yet.'; } },
           { label:'History', render:s => <Details title="Pattern history"><ul className="sentence-list">{[...(s.versions ?? [])].sort((a,b) => b.valid_from.localeCompare(a.valid_from)).map(v => <li key={v.id}>From {fmtDate(v.valid_from)} — {weekSentence(weekArray(v.week))}</li>)}</ul></Details> },
-          { label:'', className:'row-actions', render:s => canEdit ? <button className="btn btn-ghost btn-sm" onClick={() => setVersionFor(s)}>New version…</button> : null },
+          { label:'', className:'row-actions', render:s => canEdit ? <button className="btn btn-secondary btn-sm" onClick={() => setVersionFor(s)}>New version…</button> : null },
         ]} />
       )}
 

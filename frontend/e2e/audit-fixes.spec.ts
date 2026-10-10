@@ -53,6 +53,7 @@ test('F02: monthly accrual posts each month once, retry is a no-op', async ({
   async function runAccrual(monthLabel: string) {
     await more(page, 'Add entitlement…');
     const m = page.locator('.modal');
+    await m.getByRole('button', { name: 'Add', exact: true }).and(m.locator(':enabled')).waitFor();
     for (const box of await m.locator('fieldset label').filter({ hasNotText: 'Monthly accrual (demo)' }).locator('input[type=checkbox]').all()) await box.uncheck();
     await m.getByLabel('Year', { exact: true }).fill('2026');
     await m.getByRole('combobox', { name: 'Month', exact: true }).selectOption({ label: monthLabel });

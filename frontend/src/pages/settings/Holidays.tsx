@@ -23,7 +23,7 @@ export default function Holidays() {
     { label: 'Date', render: ex => ex.date.slice(0,4) === today.slice(0,4) ? fmtDay(ex.date) : fmtDate(ex.date) },
     { label: 'Name', render: ex => <>{ex.name}{ex.schedule_id ? <div className="small muted">{schedules.data?.find(s => s.id === ex.schedule_id)?.name ?? 'Selected work pattern'}</div> : null}</> },
     ...(rows.some(ex => ex.minutes > 0) ? [{ label: 'Day type', render: (ex: CalendarException) => ex.minutes === 0 ? 'Holiday' : `Short day — ${ex.minutes / 60} h` }] : []),
-    removed ? { label: 'Reason', render: ex => ex.reason ?? '—' } : { label: '', className: 'row-actions', render: ex => canEdit ? <button className="btn btn-ghost btn-sm" onClick={() => setRevokeFor(ex)} aria-label={`Remove ${ex.name}`}>Remove…</button> : null },
+    removed ? { label: 'Reason', render: ex => ex.reason ?? '—' } : { label: '', className: 'row-actions', render: ex => canEdit ? <button className="btn btn-secondary btn-sm" onClick={() => setRevokeFor(ex)} aria-label={`Remove ${ex.name}`}>Remove…</button> : null },
   ]} />;
   return <>
     <PageHeader title="Public holidays" subtitle="Days off and shorter days used when working out leave." primary={canEdit ? <button className="btn" onClick={() => setAdd(true)}>Add public holiday…</button> : undefined} />

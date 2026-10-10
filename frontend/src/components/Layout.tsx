@@ -286,24 +286,10 @@ function DemoStrip({
   onSwitch: () => void;
   onTools: (tool: 'mailbox' | 'date' | 'reset') => void;
 }) {
-  const toolItems = [
-    { label: 'Switch person…', onSelect: onSwitch },
-    { label: '', divider: true as const, className: 'only-mobile' },
-    {
-      label: `Mailbox (${mailboxCount})`,
-      onSelect: () => onTools('mailbox'),
-      className: 'only-mobile',
-    },
-    {
-      label: 'Move date forward…',
-      onSelect: () => onTools('date'),
-      className: 'only-mobile',
-    },
-    {
-      label: 'Reset demo…',
-      onSelect: () => onTools('reset'),
-      className: 'only-mobile',
-    },
+  const mobileTools = [
+    { label: `Mailbox (${mailboxCount})`, onSelect: () => onTools('mailbox') },
+    { label: 'Move date forward…', onSelect: () => onTools('date') },
+    { label: 'Reset demo…', onSelect: () => onTools('reset') },
   ];
 
   return (
@@ -315,17 +301,15 @@ function DemoStrip({
         </div>
         <span className="spacer" />
         <span className="demo-today"><span className="demo-date-full">Today {fmtDate(config.business_date)}</span><span className="demo-date-short">{fmtDate(config.business_date).replace(/ \d{4}$/, '')}</span></span>
-        <button type="button" className="btn btn-ghost desktop-persona" onClick={onSwitch}>Viewing as {me.user.display_name} ({personRoleLabel(me)})</button>
+        <span className="demo-viewing">
+          <strong>{me.user.display_name}</strong>
+          <span className="demo-viewing-role"> · {personRoleLabel(me)}</span>
+        </span>
+        <button type="button" className="btn btn-secondary demo-switch" onClick={onSwitch}>
+          Switch user
+        </button>
         <div className="only-mobile">
-          <Menu
-          label={
-            <>
-              {me.user.display_name.trim().split(/\s+/)[0]}
-            </>
-          }
-          align="end"
-          items={toolItems}
-        />
+          <Menu label="Demo" align="end" items={mobileTools} />
         </div>
         <span className="demo-tools-slot">
           <Menu
@@ -464,6 +448,7 @@ export default function Layout() {
   const userItems = me
     ? [
         ...(myLeaveInBar(me) ? [] : [{ label: 'My leave', to: '/my' }]),
+        ...(isDemo ? [{ label: 'Switch user…', onSelect: () => setSwitcher(true) }] : []),
         { label: 'Help', to: '/help' },
         {
           label: 'Sign out',

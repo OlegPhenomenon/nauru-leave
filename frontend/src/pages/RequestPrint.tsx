@@ -151,7 +151,7 @@ export default function RequestPrint() {
         {groups.length === 0 ? (
           <p className="muted">No days remain — the leave was fully cancelled.</p>
         ) : (
-          <table>
+          <div className="table-wrap table-stack"><table>
             <thead>
               <tr>
                 <th>Dates</th>
@@ -162,15 +162,15 @@ export default function RequestPrint() {
             <tbody>
               {groups.map((g) => (
                 <tr key={g.start}>
-                  <td>{fmtRange(g.start, g.end)}</td>
-                  <td className="num">
+                  <td className="stack-title nowrap">{fmtRange(g.start, g.end)}</td>
+                  <td className="num" data-label="Counted">
                     {g.minutes > 0 ? fmtDuration(g.minutes, mpd) : '—'}
                   </td>
-                  {showPart ? <td className="small">{partNote(g.part)}</td> : null}
+                  {showPart ? <td className="small" data-label="Part">{partNote(g.part)}</td> : null}
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
 
         <h2>Decisions</h2>
@@ -179,7 +179,7 @@ export default function RequestPrint() {
         ) : ([...decisionGroups.entries()].map(([key, group]) => (
           <section key={key} className="print-decisions">
           <h3>{decisionHeading(group)}</h3>
-          <table>
+          <div className="table-wrap table-stack"><table>
             <thead>
               <tr>
                 <th>Step</th>
@@ -191,20 +191,20 @@ export default function RequestPrint() {
             <tbody>
               {group.decisions.map((x) => (
                 <tr key={x.id}>
-                  <td>{stepLabel(x.step_kind)}</td>
-                  <td>
+                  <td className="stack-title">{stepLabel(x.step_kind)}</td>
+                  <td data-label="Decision">
                     {outcomeLabel(x.outcome)}
                     {x.reason ? <div className="muted small">{x.reason}</div> : null}
                   </td>
-                  <td>
+                  <td className="nowrap" data-label="By">
                     {x.actor.display_name}
                     {x.acting_for ? ` for ${x.acting_for.display_name}` : ''}
                   </td>
-                  <td className="nowrap">{fmtStampDay(x.created_at)}</td>
+                  <td className="nowrap" data-label="When">{fmtStampDay(x.created_at)}</td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
           </section>
         )))}
 
@@ -225,7 +225,7 @@ export default function RequestPrint() {
               </p>
             ) : null}
             {history.length ? (
-              <table className="small">
+              <div className="table-wrap table-stack"><table className="small">
                 <thead>
                   <tr>
                     <th>Version</th>
@@ -237,17 +237,17 @@ export default function RequestPrint() {
                 <tbody>
                   {history.map((r) => (
                     <tr key={r.id}>
-                      <td>{r.rev_no}</td>
-                      <td>{fmtRange(r.start_date, r.end_date)}</td>
-                      <td className="num">{fmtDuration(r.total_minutes, mpd)}</td>
-                      <td className="small">{r.change_reason ?? '—'}</td>
+                      <td className="stack-title">{r.rev_no}</td>
+                      <td className="nowrap" data-label="Dates">{fmtRange(r.start_date, r.end_date)}</td>
+                      <td className="num" data-label="Length">{fmtDuration(r.total_minutes, mpd)}</td>
+                      <td className="small" data-label="Reason for change">{r.change_reason ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             ) : null}
             {(d.decisions ?? []).length ? (
-              <table className="small">
+              <div className="table-wrap table-stack"><table className="small">
                 <thead>
                   <tr>
                     <th>Step</th>
@@ -259,14 +259,14 @@ export default function RequestPrint() {
                 <tbody>
                   {d.decisions.map((x) => (
                     <tr key={x.id}>
-                      <td>{stepLabel(x.step_kind)}</td>
-                      <td>{x.revision_no}</td>
-                      <td className="small">{x.authority}</td>
-                      <td className="small">{x.basis_document ?? '—'}</td>
+                      <td className="stack-title">{stepLabel(x.step_kind)}</td>
+                      <td data-label="Version">{x.revision_no}</td>
+                      <td className="small" data-label="Authority">{x.authority}</td>
+                      <td className="small" data-label="Basis document">{x.basis_document ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             ) : null}
           </Details>
         ) : null}

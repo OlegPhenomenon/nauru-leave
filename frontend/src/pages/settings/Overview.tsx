@@ -3,16 +3,16 @@ import { Link } from 'react-router';
 import { post } from '../../api/client';
 import type { CalendarException, Delegation, LeaveType, NotificationItem, OrgUnit, Schedule, UserListItem } from '../../api/types';
 import { ErrBox, Field, Modal, PageHeader } from '../../components/ui';
-import { fmtDate, fmtDay, fmtRange, plural } from '../../lib/format';
+import { plural } from '../../lib/format';
 import { useSession } from '../../lib/session';
 import { useApi } from '../../lib/useApi';
 import { readAll } from './data';
-import { AddHolidayModal, RevokeModal } from './Holidays';
+import { AddHolidayModal } from './Holidays';
 import { AddTypeModal, ChangeRulesModal } from './LeaveTypes';
 import { UnitDialog } from '../people/dialogs';
-import { EndStandInModal, NewStandInModal } from './StandIns';
+import { NewStandInModal } from './StandIns';
 import { GiveAccessModal } from './UsersAccess';
-import { PatternModal, VersionModal } from './WorkPatterns';
+import { PatternModal } from './WorkPatterns';
 import { AffectedRequests, type AffectedRequest, useSave } from './shared';
 
 type Action = 'type' | 'rules' | 'pattern' | 'holiday' | 'stand-in' | 'access';
@@ -23,11 +23,8 @@ export default function Overview() {
   const canConfigure = me?.roles.some((r) => r.role === 'hr' && r.scope_org_unit_id === null) ?? false;
   const canRetry = me?.roles.some((r) => r.role === 'hr') ?? false;
   const [unitFor, setUnitFor] = useState<OrgUnit | null | undefined>(undefined);
-  const [versionFor, setVersionFor] = useState<Schedule | null>(null);
-  const [endFor, setEndFor] = useState<Delegation | null>(null);
   const units = useApi(() => readAll<OrgUnit>('/org-units'), []);
   const [action, setAction] = useState<Action | null>(null);
-  const [revokeFor, setRevokeFor] = useState<CalendarException | null>(null);
   const [affected, setAffected] = useState<AffectedRequest[]>([]);
   const { err, busy, run } = useSave();
   const types = useApi(() => readAll<LeaveType>('/leave-types'), []);
@@ -50,38 +47,66 @@ export default function Overview() {
     units.reload(); types.reload(); patterns.reload(); holidays.reload(); users.reload(); standIns.reload();
   }
   const count = (rows: unknown[] | null, noun: string) => rows ? plural(rows.length, noun) : 'Loading…';
-  const quick = (label: string, next: Action, ready: boolean) => <button type="button" className={next === 'rules' ? 'btn' : 'btn btn-secondary btn-sm'} disabled={!ready || !today} onClick={() => setAction(next)}>{label}</button>;
+  const quick = (label: string, next: Action, ready: boolean) => <button type="button" className={next === 'rules' ? 'btn' : 'btn btn-secondary'} disabled={!ready || !today} onClick={() => setAction(next)}>{label}</button>;
   const failures = failedEmails.data ?? [];
   return <>
     <PageHeader title="Settings" subtitle="Leave rules, work patterns and access." primary={canConfigure ? quick('Change rules…', 'rules', !!types.data) : undefined} />
     <AffectedRequests requests={affected} />
-    <ul className="sentence-list">
-      <li><span><Link to="/people?tab=units">Units</Link> · {count(units.data, 'unit')}</span>{canConfigure ? <button className="btn btn-secondary btn-sm" onClick={() => setUnitFor(null)}>Add unit…</button> : null}</li>
-      {canConfigure ? (units.data ?? []).map(u => <li key={`unit-${u.id}`}><span>{u.name}</span><button className="btn btn-ghost btn-sm" onClick={() => setUnitFor(u)}>Edit unit…</button></li>) : null}
-      <li><span><Link to="/settings/leave-types">Leave types</Link> · {count(types.data?.filter((t) => t.active) ?? null, 'active leave type')}</span>{canConfigure ? quick('Add leave type…', 'type', !!types.data) : null}</li>
-      <li><span><Link to="/settings/schedules">Work patterns</Link> · {count(patterns.data, 'work pattern')}</span>{canConfigure ? quick('Add work pattern…', 'pattern', !!patterns.data) : null}</li>
-      {canConfigure ? (patterns.data ?? []).map(s => <li key={`pattern-${s.id}`}><span>{s.name}</span><button className="btn btn-ghost btn-sm" onClick={() => setVersionFor(s)}>New version…</button></li>) : null}
-      <li><span><Link to="/settings/holidays">Public holidays</Link> · {count(holidays.data?.filter((h) => !h.revoked_at && h.date >= today) ?? null, 'upcoming holiday')}</span>{canConfigure ? quick('Add public holiday…', 'holiday', !!patterns.data) : null}</li>
-      {canConfigure ? (holidays.data ?? []).filter(h => !h.revoked_at && h.date >= today).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 3).map(h => <li key={h.id}><span>{h.name} · {h.date.slice(0,4) === today.slice(0,4) ? fmtDay(h.date) : fmtDate(h.date)}</span><button className="btn btn-ghost btn-sm" onClick={() => setRevokeFor(h)} aria-label={`Remove ${h.name}`}>Remove…</button></li>) : null}
-      <li><span><Link to="/settings/route">Approval route</Link> · Manager recommendation, HR check, final decision.</span></li>
-      <li><span><Link to="/settings/delegations">Stand-ins</Link> · {count(standIns.data?.filter((d) => !d.revoked_at && d.valid_to >= today) ?? null, 'current or upcoming stand-in')}</span>{canConfigure ? quick('Add stand-in…', 'stand-in', !!users.data) : null}</li>
-      {canConfigure ? (standIns.data ?? []).filter(d => !d.revoked_at && d.valid_to >= today).map(d => <li key={`standin-${d.id}`}><span>{d.to_user.display_name} for {d.from_user.display_name} · {fmtRange(d.valid_from,d.valid_to)}</span><button className="btn btn-ghost btn-sm" onClick={() => setEndFor(d)}>End…</button></li>) : null}
-      <li><span><Link to="/settings/users">Users &amp; access</Link> · {count(users.data, 'user')}</span>{users.data?.some((u) => u.allowed.grant_roles.length > 0) ? quick('Give access…', 'access', true) : null}</li>
-      <li><span><Link to="/system">System</Link> · {failedEmails.error ? 'Email delivery could not be checked.' : failedEmails.loading ? 'Checking email delivery…' : failures.length ? plural(failures.length, 'failed email') : 'No failed emails.'}</span>{canRetry && failures.length ? <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void run(async () => {
-        // Only failed deliveries are retried. Refresh even after a partial failure.
-        const results = await Promise.allSettled(failures.map((n) => post(`/ops/notifications/${n.id}/retry`)));
-        failedEmails.reload();
-        const failure = results.find((r) => r.status === 'rejected');
-        if (failure?.status === 'rejected') throw failure.reason;
-        return 'Failed emails will be sent again.';
-      })}>{busy ? 'Queuing…' : 'Retry failed emails'}</button> : null}</li>
-      <li><span><Link to="/history">History</Link> · Find a request or see who changed what.</span></li>
-    </ul>
+    <div className="settings-grid">
+      <section className="card settings-card">
+        <h2><Link to="/people?tab=units">Units</Link></h2>
+        <p>{count(units.data, 'unit')}</p>
+        {canConfigure ? <button className="btn btn-secondary" onClick={() => setUnitFor(null)}>Add unit…</button> : <Link className="btn btn-secondary" to="/people?tab=units">Units</Link>}
+      </section>
+      <section className="card settings-card">
+        <h2><Link to="/settings/leave-types">Leave types</Link></h2>
+        <p>{count(types.data?.filter(t => t.active) ?? null, 'active leave type')}</p>
+        {canConfigure ? quick('Add leave type…', 'type', !!types.data) : <Link className="btn btn-secondary" to="/settings/leave-types">Leave types</Link>}
+      </section>
+      <section className="card settings-card">
+        <h2><Link to="/settings/schedules">Work patterns</Link></h2>
+        <p>{count(patterns.data, 'work pattern')}</p>
+        {canConfigure ? quick('Add work pattern…', 'pattern', !!patterns.data) : <Link className="btn btn-secondary" to="/settings/schedules">Work patterns</Link>}
+      </section>
+      <section className="card settings-card">
+        <h2><Link to="/settings/holidays">Public holidays</Link></h2>
+        <p>{count(holidays.data?.filter(h => !h.revoked_at && h.date >= today) ?? null, 'upcoming holiday')}</p>
+        {canConfigure ? quick('Add public holiday…', 'holiday', !!patterns.data) : <Link className="btn btn-secondary" to="/settings/holidays">Public holidays</Link>}
+      </section>
+      <section className="card settings-card">
+        <h2><Link to="/settings/route">Approval route</Link></h2>
+        <p>Manager recommendation, HR check, final decision.</p>
+        <Link className="btn btn-secondary" to="/settings/route">Approval route</Link>
+      </section>
+      <section className="card settings-card">
+        <h2><Link to="/settings/delegations">Stand-ins</Link></h2>
+        <p>{count(standIns.data?.filter(d => !d.revoked_at && d.valid_to >= today) ?? null, 'current or upcoming stand-in')}</p>
+        {canConfigure ? quick('Add stand-in…', 'stand-in', !!users.data) : <Link className="btn btn-secondary" to="/settings/delegations">Stand-ins</Link>}
+      </section>
+      <section className="card settings-card">
+        <h2><Link to="/settings/users">Users &amp; access</Link></h2>
+        <p>{count(users.data, 'user')}</p>
+        {users.data?.some(u => u.allowed.grant_roles.length > 0) ? quick('Give access…', 'access', true) : <Link className="btn btn-secondary" to="/settings/users">Users &amp; access</Link>}
+      </section>
+      <section className="card settings-card">
+        <h2><Link to="/system">System</Link></h2>
+        <p>{failedEmails.error ? 'Email delivery could not be checked.' : failedEmails.loading ? 'Checking email delivery…' : failures.length ? plural(failures.length, 'failed email') : 'No failed emails.'}</p>
+        {canRetry && failures.length ? <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void run(async () => {
+          const results = await Promise.allSettled(failures.map(n => post(`/ops/notifications/${n.id}/retry`)));
+          failedEmails.reload();
+          const failure = results.find(r => r.status === 'rejected');
+          if (failure?.status === 'rejected') throw failure.reason;
+          return 'Failed emails will be sent again.';
+        })}>{busy ? 'Queuing…' : 'Retry failed emails'}</button> : <Link className="btn btn-secondary" to="/system">System</Link>}
+      </section>
+      <section className="card settings-card">
+        <h2><Link to="/history">History</Link></h2>
+        <p>Find a request or see who changed what.</p>
+        <Link className="btn btn-secondary" to="/history">History</Link>
+      </section>
+    </div>
     {[types.error, patterns.error, holidays.error, users.error, standIns.error, failedEmails.error, err].map((error, i) => error ? <ErrBox key={i} error={error} /> : null)}
     {unitFor !== undefined ? <UnitDialog unit={unitFor} units={units.data ?? []} onClose={() => setUnitFor(undefined)} onSaved={() => { setUnitFor(undefined); units.reload(); }} /> : null}
-    {versionFor ? <VersionModal s={versionFor} businessDate={today} onClose={() => setVersionFor(null)} onDone={r => { setVersionFor(null); done(r); }} /> : null}
-    {endFor ? <EndStandInModal delegation={endFor} onClose={() => setEndFor(null)} onDone={() => { setEndFor(null); standIns.reload(); }} /> : null}
-    {revokeFor ? <RevokeModal ex={revokeFor} onClose={() => setRevokeFor(null)} onDone={requests => { setRevokeFor(null); done(requests); }} /> : null}
     {action === 'type' && types.data ? <AddTypeModal businessDate={today} existingCodes={types.data.map((t) => t.code)} onClose={() => { close(); types.reload(); }} onDone={done} /> : null}
     {action === 'rules' && types.data ? <PickRulesModal types={types.data} businessDate={today} onClose={close} onDone={done} /> : null}
     {action === 'pattern' ? <PatternModal businessDate={today} onClose={close} onDone={done} /> : null}

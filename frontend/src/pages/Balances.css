@@ -1,4 +1,0 @@
-.balance-tools { display:flex; flex-wrap:wrap; gap:var(--sp-2); margin-bottom:var(--sp-4); }
-.balance-tools button { white-space:nowrap; }
-@media (max-width:700px) { .balance-tools { display:grid; } .panel .tabs { flex-wrap:nowrap; overflow-x:auto; } .panel .tabs button { white-space:nowrap; flex-shrink:0; } }
-.panel td { vertical-align:middle; }

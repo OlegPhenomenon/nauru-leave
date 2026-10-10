@@ -404,7 +404,7 @@ export default function Reports() {
                 >
                   Download CSV
                 </button>
-                <button type="button" className="btn btn-ghost" disabled={viewBusy || (def.dates === 'month' && !validRange) || (def.dates === 'date' && !isValidDate(date))} onClick={() => void printReport()}>Print</button>
+                <button type="button" className="btn btn-secondary" disabled={viewBusy || (def.dates === 'month' && !validRange) || (def.dates === 'date' && !isValidDate(date))} onClick={() => void printReport()}>Print</button>
       </> : <span ref={setPayrollHeader} />} />
       <div className="reports-layout">
         <nav className="reports-nav subnav" aria-label="Reports">
@@ -600,8 +600,8 @@ function PayrollPanel({
               className:'row-actions',
               render: (x) => (
                 <>
-                  <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void downloadFile(x)}>Download</button>
-                  {canManage && !x.transferred_at ? <><button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void markSent(x.id,'')}>Mark as sent</button><Menu className="row-menu" label={<><span className="visually-hidden">Actions for payroll file {fmtRange(x.from,x.to)}</span>⋯</>} items={[{ label:'Mark as sent with a note…', disabled:busy, onSelect:() => { setErr(null); setMarkId(x.id); setMarkNote(''); } }]} /></> : null}
+                  <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void downloadFile(x)}>Download</button>
+                  {canManage && !x.transferred_at ? <><button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void markSent(x.id,'')}>Mark as sent</button><Menu className="row-menu" label={<>⋯</>} items={[{ label:'Mark as sent with a note…', disabled:busy, onSelect:() => { setErr(null); setMarkId(x.id); setMarkNote(''); } }]} /></> : null}
                 </>
               ),
             },

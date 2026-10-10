@@ -6,43 +6,41 @@
   gap: var(--sp-5);
   align-items: start;
 }
+
 .settings-nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
+
 .settings-nav a {
   padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-control);
   color: var(--text-muted);
   text-decoration: none;
-  min-height: 40px;
+  min-height: 44px;
   display: flex;
   align-items: center;
 }
+
 .settings-nav a:hover {
   background: var(--neutral-bg);
 }
+
 .settings-nav a.active {
   background: var(--brand-tint);
   color: var(--brand);
   font-weight: var(--fw-strong);
 }
-@media (max-width: 700px) {
-  .settings-layout {
-    grid-template-columns: 1fr;
-  }
-  .settings-nav {
-    display: none;
-  }
-}
 
 /* One fact per line (leave rules, stand-ins, versions). */
+
 .sentence-list {
   list-style: none;
   margin: var(--sp-2) 0;
   padding: 0;
 }
+
 .sentence-list li {
   padding: var(--sp-2) 0;
   border-bottom: 1px solid var(--divider);
@@ -52,55 +50,39 @@
   justify-content: space-between;
   flex-wrap: wrap;
 }
+
 .sentence-list li:last-child {
   border-bottom: none;
 }
 
-/* Public holidays: the inline add row at the top of the section. */
-.inline-add {
-  display: flex;
-  gap: var(--sp-3);
-  align-items: flex-end;
-  flex-wrap: wrap;
-  margin: var(--sp-3) 0;
-}
-.inline-add .field {
-  margin: 0;
-  flex: 1 1 140px;
-}
-.inline-add .field-add {
-  flex: 0 0 auto;
-}
-
 /* Radio/checkbox groups on one line (carry-over, expiry). */
+
 .field-row {
   display: flex;
   gap: var(--sp-4);
   flex-wrap: wrap;
   align-items: baseline;
 }
+
 .field-row input[type='number'] {
   width: 4.5rem;
 }
 
 /* Nested control under a role checkbox. */
+
 .indent {
   margin-left: var(--sp-5);
 }
 
-/* Action cell hugging the right edge of a table row. */
-td.row-actions {
-  text-align: right;
-  white-space: nowrap;
-}
-
 /* Approval route: numbered steps. */
+
 .route-steps {
   list-style: none;
   counter-reset: step;
   margin: var(--sp-3) 0;
   padding: 0;
 }
+
 .route-steps li {
   counter-increment: step;
   display: flex;
@@ -108,9 +90,11 @@ td.row-actions {
   padding: var(--sp-3) 0;
   border-bottom: 1px solid var(--divider);
 }
+
 .route-steps li:last-child {
   border-bottom: none;
 }
+
 .route-steps li::before {
   content: counter(step);
   flex-shrink: 0;
@@ -124,22 +108,93 @@ td.row-actions {
   align-items: center;
   justify-content: center;
 }
+
 .route-steps .step-body {
   flex: 1;
 }
+
 .route-steps .step-who {
   font-weight: var(--fw-strong);
 }
 
-.settings-panel-shade { position: fixed; inset: 0; z-index: 55; background: rgb(10 20 40 / 20%); }
-.settings-content { min-width: 0; }
-.settings-content .card-grid { grid-template-columns: 1fr; }
+.settings-panel-shade {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: rgb(10 20 40 / 20%);
+}
 
-.settings-section-picker { display:none; }
-.settings-content .table-wrap { border-radius:var(--r-surface); background:var(--surface); padding:var(--sp-3); }
-.settings-content td { vertical-align:middle; }
-.settings-content td.row-actions { text-align:right; }
-.settings-content .page-header button { white-space:nowrap; }
-.settings-content fieldset, .modal fieldset { border:0; padding:0; min-width:0; }
-.modal .field input:not([type=checkbox]):not([type=radio]), .modal .field select, .modal .field textarea, .drawer .field input:not([type=checkbox]):not([type=radio]), .drawer .field select { width:100%; max-width:28rem; }
-@media (max-width:700px) { .settings-section-picker { display:flex; gap:var(--sp-2); align-items:center; } .settings-section-picker select { flex:1; min-width:0; } }
+.settings-content {
+  min-width: 0;
+}
+
+.settings-section-picker {
+  display: none;
+}
+
+/* Section tables use the same surface and spacing as other cards. */
+
+.settings-content > .table-wrap {
+  border: 1px solid var(--divider);
+  border-radius: var(--r-surface);
+  background: var(--surface);
+  padding: var(--sp-4);
+}
+
+.settings-content fieldset {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.settings-card h2 {
+  font-size: var(--fs-section);
+}
+
+.settings-card h2 a {
+  text-decoration: none;
+}
+
+.settings-card p {
+  margin: 0 0 var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--fs-compact);
+}
+
+.settings-card > .btn {
+  margin-top: auto;
+}
+
+@media (max-width: 700px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+  .settings-nav {
+    display: none;
+  }
+  .settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-section-picker {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: center;
+  }
+  .settings-section-picker select {
+    flex: 1;
+    min-width: 0;
+  }
+}

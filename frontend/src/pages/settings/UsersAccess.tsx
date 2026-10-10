@@ -36,7 +36,7 @@ export default function UsersAccess() {
     {q.loading ? <Loading /> : q.error ? <ErrBox error={q.error} /> : <DataTable<UserListItem> rows={rows} rowLink={(u) => { const next = new URLSearchParams(params); next.set('user', String(u.id)); return `/settings/users?${next}`; }} empty="No users match." columns={[
       { label: 'Person', render: (u) => <>{u.display_name}{!u.active ? <> <Tag>Inactive</Tag></> : null}<div className="muted small">{u.email}</div></> },
       { label: 'Access', render: accessSummary },
-      { label: '', className:'row-actions', render:u => u.allowed.grant_roles.length ? <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); setParam('user',String(u.id)); }}>Edit access…</button> : null },
+      { label: '', className:'row-actions', render:u => u.allowed.grant_roles.length ? <button className="btn btn-secondary btn-sm" onClick={e => { e.stopPropagation(); setParam('user',String(u.id)); }}>Edit access…</button> : null },
     ]} />}
     <p className="muted small">Managers get approval rights from <Link to="/people">People</Link> › Manager.</p>
     {selected ? <UserPanel key={selected.id} user={selected} hr={hr} onClose={() => setParam('user', null)} onSaved={q.reload} /> : null}

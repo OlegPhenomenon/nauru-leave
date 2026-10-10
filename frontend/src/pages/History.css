@@ -1,6 +1,23 @@
-.history-list { list-style: none; margin: var(--sp-4) 0; padding: 0; max-width: 75ch; }
-.history-list > li { padding: var(--sp-3) 0; border-bottom: 1px solid var(--divider); }
-.history-list p { margin: var(--sp-1) 0; }
-.history-list .disclosure { border-top: none; }
-.history-list .disclosure > summary { font-size: var(--fs-meta); }
-.history-json { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-meta); }
+.history-list {
+  list-style: none;
+  margin: var(--sp-4) 0;
+  padding: 0;
+  max-width: 75ch;
+}
+
+.history-list > li {
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--divider);
+}
+
+.history-list p {
+  margin: var(--sp-1) 0;
+}
+
+.history-list .disclosure {
+  border-top: none;
+}
+
+.history-list .disclosure > summary {
+  font-size: var(--fs-meta);
+}

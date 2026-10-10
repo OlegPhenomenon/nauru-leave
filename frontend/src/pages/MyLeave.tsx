@@ -63,7 +63,7 @@ function RequestTable({ rows }: { rows: DisplayRequest[] }) {
           label: 'Status',
           render: (r) => <StatusBadge status={r.status} label={r.kind !== 'leave' && r.status === 'approved' ? 'Done' : r.status === 'needs_information' ? 'Question for you' : undefined} />,
         },
-        { label: '', className: 'request-actions', render: (r) => r.status === 'approved' && r.kind === 'leave' ? <Link className="btn btn-ghost btn-sm" to={`/requests/${r.id}/print`}>Print</Link> : ['submitted', 'under_review', 'needs_information'].includes(r.status) ? <Link className="btn btn-ghost btn-sm" to={`/requests/${r.id}?action=withdraw`}>Withdraw…</Link> : null },
+        { label: '', render: (r) => r.status === 'approved' && r.kind === 'leave' ? <Link className="btn btn-secondary btn-sm" to={`/requests/${r.id}/print`}>Print</Link> : ['submitted', 'under_review', 'needs_information'].includes(r.status) ? <Link className="btn btn-secondary btn-sm" to={`/requests/${r.id}?action=withdraw`}>Withdraw…</Link> : null },
       ]}
       rows={rows}
       empty="Nothing here."
@@ -152,7 +152,7 @@ export default function MyLeave() {
         />
       ))}
 
-      <section aria-label="Days left">
+      <section className="panel" aria-label="Days left">
         <h2>Days left</h2>
         {balancesQ.loading ? <Loading label="Loading balances…" /> : null}
         {balancesQ.error ? <ErrBox error={balancesQ.error} /> : null}
@@ -195,7 +195,7 @@ export default function MyLeave() {
         </div>
       </section>
 
-      <section aria-label="My requests">
+      <section className="panel" aria-label="My requests">
         <h2>My requests</h2>
         {requestsQ.loading ? <Loading /> : null}
         {requestsQ.error ? <ErrBox error={requestsQ.error} /> : null}

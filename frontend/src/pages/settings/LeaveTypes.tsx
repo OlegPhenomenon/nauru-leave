@@ -370,7 +370,7 @@ export default function LeaveTypes() {
           { label:'Half days', render:t => t.policy ? t.policy.allow_half_day ? 'Yes' : 'Whole days only' : '—' },
           { label:'Notice', render:t => t.policy?.min_notice_days ? plural(t.policy.min_notice_days,'day') : 'None' },
           { label:'Status', render:t => { const upcoming = upcomingVersions(t, config?.business_date ?? ''); return <Tag tone={!t.policy || upcoming.length ? 'warn' : undefined}>{!t.active ? 'Inactive' : !t.policy ? 'No rules yet' : upcoming.length ? `Changes on ${fmtDate(upcoming[0]!.valid_from)}` : 'Active'}</Tag>; } },
-          { label:'', className:'row-actions', render:t => canEdit ? <button className="btn btn-ghost btn-sm" onClick={() => setChangeFor(t)}>Change rules…</button> : null },
+          { label:'', className:'row-actions', render:t => canEdit ? <button className="btn btn-secondary btn-sm" onClick={() => setChangeFor(t)}>Change rules…</button> : null },
         ]} />
       )}
 

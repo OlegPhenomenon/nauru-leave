@@ -288,6 +288,15 @@ export default function TeamCalendar() {
         ) : null}
 
         {data && view === 'month' && people.length > 0 ? (
+          <>
+          <div className="cal-month-list">
+            {people.map(p => <section key={p.employee.id}>
+              <h3>{p.employee.full_name}</h3>
+              <ul className="away-list">{p.absences.map(a => <li key={a.date}>
+                {a.request_id ? <Link to={`/requests/${a.request_id}`} aria-label={`${p.employee.full_name}, ${fmtDay(a.date)}: ${a.label}, ${a.state === 'approved' ? 'Away' : 'Pending'}`}><span>{fmtDay(a.date)}</span><span className="what">{a.label === 'Away' ? '' : `${a.label} · `}{a.state === 'approved' ? 'Away' : 'Pending'}</span></Link> : <span className="row"><span>{fmtDay(a.date)}</span><span className="what">{a.label === 'Away' ? '' : `${a.label} · `}{a.state === 'approved' ? 'Away' : 'Pending'}</span></span>}
+              </li>)}</ul>
+            </section>)}
+          </div>
           <div className="cal-scroll" role="region" aria-label="Monthly absences; scroll to see all dates" tabIndex={0}>
             <div className="cal-legend">
               <span>
@@ -361,6 +370,7 @@ export default function TeamCalendar() {
               </tbody>
             </table>
           </div>
+          </>
         ) : null}
       </div>
     </>

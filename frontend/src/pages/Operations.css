@@ -1,3 +1,18 @@
-.system-page .card-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
-.system-page .card .tag { display:block; white-space:normal; overflow-wrap:anywhere; width:fit-content; max-width:100%; }
-@media (max-width:700px) { .system-page .card-grid { grid-template-columns:1fr; } }
+.system-page .card-grid {
+  display: grid;
+  grid-template-columns: repeat(3,minmax(0,1fr));
+}
+
+.system-page .card .tag {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: fit-content;
+  max-width: 100%;
+}
+
+@media (max-width:700px) {
+  .system-page .card-grid {
+    grid-template-columns: 1fr;
+  }
+}

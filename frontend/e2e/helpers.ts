@@ -13,31 +13,33 @@ export async function waitOutRateLimit(page: Page) {
   }
 }
 
+const DEMO_NAMES: Record<string, string> = {
+  Alexei: 'Alexei Novak', Nia: 'Nia Fox', Olga: 'Olga Berg', Maria: 'Maria Santos',
+  Elena: 'Elena Ward', David: 'David Hale', Tom: 'Tom Reed', Pavel: 'Pavel Grant', Grace: 'Grace Lin',
+};
+
 export async function pick(page: Page, name: string) {
+  name = DEMO_NAMES[name] ?? name;
   await page.keyboard.press('Escape');
   const strip = page.locator('.demo-strip');
-  if (await strip.count() && (await strip.textContent())?.includes(`Viewing as ${name}`)) {
+  if (await strip.count() && (await strip.locator('.demo-viewing strong').textContent().catch(() => null)) === name) {
     await page.getByRole('banner').getByRole('link', { name: 'Nauru Leave Desk', exact: true }).click();
-    await expect(page.locator('.demo-strip')).toContainText(`Viewing as ${name}`);
+    await expect(page.locator('.demo-viewing strong')).toHaveText(name);
     await expect(page.locator('.modal')).toHaveCount(0);
     await page.waitForTimeout(300);
     return;
   }
   const card = page.locator('.persona-card', { hasText: name }).first();
   if (!(await card.isVisible().catch(() => false))) {
-    const direct = page.getByRole('button', { name: /^Viewing as/ });
-    const viewer = page.locator('.demo-strip summary').filter({ hasText: 'Viewing as' });
+    const direct = page.locator('.demo-strip').getByRole('button', { name: 'Switch user' });
     if (await direct.isVisible().catch(() => false)) {
       await direct.click();
-    } else if (await viewer.count()) {
-      await viewer.click();
-      await page.getByRole('menuitem', { name: 'Switch person…' }).click();
     } else {
       await page.getByRole('button', { name: /Start demo|Choose a persona/ }).click();
     }
   }
   await card.click();
-  await expect(page.locator('.demo-strip')).toContainText(`Viewing as ${name}`);
+  await expect(page.locator('.demo-viewing strong')).toHaveText(name);
   await expect(page.locator('.modal')).toHaveCount(0);
   await page.waitForTimeout(300);
 }

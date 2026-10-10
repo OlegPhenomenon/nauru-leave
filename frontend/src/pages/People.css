@@ -1,23 +1,12 @@
-/* Row ⋯ menus: the marker itself is the affordance — no extra caret. */
-.row-menu > summary::after {
-  content: none;
-}
-.row-menu > summary {
-  min-width: 2.5rem;
-  justify-content: center;
-  font-weight: var(--fw-strong);
-  color: var(--text-muted);
-}
-.row-menu[open] > summary,
-.row-menu > summary:hover {
-  color: var(--brand);
+.link-sm {
+  display: inline-block;
+  margin-left: var(--sp-2);
+  font-size: var(--fs-meta);
+  text-decoration: none;
 }
 
-.panel td { vertical-align: middle; }
-.panel td.row-actions { text-align:right; }
-.person-page .kv-row { grid-template-columns: minmax(12rem, 1fr) minmax(0, 2fr); }
-.link-sm { display:inline-block; margin-left:8px; font-size:var(--fs-small); text-decoration:none; }
-.unit-added { background:var(--brand-tint); padding:4px 8px; border-radius:var(--r-control); }
-.modal .field input:not([type=checkbox]):not([type=radio]), .modal .field select, .modal .field textarea { width:100%; max-width:28rem; }
-.modal fieldset { border:0; padding:0; min-width:0; }
-@media (max-width:700px) { .person-page .kv-row { grid-template-columns:1fr; gap:var(--sp-2); } .toolbar .field { width:100%; } }
+.unit-added {
+  background: var(--brand-tint);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-control);
+}
