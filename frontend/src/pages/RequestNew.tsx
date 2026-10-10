@@ -143,6 +143,7 @@ export default function RequestNew() {
   const [previewErr, setPreviewErr] = useState<ApiError | null>(null);
 
   const [draft, setDraft] = useState<RequestDetail | null>(null);
+  const [previousDraft, setPreviousDraft] = useState<RequestDetail | null>(null);
   // File already uploaded against the current draft — don't upload twice on retry.
   const uploadedFor = useRef<string | null>(null);
   const [busy, setBusy] = useState<'send' | 'draft' | null>(null);
@@ -219,7 +220,18 @@ export default function RequestNew() {
         .finally(() => setPreviewPending(false));
     }, 350);
     return () => clearTimeout(debounce.current);
-  }, [input]);
+  }, [input, today]);
+
+  function startNewRequest() {
+    setPreviousDraft(draft);
+    setDraft(null);
+    setEmployeeId(0);
+    setFile(null);
+    uploadedFor.current = null;
+    createKey.current = newIdempotencyKey();
+    setSubmitKey(null);
+    setFormErr(null);
+  }
 
   async function saveDraft(): Promise<RequestDetail | null> {
     if (!input) return null;
@@ -281,8 +293,8 @@ export default function RequestNew() {
         key,
       );
       toast(
-        paperMode
-          ? `Paper request sent for ${people.find((p) => p.id === employeeId)?.full_name ?? 'the employee'}.`
+        r.source === 'paper'
+          ? `Paper request sent for ${r.employee.full_name}.`
           : 'Request sent for approval.',
       );
       navigate(`/requests/${r.id}`, { state: { submitted: true } });
@@ -333,7 +345,7 @@ export default function RequestNew() {
         }
         primary={
           isHr && !paperMode ? (
-            <button type="button" className="btn btn-secondary" onClick={() => setPaperOn(true)}>
+            <button type="button" className="btn btn-secondary" disabled={!!draft || !!busy} onClick={() => setPaperOn(true)}>
               Enter a paper form
             </button>
           ) : undefined
@@ -342,17 +354,25 @@ export default function RequestNew() {
 
       <div className="req-form">
         {formErr ? <ErrBox error={formErr} /> : null}
+        {draft ? <div className="alert" role="status">
+          <p>This draft is for {draft.employee.full_name} ({draft.source === 'paper' ? 'paper form' : 'your own request'}).
+            To change the person or request for yourself, start a new request. Its documents stay with this draft.</p>
+          <button type="button" className="btn btn-secondary" disabled={!!busy} onClick={startNewRequest}>Start a new request</button>
+        </div> : null}
+        {previousDraft ? <p role="status">New request started. <Link to={`/requests/${previousDraft.id}`}>The draft for {previousDraft.employee.full_name}</Link> is still saved separately. Choose who this new request is for; add its document again if needed.</p> : null}
 
         {paperMode ? (
           <>
             <div className="field">
               <label className="field-label" htmlFor="paper-employee">Employee</label>
-              <PersonPicker people={people} value={employeeId} onChange={setEmployeeId} />
+              {draft ? <div className="picker-selected"><strong>{draft.employee.full_name}</strong></div>
+                : <PersonPicker people={people} value={employeeId} onChange={setEmployeeId} disabled={!!busy} />}
               <span className="field-hint">
                 For someone without a login or who handed in the form on paper.{' '}
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
+                  disabled={!!draft || !!busy}
                   onClick={() => setPaperOn(false)}
                 >
                   Request for myself instead
@@ -430,6 +450,7 @@ export default function RequestNew() {
               }}
             >
               <input
+                key={createKey.current}
                 type="file"
                 className="visually-hidden"
                 accept=".pdf,.png,.jpg,.jpeg"
@@ -469,6 +490,7 @@ export default function RequestNew() {
               }}
             >
               <input
+                key={createKey.current}
                 type="file"
                 className="visually-hidden"
                 accept=".pdf,.png,.jpg,.jpeg"

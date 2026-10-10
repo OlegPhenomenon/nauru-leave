@@ -630,6 +630,18 @@ pub fn update_draft(
         model::check_version(&req, expected_version)?;
         let ctx = request_ctx(tx, &req, today)?;
         authz::require(tx, actor, Action::EditDraft, &Resource::Request(&ctx))?;
+        if input.employee_id.is_some_and(|id| id != req.employee_id)
+            || (if input.paper { "paper" } else { "self" }) != req.source
+        {
+            return Err(DomainError::validation(
+                "This draft's employee and source cannot change. Start a new request instead.",
+            ));
+        }
+        if req.source == "paper" && input.paper_received_date.is_none() {
+            return Err(DomainError::validation(
+                "paper request needs paper_received_date",
+            ));
+        }
         validate_range(
             tx,
             input.leave_type_id,
@@ -651,6 +663,12 @@ pub fn update_draft(
                 input.note
             ],
         )?;
+        if req.source == "paper" {
+            tx.execute(
+                "UPDATE leave_requests SET paper_received_date=?2 WHERE id=?1",
+                params![request_id, input.paper_received_date.map(|d| date_s(&d))],
+            )?;
+        }
         model::bump_version(tx, request_id, &now_ts)?;
         audit::log(
             tx,
@@ -662,6 +680,7 @@ pub fn update_draft(
             Some(request_id),
             serde_json::json!({}),
         )?;
+        notify::record_change(tx, clock, actor.user_id, "request.update")?;
         Ok(())
     })
 }

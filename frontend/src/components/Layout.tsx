@@ -72,8 +72,10 @@ function MailboxDrawer({
   loading,
   error,
   onClose,
+  onRefresh,
 }: {
   me: Me;
+  onRefresh: () => void;
   items: MailboxItem[];
   loading: boolean;
   error: ApiError | null;
@@ -97,12 +99,13 @@ function MailboxDrawer({
     <aside className="drawer" role="dialog" aria-label="Emails">
       <div className="drawer-head">
         <strong>Emails sent by the system</strong>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onRefresh} disabled={loading}>Refresh</button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
           ✕ Close
         </button>
       </div>
       <div className="drawer-body">
-        <p className="muted small">In the demo, no real email leaves the system — every message lands here.</p>
+        <p className="muted small">In the demo, no real email leaves the system — every message lands here. Delivery can take a few seconds; this list refreshes automatically.</p>
         <div className="tabs" role="tablist" aria-label="Whose emails">
           <button type="button" role="tab" aria-selected={!all} className={!all ? 'active' : ''} onClick={() => setAll(false)}>
             To {me.user.display_name} ({mine.length})
@@ -141,6 +144,7 @@ function MoveDateModal({ config, onClose }: { config: AppConfig; onClose: () => 
       await post('/demo/clock', { date });
       await refreshConfig();
       await refreshMe();
+      window.dispatchEvent(new Event('nld:data-changed'));
       window.dispatchEvent(new Event('nld:counts-changed'));
       toast(`Demo date moved to ${fmtDate(date)}.`);
       onClose();
@@ -427,8 +431,15 @@ export default function Layout() {
         : Promise.resolve(null),
     // Refresh the count as the demo day / persona / page changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isDemo, meId, location.pathname, switching],
+    [isDemo, meId, location.pathname, switching, countsVersion, mailboxOpen],
   );
+  // The outbox can deliver after the action response. Poll the strip too,
+  // including while the drawer is closed, so its personal count catches up.
+  useEffect(() => {
+    if (!isDemo || !meId || switching) return;
+    const timer = window.setInterval(mailbox.reload, 3000);
+    return () => window.clearInterval(timer);
+  }, [isDemo, meId, switching, mailbox.reload]);
   const myMailCount =
     me && mailbox.data
       ? mailbox.data.items.filter((m) => m.to_email === me.user.email).length
@@ -575,6 +586,7 @@ export default function Layout() {
           items={mailbox.data?.items ?? []}
           loading={mailbox.loading}
           error={mailbox.error}
+          onRefresh={mailbox.reload}
           onClose={() => setMailboxOpen(false)}
         />
       ) : null}

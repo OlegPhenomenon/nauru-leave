@@ -1566,3 +1566,89 @@ async fn cli_create_logs_in_with_password_and_totp_in_production() {
     assert_eq!(c.call("GET","/api/me",json!({})).await.0,401);
     c.ok("POST","/api/auth/totp",json!({"code":code})).await;let me=c.ok("GET","/api/me",json!({})).await;assert_eq!(me["user"]["email"],"cli@example.test");assert_eq!(me["totp_ok"],true);
 }
+
+#[tokio::test]
+async fn u03_draft_identity_rejected_and_paper_date_saved() {
+    let f = Fixture::new(Mode::Demo).await;
+    let mut c = f.client();
+    c.start().await;
+    c.login("Maria Santos").await;
+    let people = c.ok("GET", "/api/employees", json!({})).await;
+    let person = |name: &str| {
+        people["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["full_name"] == name)
+            .unwrap()["id"]
+            .clone()
+    };
+    let mut input = json!({"employee_id":person("Alexei Novak"),"source":"paper",
+        "paper_received_date":"2026-10-05","leave_type_id":1,
+        "start_date":"2026-12-14","end_date":"2026-12-14"});
+    let draft = c.ok("POST", "/api/requests", input.clone()).await;
+    let path = format!("/api/requests/{}", draft["id"]);
+    let (status, _) = c.upload(&format!("{path}/attachments"), "original.pdf", b"%PDF-1.4 original document", &[("sensitivity", "normal")]).await;
+    assert_eq!(status, StatusCode::OK);
+    let draft = c.ok("GET", &path, json!({})).await;
+    let sbx = &c.cookies["nld_sbx"];
+    let conn = nauru_leave::db::open(&f.dir.join(format!("sandboxes/{sbx}-g1.sqlite"))).unwrap();
+    let outbox_before: i64 = conn.query_row("SELECT count(*) FROM notifications", [], |r| r.get(0)).unwrap();
+    input["expected_version"] = draft["version"].clone();
+    let mut other = input.clone();
+    other["employee_id"] = person("Nia Fox");
+    let (status, error) = c.call("PUT", &path, other).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error["error"]["code"], "validation");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Start a new request"));
+    let mut own = input.clone();
+    own["source"] = json!("self");
+    own.as_object_mut().unwrap().remove("employee_id");
+    assert_eq!(
+        c.call("PUT", &path, own).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut invalid_source = input.clone();
+    invalid_source["source"] = json!("unknown");
+    assert_eq!(c.call("PUT", &path, invalid_source).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    let unchanged = c.ok("GET", &path, json!({})).await;
+    assert_eq!(unchanged["version"], draft["version"]);
+    assert_eq!(unchanged["employee"], draft["employee"]);
+    assert_eq!(unchanged["audit"], draft["audit"]);
+    assert_eq!(unchanged["paper_received_date"], "2026-10-05");
+    let outbox_rejected: i64 = conn.query_row("SELECT count(*) FROM notifications", [], |r| r.get(0)).unwrap();
+    assert_eq!(outbox_rejected, outbox_before);
+    assert_eq!(unchanged["attachments"], draft["attachments"]);
+    assert_eq!(unchanged["attachments"].as_array().unwrap().len(), 1);
+    input["paper_received_date"] = json!("2026-10-06");
+    let updated = c.ok("PUT", &path, input.clone()).await;
+    let outbox_after: i64 = conn
+        .query_row("SELECT count(*) FROM notifications", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(outbox_after, outbox_before + 1);
+    assert!(updated["audit"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["action"] == "request.update"));
+    assert_eq!(updated["employee"], draft["employee"]);
+    assert_eq!(updated["source"], "paper");
+    assert_eq!(updated["paper_received_date"], "2026-10-06");
+    assert_eq!(
+        updated["version"].as_i64(),
+        Some(draft["version"].as_i64().unwrap() + 1)
+    );
+    assert_eq!(c.call("PUT", &path, input).await.0, StatusCode::CONFLICT);
+    let submitted = c
+        .ok(
+            "POST",
+            &format!("{path}/submit"),
+            json!({"expected_version":updated["version"]}),
+        )
+        .await;
+    assert_eq!(submitted["employee"], draft["employee"]);
+    assert_eq!(submitted["paper_received_date"], "2026-10-06");
+}

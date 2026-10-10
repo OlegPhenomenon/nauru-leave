@@ -320,6 +320,9 @@ export function EditDraftModal({ ctx }: { ctx: ModalCtx }) {
           confirm={() =>
             void run(async () => {
               await put<RD>(`/requests/${d.id}`, {
+                employee_id: d.employee.id,
+                source: d.source,
+                paper_received_date: d.paper_received_date,
                 leave_type_id: fields.leave_type_id,
                 start_date: fields.start_date,
                 end_date: fields.end_date,

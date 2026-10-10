@@ -137,6 +137,18 @@ endpoints use it. The client accepts either `{items|rows: []}` or a bare array
   fetched through the same-origin API and downloaded as files. Report columns
   use explicit labels and formatted dates/durations.
 
+- Changing the demo date refreshes mounted `useApi` queries in the background through
+  `nld:data-changed`, retaining page and form state. Request previews and reports also
+  refetch on business-date changes. Emails refetches on opening and mutation events;
+  a three-second poll includes delayed outbox deliveries in the drawer and strip count.
+  The strip and personal tab count only mail addressed to the active user; Everyone
+  counts the complete demo mailbox. Refresh is also available in the drawer.
+- A saved new-request draft pins its person and source. “Start a new request” retains
+  the old draft, resets create/submit intent keys and clears the selected document;
+  the form announces the separate draft with a link. Same-person retries retain the
+  draft, and paper received-date edits persist. Send confirmation uses the server's
+  saved employee name.
+
 ## Deliberate product choices
 
 - Team calendar is visible to every signed-in user (spec §10: colleagues see
@@ -187,6 +199,6 @@ npx playwright test
 
 Keep all Cargo artifacts in `backend/target`. Rebuild the release backend after each frontend build so the embedded UI matches the tested source, and use a fresh `NLD_DATA_DIR` for the final full run. The larger sandbox quota is only a local test setting. Default `E2E_BASE` is `http://127.0.0.1:5173`. Chromium must already be installed or be installed once with `npx playwright install chromium`.
 
-Each test has a fresh browser context and creates its own sandbox. The suites cover the main lifecycle, new-person lifecycle, audit fixes and R01/R02/R03 regressions. `click-budget.spec.ts` adds thirteen measured task flows and cross-page shortcut checks. Its helper counts every action click, checks the budget, and checks visible body text before and after each click and after form input; date/form selections are not counted as navigation clicks. Fixture creation and persona selection happen before measurement.
+Each test has a fresh browser context and creates its own sandbox. The suites cover the main lifecycle, new-person lifecycle, audit fixes and R01/R02/R03 regressions. `review_1093ab7.spec.ts` covers live date/mailbox refresh and interrupted paper-request recovery. `click-budget.spec.ts` adds thirteen measured task flows and cross-page shortcut checks. Its helper counts every action click, checks the budget, and checks visible body text before and after each click and after form input; date/form selections are not counted as navigation clicks. Fixture creation and persona selection happen before measurement.
 
 Final run logs: `docs/test-logs/frontend.log` and `docs/test-logs/e2e-playwright.log`. Stop both processes after testing. A fresh directory prevents stale seeded templates when using a newly built backend.

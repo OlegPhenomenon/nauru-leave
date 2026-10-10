@@ -52,6 +52,7 @@ function fieldLabel(field: string): string {
 
 /* Ordered matches against the raw validation message. First hit wins. */
 const VALIDATION_RULES: [RegExp, string | ((m: RegExpMatchArray) => string)][] = [
+  [/draft's employee and source cannot change/i, 'This draft is saved for a different person or source. Start a new request instead.'],
   [/bad date|invalid date|malformed date/i, 'Enter a full date (day, month, 4-digit year).'],
   [
     /end_date before start_date|to before from|to_date before from_date|valid_to before valid_from|end before start/i,

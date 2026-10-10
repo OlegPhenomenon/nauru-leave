@@ -10,10 +10,12 @@ export function PersonPicker({
   people,
   value,
   onChange,
+  disabled = false,
 }: {
   people: EmployeeListItem[];
   value: number;
   onChange: (id: number) => void;
+  disabled?: boolean;
 }) {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -68,6 +70,7 @@ export function PersonPicker({
         </span>
         <button
           type="button"
+          disabled={disabled}
           className="btn btn-ghost btn-sm"
           onClick={() => {
             onChange(0);
@@ -85,6 +88,7 @@ export function PersonPicker({
   return (
     <div className="picker" ref={boxRef}>
       <input
+        disabled={disabled}
         type="text"
         role="combobox"
         id="paper-employee"
@@ -137,6 +141,7 @@ export function PersonPicker({
                 const idx = flatIndex;
                 return (
                   <button
+                    disabled={disabled}
                     key={p.id}
                     type="button"
                     role="option"

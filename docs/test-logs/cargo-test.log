@@ -1,18 +1,18 @@
    Compiling nauru-leave v0.1.0 (/Users/oleghasjanov/projects/nauru/backend)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.13s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.74s
      Running unittests src/lib.rs (target/debug/deps/nauru_leave-7bc4684e807820ee)
 
 running 8 tests
 test http::ratelimit::tests::window_limits ... ok
 test http::ratelimit::tests::bucket_limits ... ok
 test imports_exports::tests::csv_formula_safe ... ok
-test imports_exports::tests::employees_import ... ok
-test imports_exports::tests::historical_modes ... ok
 test admin::tests::settings_authorization_and_transaction ... ok
-test imports_exports::tests::import_preview_errors ... ok
+test imports_exports::tests::employees_import ... ok
 test imports_exports::tests::import_idempotent ... ok
+test imports_exports::tests::import_preview_errors ... ok
+test imports_exports::tests::historical_modes ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
 
      Running unittests src/main.rs (target/debug/deps/nauru_leave-d3d5c20e65a21dc1)
 
@@ -30,26 +30,26 @@ test f03_null_never_and_zero_period_start_remain_distinct ... ok
 test f02_month_is_validated_by_http ... ok
 test f03_expiry_zero_and_never_have_different_business_effects ... ok
 test f02_monthly_http_requires_month_and_preserves_fact ... ok
-test f11_future_policy_is_not_an_effective_current_policy ... ok
 test f11_cached_sensitive_revision_stays_masked_after_reclassification ... ok
+test f11_future_policy_is_not_an_effective_current_policy ... ok
 test f11_sensitive_snapshot_does_not_unmask_old_material ... ok
-test f06_absence_history_includes_inactive_employee_and_day_assignment ... ok
 test f11_future_only_policy_fails_preview_and_submit_over_http ... ok
+test f06_absence_history_includes_inactive_employee_and_day_assignment ... ok
 test f06_reopened_balance_report_uses_business_reservation_dates ... ok
-test f11_settings_reject_stale_version ... ok
-test f05_actual_worked_dates_return_original_accounts ... ok
 test f07_export_snapshot_survives_later_transfer_and_other_scope ... ok
+test f05_actual_worked_dates_return_original_accounts ... ok
+test f11_settings_reject_stale_version ... ok
 test f11_rule_change_warns_without_rewriting_submitted_conditions ... ok
 test g01_limit_reservation_expiry_and_late_return ... ok
-test migration_keeps_legacy_rows_and_export_contents ... ok
 test f11_submitted_conditions_are_frozen_and_future_is_not_used ... ok
-test f13_revoke_used_exception_keeps_frozen_days ... ok
 test f11_settings_versions_increment_and_conflict_without_overwrite ... ok
+test migration_keeps_legacy_rows_and_export_contents ... ok
+test f13_revoke_used_exception_keeps_frozen_days ... ok
 test g01_carryover_limit_expires_excess_once ... ok
-test g01_carryover_below_limit_and_unlimited_returns ... ok
 test migration_upgrades_legacy_demo_template_with_request_history ... ok
+test g01_carryover_below_limit_and_unlimited_returns ... ok
 
-test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.75s
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.64s
 
      Running tests/audit_fixes_b.rs (target/debug/deps/audit_fixes_b-552adf6f76102e74)
 
@@ -57,9 +57,9 @@ running 12 tests
 test f10_paper_entry_authorship_must_not_keep_access_after_hr_scope_is_revoked ... ok
 test f08_final_delegate_must_be_able_to_read_the_request_they_must_decide ... ok
 test p01_production_requires_scanner ... ok
+test f09_tech_admin_cannot_grant_business_roles ... ok
 test adjustment_decide_accepts_an_empty_note ... ok
 test p01_demo_keeps_built_in_scan ... ok
-test f09_tech_admin_cannot_grant_business_roles ... ok
 test f12_parallel_adjustment_commands_are_one_intent ... ok
 test f10_http_former_hr_loses_all_paper_access_and_receipts ... ok
 test f09_http_accounts_linking_and_independent_grants ... ok
@@ -67,83 +67,84 @@ test f12_replays_draft_decision_actual_upload_and_import ... ok
 test p01_real_instream_verdicts_and_failures_are_enforced ... ok
 test f08_http_delegates_have_only_current_step_access ... ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.85s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.17s
 
      Running tests/audit_round2.rs (target/debug/deps/audit_round2-690e1feba67ea5ea)
 
 running 16 tests
 test f11_migration_preserves_policyless_type_conditions ... ok
 test f09_hr_cannot_delegate_another_users_authority_to_itself ... ok
-test f08_delegation_only_session_requires_totp_even_after_login ... ok
 test f09_medical_grants_stay_within_granters_medical_scope ... ok
+test f08_delegation_only_session_requires_totp_even_after_login ... ok
 test f04_monthly_fact_prevents_annual_recredit_after_reverse_switch ... ok
 test f07_other_units_export_does_not_replace_day_baseline ... ok
 test f01_history_excludes_child_proposals_until_approved ... ok
-test g01_amendment_carryover_delta_shares_limit_without_money_reservation ... ok
 test f12_medical_upload_replays_redacted_receipt_without_view_permission ... ok
+test g01_amendment_carryover_delta_shares_limit_without_money_reservation ... ok
 test f06_past_balances_keep_deactivated_staff_and_dated_reservations ... ok
-test f04_annual_fact_covers_months_after_mode_switch ... ok
-test g01_amendment_reuses_only_its_parent_carryover_allowance ... ok
-test p01_slow_clamd_does_not_block_concurrent_get ... ok
-test g01_two_requests_share_carryover_limit_before_and_after_close ... ok
 test f08_delegation_only_password_login_requests_second_factor ... ok
+test g01_amendment_reuses_only_its_parent_carryover_allowance ... ok
+test f04_annual_fact_covers_months_after_mode_switch ... ok
+test g01_two_requests_share_carryover_limit_before_and_after_close ... ok
+test p01_slow_clamd_does_not_block_concurrent_get ... ok
 test g01_released_reservation_and_return_cannot_expand_closed_limit ... ok
 
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.42s
 
      Running tests/authz_tests.rs (target/debug/deps/authz_tests-2d100dc27a58062d)
 
 running 7 tests
 test adjustment_two_person ... ok
 test sensitive_view_masked ... ok
-test medical_access ... ok
-test tech_admin_limits ... ok
 test transfer_access ... ok
-test no_self_approval ... ok
 test delegation_window ... ok
+test no_self_approval ... ok
+test tech_admin_limits ... ok
+test medical_access ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.78s
 
      Running tests/final_admin_regressions.rs (target/debug/deps/final_admin_regressions-30e808b2c61b42ed)
 
 running 1 test
 test seeded_entitlements_replay_without_changing_any_balance ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
 
      Running tests/http.rs (target/debug/deps/http-9f05046028a92504)
 
-running 28 tests
-test colleague_calendar_masks_sensitive_leave_as_away ... ok
+running 29 tests
 test csrf_required ... ok
+test colleague_calendar_masks_sensitive_leave_as_away ... ok
 test delete_draft_removes_attachment_after_commit ... ok
+test import_idempotent ... ok
 test csv_formula_safe ... ok
 test comment_is_audited_and_notifies ... ok
-test import_idempotent ... ok
 test idempotency_replay_rechecks_medical_permissions ... ok
-test import_preview_errors ... ok
 test creation_limit_and_cap ... ok
+test import_preview_errors ... ok
 test authenticated_read_routes_return_contract_shapes ... ok
-test notification_worker_and_registry_marker ... ok
-test medical_access ... ok
-test production_has_no_demo_routes ... ok
-test new_privileges_require_fresh_totp ... ok
-test every_api_route_is_registered ... ok
-test isolation_other_employee ... ok
 test preview_cannot_read_another_employee ... ok
-test lifecycle_survives_restart_and_sweeps ... ok
+test notification_worker_and_registry_marker ... ok
+test production_has_no_demo_routes ... ok
+test every_api_route_is_registered ... ok
+test medical_access ... ok
+test new_privileges_require_fresh_totp ... ok
+test isolation_other_employee ... ok
 test smtp_delivery_happens_outside_database_transaction ... ok
-test sandbox_isolation ... ok
+test lifecycle_survives_restart_and_sweeps ... ok
 test scoped_hr_import_export_and_download_recheck ... ok
+test sandbox_isolation ... ok
 test server_backup_restore_file_layout ... ok
-test main_scenario_export ... ok
 test stale_version_and_decision_replay ... ok
+test main_scenario_export ... ok
 test settings_mutations_and_drift ... ok
 test upload_checks ... ok
+test u03_draft_identity_rejected_and_paper_date_saved ... ok
 test cli_create_logs_in_with_password_and_totp_in_production ... ok
 test production_password_totp_and_lockout ... ok
 
-test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.19s
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.46s
 
      Running tests/idempotency.rs (target/debug/deps/idempotency-0506a171eeb8b2e0)
 
@@ -153,30 +154,30 @@ test idempotent_decide ... ok
 test ledger_immutable ... ok
 test accrual_idempotent ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
 
      Running tests/lifecycle.rs (target/debug/deps/lifecycle-e26f165160404f3d)
 
 running 10 tests
+test stale_version ... ok
+test respond_text_only ... ok
 test withdraw_releases ... ok
+test unassigned_step_visible ... ok
+test reject_releases ... ok
 test revise_restarts_route ... ok
+test cancel_past_dates_refused ... ok
+test full_cancel_closes_parent ... ok
 test amendment_per_account_delta ... ok
 test partial_cancel ... ok
-test respond_text_only ... ok
-test unassigned_step_visible ... ok
-test cancel_past_dates_refused ... ok
-test reject_releases ... ok
-test stale_version ... ok
-test full_cancel_closes_parent ... ok
 
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.78s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
 
      Running tests/message_visibility.rs (target/debug/deps/message_visibility-b9de09c6e074d30c)
 
 running 1 test
 test sensitive_questions_and_replies_are_visible_only_to_their_asker_and_owner_or_hr ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
 
      Running tests/original_acceptance.rs (target/debug/deps/original_acceptance-562bacb503d27487)
 
@@ -193,7 +194,7 @@ running 2 tests
 test production_init_refuses_demo_data_and_is_idempotent ... ok
 test operator_user_lifecycle_is_atomic_audited_and_secret_safe ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
 
      Running tests/reaudit_regressions.rs (target/debug/deps/reaudit_regressions-045231835f79273f)
 
@@ -208,71 +209,71 @@ test r03_failed_document_clean_replacement_parent_evidence_and_medical_privacy .
 test r02_pending_rejected_different_days_and_manual_adjustments ... ok
 test r03_pending_failed_quarantined_and_lost_clean_gate_frozen_rule ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.25s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.31s
 
      Running tests/regressions.rs (target/debug/deps/regressions-ad1429cf53a0008c)
 
 running 18 tests
+test cancellation_response_is_text_only ... ok
 test auditor_cannot_comment ... ok
 test delete_draft_breaks_revision_cycle ... ok
 test medical_uploader_needs_medical_role ... ok
 test final_rejects_while_needs_information ... ok
-test cancellation_response_is_text_only ... ok
-test cancellation_approval_rechecks_past_days ... ok
-test amendment_revision_excludes_parent_and_own_delta ... ok
 test past_amendment_requires_hr_correction ... ok
+test cancellation_approval_rechecks_past_days ... ok
 test effective_revision_controls_masking ... ok
 test preview_authorizes_employee_and_parent ... ok
+test amendment_revision_excludes_parent_and_own_delta ... ok
 test reassign_cannot_escalate_hr ... ok
 test scoped_hr_cannot_run_global_jobs ... ok
-test revise_tight_balance ... ok
-test scoped_staff_and_colleague_cannot_access_other_unit_files ... ok
-test stale_actor_cannot_use_revoked_grant_or_delegation ... ok
 test transfer_requires_target_scope_and_defers_future_reassign ... ok
+test stale_actor_cannot_use_revoked_grant_or_delegation ... ok
 test close_period_preserves_reserved_and_later_consumed_minutes ... ok
+test scoped_staff_and_colleague_cannot_access_other_unit_files ... ok
+test revise_tight_balance ... ok
 test amend_and_revise_validate_type_range_and_attachment ... ok
 
-test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.73s
 
      Running tests/scenario.rs (target/debug/deps/scenario-4eda59bc2f16bcb3)
 
 running 9 tests
-test isolation_other_employee ... ok
-test part_time_schedule ... ok
 test half_day_and_holidays ... ok
-test step_outcomes_validated ... ok
-test year_boundary_allocation ... ok
 test overlap_rules ... ok
-test insufficient_blocks ... ok
 test main_scenario ... ok
+test isolation_other_employee ... ok
+test step_outcomes_validated ... ok
+test part_time_schedule ... ok
+test year_boundary_allocation ... ok
+test insufficient_blocks ... ok
 test concurrent_last_days ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.73s
 
      Running tests/system.rs (target/debug/deps/system-679f0b93e41e357c)
 
 running 5 tests
 test email_minimal ... ok
-test notification_retry ... ok
 test upload_checks ... ok
+test notification_retry ... ok
 test seed_builds ... ok
 test backup_restore_roundtrip ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
 
      Running tests/ux_backend.rs (target/debug/deps/ux_backend-ea7ecd1c1c8a20b9)
 
 running 8 tests
-test close_preview_obeys_close_authz_and_rejects_unfinished_year ... ok
 test plain_days_name_half_day_and_part_time_post_integer_minutes ... ok
 test accrual_preview_route_is_read_only_and_requires_service_hr ... ok
+test close_preview_obeys_close_authz_and_rejects_unfinished_year ... ok
 test legacy_headers_and_staff_alias_on_people_and_history_work ... ok
 test preview_tracks_grace_expiry_and_legacy_op_key_facts ... ok
 test bad_days_and_unknown_staff_are_row_errors ... ok
 test close_preview_matches_commit_writes_nothing_and_detects_closed ... ok
 test notification_identity_only_for_visible_hr_rows_and_admin_address_unchanged ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.08s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
 
    Doc-tests nauru_leave
 

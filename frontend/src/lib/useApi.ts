@@ -17,9 +17,9 @@ export function useApi<T>(fn: () => Promise<T>, deps: readonly unknown[]): ApiSt
   const fnRef = useRef(fn);
   fnRef.current = fn;
 
-  const run = useCallback(() => {
+  const run = useCallback((background = false) => {
     const id = ++seq.current;
-    setLoading(true);
+    if (!background) setLoading(true);
     setError(null);
     fnRef
       .current()
@@ -36,7 +36,16 @@ export function useApi<T>(fn: () => Promise<T>, deps: readonly unknown[]): ApiSt
   }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(run, deps);
+  useEffect(() => run(), deps);
+  useEffect(() => {
+    const refresh = () => run(true);
+    window.addEventListener('nld:data-changed', refresh);
+    return () => {
+      window.removeEventListener('nld:data-changed', refresh);
+      ++seq.current;
+    };
+  }, [run]);
 
-  return { data, error, loading, reload: run };
+  const reload = useCallback(() => run(), [run]);
+  return { data, error, loading, reload };
 }

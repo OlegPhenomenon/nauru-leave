@@ -250,7 +250,7 @@ export default function Reports() {
     }
     // The selected report and filters define the view; showHere uses this render's values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [report, unit, from, to, date]);
+  }, [report, unit, from, to, date, today]);
 
   const def = REPORTS.find((r) => r.id === report)!;
 

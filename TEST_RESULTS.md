@@ -5,14 +5,14 @@ Every result below comes from an actual run; the complete, unedited logs are in 
 
 | Log | Command | Result |
 |---|---|---|
-| [cargo-test.log](docs/test-logs/cargo-test.log) | `cd backend && cargo test` | **166 passed, 0 failed** |
+| [cargo-test.log](docs/test-logs/cargo-test.log) | `cd backend && cargo test --locked` | **167 passed, 0 failed** |
 | [cargo-clippy.log](docs/test-logs/cargo-clippy.log) | `cargo clippy --all-targets -- -D warnings` | clean |
-| [frontend.log](docs/test-logs/frontend.log) | `npx tsc --noEmit && npx vitest run && npx vite build` | tsc clean, **62 passed**, build OK |
-| [e2e-playwright.log](docs/test-logs/e2e-playwright.log) | `npx playwright test` against the rebuilt release backend in demo mode, fresh data directory and sandboxes on ports 18080/5173 | **33 passed, 0 failed** |
-| [release-build.log](docs/test-logs/release-build.log) | `touch build.rs && cargo build --release` after frontend build | release build OK |
+| [frontend.log](docs/test-logs/frontend.log) | `npm run typecheck && npm test && npm run build` | tsc clean, **74 passed**, build OK |
+| [e2e-playwright.log](docs/test-logs/e2e-playwright.log) | `npx playwright test` against the rebuilt release backend in demo mode, fresh data directory and sandboxes on ports 18080/5173 | **39 passed, 0 failed** |
+| [release-build.log](docs/test-logs/release-build.log) | `cargo build --release --locked` after frontend build | release build OK |
 | [n36-backup-restore.log](docs/test-logs/n36-backup-restore.log) | production install → backup → restore into an empty directory → continue the request | all checks as expected |
 
-Backend suites: lib 8 · audit_fixes_a 25 · audit_fixes_b 12 · audit_round2 16 · authz_tests 7 · final_admin_regressions 1 · http 28 ·
+Backend suites: lib 8 · audit_fixes_a 25 · audit_fixes_b 12 · audit_round2 16 · authz_tests 7 · final_admin_regressions 1 · http 29 ·
 idempotency 4 · lifecycle 10 · message_visibility 1 · original_acceptance 3 · provisioning 2 · reaudit_regressions 9 · regressions 18 · scenario 9 · system 5 · ux_backend 8.
 All tests use real SQLite databases and the real domain code; HTTP tests go through the real axum router.
 
@@ -33,7 +33,7 @@ already-closed button and HR recipient/request-link flows. Playwright selectors 
 tables and inline document sections; lifecycle, permission, privacy, retry and click-budget assertions remain enforced.
 
 Browser specs (Playwright, headless Chromium, release binary in demo mode):
-- `e2e/main-scenario.spec.ts` — 20 → 15 (5 reserved) → 15 → amend to 3 days → 17 → *Period ended*, still 17; then
+- `e2e/main-scenario.spec.ts` — 20 → 15 (5 reserved) → 15 → amend to 3 days → 17 → *Period ended* on the same open page without navigation, still 17; also
   opens the **original** request and its print view and checks that the in-force dates (9–11 Nov, 3 days) are shown
   and the original 9–13 Nov range appears only as history.
 - `e2e/new-scenario.spec.ts` — everything created through the UI, no seeded requests: new employee, new fictional
@@ -52,13 +52,26 @@ Browser specs (Playwright, headless Chromium, release binary in demo mode):
 - `frontend/e2e/final-integration.spec.ts` — two tests: the demo heading, sensitive question/answer pair in Approvals and Messages with other comments and reasons hidden; correction notice matches the navigation badge and links to Balances; another person's balance title, schedule-change conversion and Details disclosure.
 - `F05 round2: actual correction confirms second approval and preserves adjustment identity` replaces the old display-ID test name in `audit-round2.spec.ts`: the UI confirmation uses plain wording, while the created adjustment ID and amount are verified through the real API. Existing lifecycle, permission, privacy, ledger and retry assertions remain covered through the redesigned controls.
 
+- `frontend/e2e/review_1093ab7.spec.ts` — six regressions: date moves refresh the open request's phase and actions;
+  open balances refresh without losing unsaved request input; Emails refetches on opening, follows delayed delivery
+  while open, and keeps personal/Everyone/strip counts correct; a failed upload preserves the original draft
+  when starting for another person or switching to self; a same-person retry reuses the draft, uploads once and
+  saves the received date. Upload interruptions happen after the real draft creation response.
+
+Router test `http::u03_draft_identity_rejected_and_paper_date_saved` rejects employee/source contradictions and
+invalid sources without changing the version, audit, outbox or original attachment. An authorized same-person
+edit saves the paper received date with a version increment, audit event and outbox event; stale edits fail,
+and submission retains the saved person/date.
+
 Final integration also restored the accrual-preview route, corrected immutable consumption labels after an
 amendment, fixed half-day radio hit areas and allowed eligible employees to receive delegated approval
 authority. Empty valid reports remain downloadable as CSV; the original unit/month click-budget case covers this.
 
 L07 supporting-document notes: final approval uses the submitted revision's frozen requirement and checks clean-file presence independently of download authority. Router tests `r03_required_evidence_cannot_be_satisfied_only_by_quarantined_file`, `r03_pending_failed_quarantined_and_lost_clean_gate_frozen_rule` and `r03_failed_document_clean_replacement_parent_evidence_and_medical_privacy` cover pending, quarantined, scan-failed, lost-clean and replacement files, parent evidence and medical metadata/download denial. The UI explains the blocking requirement and disables final approval until a clean document exists.
 
-Recorded walkthrough of the new-scenario spec: [docs/media/demo-walkthrough.webm](docs/media/demo-walkthrough.webm).
+Walkthrough re-recorded on 2026-10-10 with `E2E_VIDEO=1 npx playwright test e2e/new-scenario.spec.ts` (1 passed):
+[docs/media/demo-walkthrough.webm](docs/media/demo-walkthrough.webm), 74.68 seconds. The current four demo-strip
+buttons are visible; the old Demo tools/More controls are absent. Sampled frames at 5, 35 and 65 seconds were inspected.
 
 ## Original acceptance checks N01–N38
 

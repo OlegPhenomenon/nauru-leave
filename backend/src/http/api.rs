@@ -837,6 +837,9 @@ fn paginate(mut items: Vec<Value>, q: &HashMap<String, String>) -> Res<Value> {
     Ok(json!({"items":items,"total":total}))
 }
 fn draft(v: &Value) -> Res<requests::DraftInput> {
+    if v.get("source").is_some_and(|s| s != "paper" && s != "self") {
+        return Err(DomainError::validation("source must be self or paper"));
+    }
     Ok(requests::DraftInput {
         employee_id: v["employee_id"].as_i64(),
         leave_type_id: admin::integer(v, "leave_type_id")?,

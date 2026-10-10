@@ -103,9 +103,10 @@ test('main scenario steps 1–5: balance, request, approval, amendment, time tra
   await expect(printHist.getByRole('row', { name: /13 Nov/ })).toHaveCount(1);
 
   // ---- 5. Time travel to 2026-11-12: period ended, balance still 17 ----
+  await goTo(page, `/requests/${reqId}`);
+  await expect(page.locator('.rq-status-text')).toContainText('starts');
   await moveDate(page, '2026-11-12');
   await expect(page.locator('.demo-strip')).toContainText('12 Nov 2026');
-  await goTo(page, `/requests/${reqId}`);
   await expect(page.locator('.rq-status-text')).toContainText('ended');
   await goTo(page, '/my');
   await expect(page.locator('body')).toContainText('17 days');

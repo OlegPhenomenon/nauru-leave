@@ -179,7 +179,7 @@ The demo-only endpoints return 404 in production.
 | GET | `/api/requests?scope=mine|team|all&status=&employee_id=&from=&to=` | → list of `RequestSummary` |
 | POST | `/api/requests/preview` | `DraftInput & { amend_of?: number; cancel_of?: number }` → `Preview` |
 | POST | `/api/requests` | `DraftInput` → `RequestDetail` (draft) |
-| PUT | `/api/requests/:id` | `DraftInput & { expected_version }` → `RequestDetail` (draft only) |
+| PUT | `/api/requests/:id` | `DraftInput & { expected_version }` → `RequestDetail` (draft only; employee/source are pinned) |
 | DELETE | `/api/requests/:id?expected_version=` | → 204 (draft only) |
 | GET | `/api/requests/:id` | → `RequestDetail` |
 | POST | `/api/requests/:id/submit` | `{ expected_version }` → `RequestDetail` |
@@ -194,6 +194,14 @@ The demo-only endpoints return 404 in production.
 | POST | `/api/requests/:id/attachments` | multipart `file`, `sensitivity` → `AttachmentMeta` |
 | GET | `/api/attachments/:id` | → file bytes (permission-checked each time) |
 | GET | `/api/approvals` | → `{ items: (RequestSummary & { step: Step; acting_for: UserRef | null; warnings: Warning[] })[], problems: (RequestSummary & { problem: string })[] }` (problems for hr: unassigned steps) |
+
+Draft edits reject a supplied `employee_id` different from the saved employee, or a `source` different from
+its saved source, with HTTP 422 `validation`: “This draft's employee and source cannot change. Start a new
+request instead.” Omitted `employee_id` retains the draft employee; `source` defaults to `self`, so editing
+a paper draft requires `source: 'paper'`. Paper drafts also require `paper_received_date`; edits save that
+date along with the revision under the same version check. Rejected edits leave the draft, audit and outbox
+unchanged. Documents remain attached to their original request. Values other than `self` or `paper` return
+422 `validation` with “source must be self or paper”.
 
 On a sensitive request, the employee and HR/medical HR within scope see all messages. Other authorized
 viewers see only questions they authored and answers following those questions. An answer belongs to the

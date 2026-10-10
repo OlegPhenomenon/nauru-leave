@@ -11,6 +11,7 @@ test('N38 + walkthrough: new employee, fictional policy, full lifecycle', async 
   await page.goto('/');
   await pick(page, 'Maria');
   await page.waitForURL('**/approvals');
+  await expect(page.getByRole('button', { name: /^(Demo tools|More)$/, exact: true })).toHaveCount(0);
 
   const serviceId = 'NPS-9101';
   const fullName = 'Kai Taloa';
