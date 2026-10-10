@@ -195,7 +195,7 @@ test('HR person shortcuts preserve employee and user context across pages', asyn
     await goTo(page, '/people');
     await page.getByLabel('Find a person', { exact: true }).fill('NPS-1001');
     const row = page.getByRole('row').nth(1).filter({ hasText: 'NPS-1001' });
-    await row.locator('summary').click(); await row.getByRole('menuitem', { name, exact: true }).click();
+    await row.getByRole('button', { name: 'Actions for Alexei Novak', exact: true }).click(); await row.getByRole('menuitem', { name, exact: true }).click();
   }
   await action('Correct balance…');
   await expect(page.locator('.modal')).toContainText('Alexei Novak');
@@ -212,8 +212,7 @@ test('HR person shortcuts preserve employee and user context across pages', asyn
   await expect(page.locator('.picker-selected')).toContainText('Alexei Novak');
   expect(new URL(page.url()).searchParams.get('employee')).toBe('8');
   await goTo(page, '/people');
-  await page.locator('.page-header summary').click();
-  await page.getByRole('menuitem', { name: 'Import people…' }).click();
+  await page.getByRole('button', { name: 'Import people…', exact: true }).click();
   await expect(page.locator('.modal').getByRole('heading', { name: 'Import people' })).toBeVisible();
   await expect(page.locator('.modal').getByRole('radio', { name: /^People —/ })).toBeChecked();
   await page.locator('.modal').getByRole('button', { name: 'Cancel', exact: true }).click();

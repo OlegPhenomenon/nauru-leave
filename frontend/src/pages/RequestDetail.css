@@ -1,5 +1,9 @@
 /* Request page — calm top, everything else behind disclosures. */
 
+.btn.btn-ghost.danger {
+  color: var(--err);
+}
+
 .rq-page {
   max-width: 960px;
   margin: 0 auto;

@@ -406,13 +406,13 @@ export function ImportDialog({
     >
       <fieldset disabled={busy} className="stack">
         <legend>What to import</legend>
-        {(['employees', 'opening_balances', 'historical_leave'] as const).map((value) => (
+        {(initialKind === 'employees' ? ['employees'] as const : ['opening_balances', 'historical_leave'] as const).map((value) => (
           <label key={value}>
             <input type="radio" name="import-kind" checked={kind === value} onChange={() => {
               previewSequence.current++;
               setKind(value); setPreview(null); setFile(null); setErr(null); setBusy(false);
             }} />{' '}
-            {importKindLabel(value)} — {value === 'employees' ? 'Add people to the staff list.' : value === 'opening_balances' ? 'Set the leave left at the start of a year.' : 'Record leave taken before using this desk.'}
+            {value === 'historical_leave' ? 'Past leave' : importKindLabel(value)} — {value === 'employees' ? 'Add people to the staff list.' : value === 'opening_balances' ? 'Set the leave left at the start of a year.' : 'Record leave taken before using this desk.'}
           </label>
         ))}
       </fieldset>

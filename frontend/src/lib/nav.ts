@@ -45,6 +45,14 @@ export function homeFor(me: Me, counts?: { approvals?: number | undefined } | un
 
 /** Primary bar items for each role. */
 export function navFor(me: Me, counts?: NavCounts): NavItem[] {
+  const items = roleNavFor(me, counts);
+  if (!me.employee) return items.filter((item) => item.to !== '/my');
+  return items.some((item) => item.to === '/my')
+    ? items
+    : [{ to: '/my', label: 'My leave' }, ...items];
+}
+
+function roleNavFor(me: Me, counts?: NavCounts): NavItem[] {
   const approvals: NavItem = { to: '/approvals', label: 'Approvals', count: counts?.approvals };
   if (isHr(me)) {
     return [
@@ -94,7 +102,7 @@ export function navFor(me: Me, counts?: NavCounts): NavItem[] {
 
 /** True when "My leave" is already a primary bar item for this user. */
 export function myLeaveInBar(me: Me): boolean {
-  return !isHr(me) && !isTechAdmin(me) && !isAuditor(me);
+  return navFor(me).some((item) => item.to === '/my');
 }
 
 /**

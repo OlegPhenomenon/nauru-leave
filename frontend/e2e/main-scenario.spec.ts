@@ -14,6 +14,15 @@ test('main scenario steps 1–5: balance, request, approval, amendment, time tra
   await expect(page.locator('body')).toContainText('Annual leave');
   await expect(page.locator('body')).toContainText('20 days');
   await expect(page.locator('body')).toContainText('fictional people and rules');
+  const demo = page.locator('.demo-strip');
+  await expect(demo.getByRole('button', { name: 'Switch user', exact: true })).toBeVisible();
+  await expect(demo.getByRole('button', { name: 'Change date…', exact: true })).toBeVisible();
+  await expect(demo.getByRole('button', { name: 'Reset demo…', exact: true })).toBeVisible();
+  await demo.getByRole('button', { name: /^Emails \(\d+\)$/ }).click();
+  const emails = page.getByRole('dialog', { name: 'Emails', exact: true });
+  await expect(emails).toBeVisible();
+  await emails.getByRole('button', { name: '✕ Close', exact: true }).click();
+  await expect(emails).toHaveCount(0);
 
   // ---- 2. New request 9–13 Nov 2026: preview, warnings, route, submit ----
   await goTo(page, '/requests/new');
@@ -45,6 +54,11 @@ test('main scenario steps 1–5: balance, request, approval, amendment, time tra
 
   // ---- 4. Amend to 9–11 Nov, approve again, balance becomes 17 ----
   await goTo(page, `/requests/${reqId}`);
+  const actions = page.locator('.rq-summary > .btn-row');
+  await expect(actions.getByRole('button', { name: 'Change dates', exact: true })).toBeVisible();
+  await expect(actions.getByRole('button', { name: 'Cancel days', exact: true })).toBeVisible();
+  await expect(actions.getByRole('link', { name: 'Print', exact: true })).toBeVisible();
+  await expect(actions.locator('.menu')).toHaveCount(0);
   await page.getByRole('button', { name: /Change dates/ }).click();
   await expect(
     page.locator('.modal .field:has-text("First day") input'),

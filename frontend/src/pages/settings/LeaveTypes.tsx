@@ -9,7 +9,6 @@ import {
   ErrBox,
   Field,
   Loading,
-  Menu,
   Modal,
   PageHeader,
   PolicyBadge,
@@ -516,7 +515,7 @@ function TypePanel({
           <button type="button" className="btn btn-secondary" onClick={onChangeRules} disabled={busy}>
             Change rules…
           </button>
-          <Menu label="More" items={more} align="start" />
+          {more.map((item) => <button key={item.label} type="button" className={`btn btn-sm ${item.danger ? 'btn-ghost danger' : 'btn-secondary'}`} onClick={item.onSelect} disabled={busy}>{item.label}</button>)}
         </div>
       ) : null}
       {versions.length ? (

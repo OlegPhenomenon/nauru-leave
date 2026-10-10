@@ -116,9 +116,12 @@
   .queue-row-head {
     gap: var(--sp-2);
     padding: var(--sp-3);
+    flex-direction: column;
+    align-items: stretch;
   }
   .queue-row-actions {
     flex-shrink: 1;
+    flex-wrap: wrap;
   }
   .queue-expand {
     padding: var(--sp-3);

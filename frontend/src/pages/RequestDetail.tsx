@@ -218,34 +218,31 @@ export default function RequestDetail() {
   ) : isOwner && !can('respond') && canCancel ? <button type="button" className="btn" onClick={() => setModal('cancel')}>Cancel days</button> : null;
 
   const employeeActions = !isOwner ? approvedActions(d) : [];
-  const more: { label: string; onSelect: () => void; danger?: boolean }[] = [];
-  if (can('edit')) more.push({ label: 'Edit draft…', onSelect: () => setModal('edit') });
+  const summaryActions: { label: string; onSelect: () => void; danger?: boolean }[] = [];
+  if (can('edit')) summaryActions.push({ label: 'Edit draft…', onSelect: () => setModal('edit') });
   if (canChange && can('revise') && (!isOwner || can('respond')))
-    more.push({ label: isOwner ? 'Change dates…' : `Change dates for ${first}…`, onSelect: () => setModal('respond-change') });
+    summaryActions.push({ label: isOwner ? 'Change dates…' : `Change dates for ${first}…`, onSelect: () => setModal('respond-change') });
   if (!isOwner && canChange && can('amend') && !employeeActions.some((a) => a.action === 'amend'))
-    more.push({ label: isOwner ? 'Change dates…' : `Change dates for ${first}…`, onSelect: () => setModal('amend') });
+    summaryActions.push({ label: isOwner ? 'Change dates…' : `Change dates for ${first}…`, onSelect: () => setModal('amend') });
   if (!isOwner && canCancel && !employeeActions.some((a) => a.action === 'cancel'))
-    more.push({ label: `Cancel part of ${first}’s leave…`, onSelect: () => setModal('cancel') });
+    summaryActions.push({ label: `Cancel part of ${first}’s leave…`, onSelect: () => setModal('cancel') });
   if (!isOwner && can('respond'))
-    more.push({ label: `Record ${first}’s answer…`, onSelect: () => setModal('record') });
-  if (can('reassign')) more.push({ label: 'Assign step to…', onSelect: () => setModal('assign') });
-  const canUpload = can('upload') && !['withdrawn', 'cancelled', 'rejected'].includes(d.status);
-  if (canUpload) more.push({ label: 'Add document…', onSelect: () => setModal('upload') });
+    summaryActions.push({ label: `Record ${first}’s answer…`, onSelect: () => setModal('record') });
+  if (can('reassign')) summaryActions.push({ label: 'Assign step to…', onSelect: () => setModal('assign') });
+  const canUpload = can('upload');
+  if (canUpload) summaryActions.push({ label: 'Add document…', onSelect: () => setModal('upload') });
   if (can('confirm_actual'))
-    more.push({ label: 'Confirm leave was taken', onSelect: () => setModal('actual-confirm') });
+    summaryActions.push({ label: 'Confirm leave was taken', onSelect: () => setModal('actual-confirm') });
   if (can('propose_actual_adjustment') && !employeeActions.some((a) => a.action === 'actual-worked'))
-    more.push({ label: 'Days actually worked…', onSelect: () => setModal('actual-worked') });
-  const printOnly = can('print') && ['withdrawn', 'cancelled', 'rejected'].includes(d.status);
-  if (can('print') && !printOnly)
-    more.push({ label: 'Print', onSelect: () => navigate(`/requests/${d.id}/print`) });
+    summaryActions.push({ label: 'Days actually worked…', onSelect: () => setModal('actual-worked') });
   if (can('withdraw'))
-    more.push({
+    summaryActions.push({
       label: isOwner ? 'Withdraw…' : `Withdraw ${first}’s request…`,
       danger: true,
       onSelect: () => setModal('withdraw'),
     });
   if (can('delete'))
-    more.push({ label: 'Delete draft…', danger: true, onSelect: () => setModal('delete') });
+    summaryActions.push({ label: 'Delete draft…', danger: true, onSelect: () => setModal('delete') });
 
   /* ----- handlers ----- */
 
@@ -312,7 +309,6 @@ export default function RequestDetail() {
         back={{ to: isOwner ? '/my' : '/approvals', label: isOwner ? 'My leave' : 'Approvals' }}
         title={isOwner ? ownerTitle(d) : reviewerTitle(d)}
         subtitle={subtitle}
-        more={more}
       />
 
       <section className="panel rq-summary">
@@ -328,8 +324,10 @@ export default function RequestDetail() {
 
       <div className="btn-row no-print">
         {primary}
-        {printOnly ? <Link className="btn btn-secondary" to={`/requests/${d.id}/print`}>Print</Link> : null}
         {employeeActions.map(({ action, label }) => <button key={action} type="button" className="btn btn-secondary" onClick={() => setModal(action)}>{label}</button>)}
+        {summaryActions.filter((action) => !action.danger).map((action) => <button key={action.label} type="button" className="btn btn-secondary" onClick={action.onSelect}>{action.label}</button>)}
+        {can('print') ? <Link className="btn btn-ghost" to={`/requests/${d.id}/print`}>Print</Link> : null}
+        {summaryActions.filter((action) => action.danger).map((action) => <button key={action.label} type="button" className="btn btn-ghost danger" onClick={action.onSelect}>{action.label}</button>)}
       </div>
       {decidable ? (
         <div className="rq-card">

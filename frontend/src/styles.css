@@ -77,6 +77,13 @@ body {
   margin: 0;
 }
 
+/* Sticky footer: the app shell fills the viewport and the page grows. */
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
 h1 {
   font-size: var(--fs-title);
   line-height: var(--lh-heading);
@@ -100,12 +107,13 @@ p {
   margin: var(--sp-2) 0;
 }
 
-a {
+:where(a) {
   color: var(--brand);
   text-underline-offset: 2px;
 }
 
-a:hover {
+/* Zero specificity so component link classes (.brand, .btn, nav links) keep their own colours on hover. */
+:where(a:hover) {
   color: var(--brand-strong);
 }
 
@@ -324,10 +332,19 @@ a:hover {
   max-width: 1200px;
   margin: 0 auto;
   padding: var(--sp-1) var(--sp-4);
-  min-height: 40px;
+  min-height: 44px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-4);
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-5);
+}
+
+.demo-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
 }
 
 .demo-strip .demo-note {
@@ -335,25 +352,6 @@ a:hover {
   align-items: center;
   gap: var(--sp-1);
   font-weight: var(--fw-strong);
-}
-
-.demo-strip .spacer {
-  flex: 1;
-}
-
-.demo-strip .menu > summary {
-  color: var(--demo-text);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--r-control);
-  font-size: var(--fs-meta);
-  min-height: 28px;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-}
-
-.demo-strip .menu > summary:hover {
-  background: rgba(107, 78, 0, 0.1);
 }
 
 .demo-strip .demo-info > summary {
@@ -370,6 +368,7 @@ a:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  cursor: pointer;
 }
 
 .demo-strip .demo-info > summary::after {
@@ -380,28 +379,32 @@ a:hover {
 .demo-viewing {
   display: inline-flex;
   align-items: center;
+  gap: var(--sp-1);
   white-space: nowrap;
 }
 
-.demo-viewing {
-  gap: var(--sp-1);
-}
-
-.demo-switch.btn {
-  min-height: 32px;
-  padding: var(--sp-1) var(--sp-3);
+.demo-btn {
+  font: inherit;
   font-size: var(--fs-meta);
-  border-color: var(--demo-text);
   color: var(--demo-text);
-  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(107, 78, 0, 0.45);
+  border-radius: var(--r-control);
+  padding: 0 var(--sp-3);
+  min-height: 30px;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
-.demo-tools-slot {
-  display: inline-flex;
+.demo-btn:hover {
+  background: #fff;
+  border-color: var(--demo-text);
 }
 
-.demo-date-short {
-  display: none;
+.demo-btn-strong {
+  font-weight: var(--fw-strong);
+  border-color: var(--demo-text);
+  background: #fff;
 }
 
 .demo-popover {
@@ -443,6 +446,8 @@ a:hover {
 }
 
 .page {
+  flex: 1 0 auto;
+  width: 100%;
   max-width: 1200px;
   margin: 0 auto;
   padding: var(--sp-5) var(--sp-4) var(--sp-7);
@@ -453,6 +458,7 @@ a:hover {
 }
 
 .app-footer {
+  width: 100%;
   max-width: 1200px;
   margin: 0 auto;
   padding: var(--sp-4);
@@ -1495,29 +1501,19 @@ details.audit summary {
     cursor: pointer;
   }
   .demo-strip-inner {
+    padding: var(--sp-2) var(--sp-3);
     gap: var(--sp-2);
-    flex-wrap: wrap;
   }
-  .demo-tools-slot,
+  .demo-group {
+    gap: var(--sp-2);
+  }
   .demo-viewing-role,
-  .demo-date-full {
-    display: none;
-  }
-  .demo-date-short {
-    display: inline;
-  }
-  .demo-strip .menu > summary {
-    white-space: nowrap;
-  }
   .demo-viewing {
-    flex: 1 1 100%;
-    order: 1;
-  }
-  .demo-switch {
-    margin-left: auto;
-  }
-  .demo-strip .spacer {
     display: none;
+  }
+  .demo-btn {
+    min-height: 36px;
+    padding: 0 var(--sp-2);
   }
   .demo-popover {
     width: min(320px, calc(100vw - 3rem));

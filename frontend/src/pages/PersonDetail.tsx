@@ -175,16 +175,12 @@ export default function PersonDetail() {
             </Link>
           ) : undefined
         }
-        more={
-          canEdit
-            ? [
-                { label: 'Edit name or email…', onSelect: openEdit },
-                e.active
-                  ? { label: 'End employment…', danger: true, onSelect: () => setDialog('end') }
-                  : { label: 'Reinstate…', onSelect: () => void reinstate() },
-              ]
-            : undefined
-        }
+        secondary={canEdit ? <>
+          <button type="button" className="btn btn-secondary" onClick={openEdit}>Edit name or email…</button>
+          <button type="button" className={`btn btn-ghost${e.active ? ' danger' : ''}`} disabled={busy} onClick={() => e.active ? setDialog('end') : void reinstate()}>
+            {e.active ? 'End employment…' : 'Reinstate…'}
+          </button>
+        </> : undefined}
       />
 
       {isNew ? (

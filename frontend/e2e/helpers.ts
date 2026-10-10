@@ -25,6 +25,7 @@ export async function pick(page: Page, name: string) {
   if (await strip.count() && (await strip.locator('.demo-viewing strong').textContent().catch(() => null)) === name) {
     await page.getByRole('banner').getByRole('link', { name: 'Nauru Leave Desk', exact: true }).click();
     await expect(page.locator('.demo-viewing strong')).toHaveText(name);
+    await expect(page.getByRole('navigation', { name: 'Main', exact: true }).getByRole('link', { name: 'My leave', exact: true })).toBeVisible();
     await expect(page.locator('.modal')).toHaveCount(0);
     await page.waitForTimeout(300);
     return;
@@ -40,6 +41,7 @@ export async function pick(page: Page, name: string) {
   }
   await card.click();
   await expect(page.locator('.demo-viewing strong')).toHaveText(name);
+  await expect(page.getByRole('navigation', { name: 'Main', exact: true }).getByRole('link', { name: 'My leave', exact: true })).toBeVisible();
   await expect(page.locator('.modal')).toHaveCount(0);
   await page.waitForTimeout(300);
 }
@@ -54,19 +56,12 @@ export async function openDetails(page: Page, title: string) {
   if ((await details.getAttribute('open')) === null) await details.locator(':scope > summary').click();
 }
 
-export async function more(page: Page, name: string) {
-  const direct = page.getByRole('button', { name, exact: true });
-  if (await direct.isVisible()) {
-    await direct.click();
-    return;
-  }
-  await page.locator('.page-header').getByText('More', { exact: true }).click();
-  await page.getByRole('menuitem', { name }).click();
+export async function clickAction(page: Page, name: string) {
+  await page.getByRole('button', { name, exact: true }).click();
 }
 
 export async function moveDate(page: Page, date: string) {
-  await page.locator('.demo-tools-slot summary').click();
-  await page.getByRole('menuitem', { name: 'Move date forward…' }).click();
+  await page.locator('.demo-strip').getByRole('button', { name: 'Change date…', exact: true }).click();
   await page.getByLabel('New business date').fill(date);
   await page.locator('.modal').getByRole('button', { name: /^Move to/ }).click();
   await expect(page.locator('.modal')).toHaveCount(0);

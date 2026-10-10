@@ -104,11 +104,8 @@ export default function People() {
     <span onClick={(ev) => ev.stopPropagation()}>
       <Menu
         className="row-menu"
-        label={
-          <>
-            ⋯
-          </>
-        }
+        label="Actions ▾"
+        ariaLabel={`Actions for ${e.full_name}`}
         align="end"
         items={[
           { label: 'Change manager or unit…', onSelect: () => setDialog({ kind: 'transfer', employee: e }) },
@@ -218,7 +215,7 @@ export default function People() {
         }
         more={
           canEdit && tab === 'people'
-            ? [{ label: 'Enter paper form…', onSelect: () => navigate('/requests/new?paper=1') }, { label: 'Add unit…', onSelect: () => setDialog({ kind: 'unit', unit: null }) }, { label: 'Import people…', onSelect: () => setImporting(true) }]
+            ? [{ label: 'Enter paper form…', onSelect: () => navigate('/requests/new?paper=1') }, { label: 'Import people…', onSelect: () => setImporting(true) }]
             : undefined
         }
       />

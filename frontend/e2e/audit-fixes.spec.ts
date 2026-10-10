@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { apiGet, apiPost, approveChain, decide, goTo, more, openDetails, pick, paperPerson, requestId } from './helpers';
+import { apiGet, apiPost, approveChain, decide, goTo, clickAction, openDetails, pick, paperPerson, requestId } from './helpers';
 
 // One self-contained test per audit fix. Each test runs in its own browser
 // context, so the first persona pick creates a fresh demo sandbox.
@@ -51,7 +51,7 @@ test('F02: monthly accrual posts each month once, retry is a no-op', async ({
   await page.getByRole('button', { name: 'Close panel' }).click();
   await goTo(page, '/balances');
   async function runAccrual(monthLabel: string) {
-    await more(page, 'Add entitlement…');
+    await clickAction(page, 'Add entitlement…');
     const m = page.locator('.modal');
     await m.getByRole('button', { name: 'Add', exact: true }).and(m.locator(':enabled')).waitFor();
     for (const box of await m.locator('fieldset label').filter({ hasNotText: 'Monthly accrual (demo)' }).locator('input[type=checkbox]').all()) await box.uncheck();
@@ -451,7 +451,7 @@ test('P01: EICAR content under a .pdf name is never downloadable', async ({
 
   const eicar =
     'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
-  await more(page, 'Add document…');
+  await clickAction(page, 'Add document…');
   const modal = page.locator('.modal');
   await modal.locator('input[type=file]').setInputFiles({
     name: 'scan-test.pdf',

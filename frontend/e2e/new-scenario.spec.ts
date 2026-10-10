@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { more, approveChain, goTo, pick, requestId, apiGet, openDetails, moveDate, paperPerson } from './helpers';
+import { clickAction, approveChain, goTo, pick, requestId, apiGet, openDetails, moveDate, paperPerson } from './helpers';
 
 // Original acceptance N38 + the auditor's requested walkthrough: every record
 // is created through the UI inside a fresh demo sandbox — nothing relies on
@@ -63,7 +63,12 @@ test('N38 + walkthrough: new employee, fictional policy, full lifecycle', async 
 
   // ---------- Opening balance through a CSV import ----------
   await goTo(page, '/balances');
-  await more(page, 'Import opening balances…');
+  await clickAction(page, 'Import…');
+  await expect(page.getByRole('radio', { name: /^Opening balances —/ })).toBeChecked();
+  await expect(page.getByRole('radio', { name: /^People —/ })).toHaveCount(0);
+  await page.getByRole('radio', { name: /^Past leave —/ }).check();
+  await expect(page.getByRole('dialog', { name: 'Import past leave', exact: true })).toBeVisible();
+  await page.getByRole('radio', { name: /^Opening balances —/ }).check();
   const imports = page.getByRole('dialog', { name: 'Import opening balances' });
   await imports.locator('input[type=file]').setInputFiles({
     name: 'openings.csv',
@@ -247,7 +252,7 @@ test('N38 + walkthrough: new employee, fictional policy, full lifecycle', async 
   await page.getByRole('button', { name: 'Create payroll file' }).click();
   await expect(page.locator('.toast-region')).toContainText('Payroll file');
   const exportRow = page.getByRole('row', { name: /Infrastructure Unit/ }).first();
-  await exportRow.getByRole('button', { name: 'Mark as sent' }).click();
+  await exportRow.getByRole('button', { name: 'Mark as sent', exact: true }).click();
   await expect(exportRow).toContainText('Sent on');
 
   // A change after the transfer: a third, separate approved request.

@@ -64,17 +64,16 @@ export function PageHeader({
         <div className="actions">
           {primary}
           {secondary}
-          {more && more.length > 0 ? (
-            <Menu
-              label="More"
-              align="end"
-              items={more.map((m) => ({
-                label: m.label,
-                onSelect: m.onSelect,
-                danger: m.danger,
-              }))}
-            />
-          ) : null}
+          {more?.filter((m) => !m.danger).map((m) => (
+            <button key={m.label} type="button" className="btn btn-secondary" onClick={m.onSelect}>
+              {m.label}
+            </button>
+          ))}
+          {more?.filter((m) => m.danger).map((m) => (
+            <button key={m.label} type="button" className="btn btn-ghost danger" onClick={m.onSelect}>
+              {m.label}
+            </button>
+          ))}
         </div>
       ) : null}
     </div>
@@ -128,11 +127,13 @@ export interface MenuItem {
 
 export function Menu({
   label,
+  ariaLabel,
   items,
   align,
   className,
 }: {
   label: ReactNode;
+  ariaLabel?: string | undefined;
   items: MenuItem[];
   align?: 'start' | 'end' | undefined;
   className?: string | undefined;
@@ -168,7 +169,7 @@ export function Menu({
       ref={ref}
       className={`menu ${align === 'end' ? 'menu-end' : ''} ${className ?? ''}`}
     >
-      <summary aria-label={className?.split(' ').includes('row-menu') ? 'More actions' : undefined}>{label}</summary>
+      <summary role="button" aria-haspopup="menu" aria-label={ariaLabel}>{label}</summary>
       <div className="menu-panel" role="menu">
         {items.map((item, i) => {
           if (item.divider) {

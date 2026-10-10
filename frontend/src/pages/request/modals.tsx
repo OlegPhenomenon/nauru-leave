@@ -1,6 +1,5 @@
 import { DayParts } from '../../components/DayParts';
-// Secondary actions for the request page. All rare flows live in modals
-// reached from `More ▾` or secondary buttons — the page itself stays calm.
+// Request actions open modals from visible buttons in the summary card.
 // Every mutation goes through the same endpoints as before; only the
 // presentation changed.
 

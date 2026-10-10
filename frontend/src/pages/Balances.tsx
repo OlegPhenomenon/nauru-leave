@@ -256,11 +256,8 @@ export default function Balances() {
         secondary={canEdit ? <>
           <button className="btn btn-secondary" onClick={() => setModal('entitlement')}>Add entitlement…</button>
           <button className="btn btn-secondary" onClick={() => setModal('close')}>Close year…</button>
+          <button type="button" className="btn btn-secondary" onClick={() => setImportKind('opening_balances')}>Import…</button>
         </> : undefined}
-        more={canEdit ? [
-          { label: 'Import opening balances…', onSelect: () => setImportKind('opening_balances') },
-          { label: 'Import past leave…', onSelect: () => setImportKind('historical_leave') },
-        ] : undefined}
       />
       {bannerErr ? <ErrBox error={bannerErr} /> : null}
       {waitingQ.error ? <ErrBox error={waitingQ.error} /> : null}

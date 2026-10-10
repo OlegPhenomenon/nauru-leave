@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { apiGet, apiPost, approveChain, decide, goTo, more, openDetails, pick } from './helpers';
+import { apiGet, apiPost, approveChain, decide, goTo, clickAction, openDetails, pick } from './helpers';
 import type { LeaveType, RequestDetail } from '../src/api/types';
 
 // Playwright gives each test its own browser context. The first pick explicitly
@@ -19,8 +19,9 @@ test('R01: first policy from October supports October–December monthly accrual
   expect((await apiPost(page, '/demo/clock', { date: '2026-12-01' })).status).toBe(200);
   await goTo(page, '/balances');
   for (const month of ['October', 'November', 'December']) {
-    await more(page, 'Add entitlement…');
+    await clickAction(page, 'Add entitlement…');
     modal = page.locator('.modal');
+    await expect(modal.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
     for (const box of await modal.locator('fieldset label').filter({ hasNotText: 'October monthly demonstration' }).locator('input[type=checkbox]').all()) await box.uncheck();
     await modal.locator('.field:has-text("Year") input').fill('2026');
     const months = modal.locator('.field:has(> label.field-label:text-is("Month")) select');
@@ -48,7 +49,7 @@ async function createAnnual(page: Page, end = '2026-11-09') {
   return JSON.parse(result.body) as RequestDetail;
 }
 async function upload(page: Page, filename: string, contents: string) {
-  await more(page, 'Add document…');
+  await clickAction(page, 'Add document…');
   const modal = page.locator('.modal');
   await modal.locator('input[type=file]').setInputFiles({ name: filename, mimeType: 'application/pdf', buffer: Buffer.from(contents) });
   await modal.getByRole('button', { name: 'Add document', exact: true }).click();

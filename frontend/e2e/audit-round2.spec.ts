@@ -1,11 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { apiGet, apiPost, approveChain, goTo, more, openDetails, pick } from './helpers';
+import { apiGet, apiPost, approveChain, goTo, clickAction, openDetails, pick } from './helpers';
 
 test('F11 round2: edit leave type identity', async ({ page }) => {
   await page.goto('/'); await pick(page, 'Maria'); await goTo(page, '/settings/leave-types');
   await page.getByRole('link', { name: 'Annual leave', exact: true }).click();
-  await page.locator('.drawer summary').filter({ hasText: 'More' }).click();
-  await page.getByRole('menuitem', { name: /Rename/ }).click();
+  await page.locator('.drawer').getByRole('button', { name: 'Rename…', exact: true }).click();
   const modal = page.locator('.modal'); await modal.getByLabel('Name', { exact: true }).fill('Annual renamed');
   const response = page.waitForResponse(r => r.request().method() === 'PUT' && r.url().includes('/leave-types/'));
   await modal.getByRole('button', { name: 'Save', exact: true }).click(); expect((await response).status()).toBe(200);
@@ -56,5 +55,5 @@ test('F05 round2: actual correction confirms second approval and preserves adjus
 test('F07 round2: export scope and transfer author',async ({page})=>{
   await page.goto('/');await pick(page,'Maria');await goTo(page,'/reports?r=payroll');
   await page.getByRole('combobox', { name: 'Unit', exact: true }).selectOption('2');await page.getByRole('button',{name:'Create payroll file'}).click();await expect(page.locator('.toast-region')).toContainText('Payroll file created for 1–31 Oct 2026');await expect(page.getByRole('row').last()).toContainText('Infrastructure');
-  await page.getByRole('button',{name:'Mark as sent'}).click();await expect(page.getByRole('row').last()).toContainText('by Maria Santos');
+  await page.getByRole('button',{name:'Mark as sent',exact:true}).click();await expect(page.getByRole('row').last()).toContainText('by Maria Santos');
 });

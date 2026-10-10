@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { BalanceSummary, RequestDetail } from '../src/api/types';
-import { apiGet, apiPost, approveChain, goTo, more, pick } from './helpers';
+import { apiGet, apiPost, approveChain, goTo, clickAction, pick } from './helpers';
 
 async function create(page: Page) {
   const response = await apiPost(page, '/requests', { leave_type_id: 1, start_date: '2026-10-19', end_date: '2026-10-23' });
@@ -95,10 +95,10 @@ test('review: admin shortcuts fit three clicks and Settings uses a single footer
 test('review: year defaults stay appropriate and the correction badge refreshes after approval', async ({ page }) => {
   await page.goto('/'); await pick(page, 'Maria');
   await goTo(page, '/balances');
-  await more(page, 'Add entitlement…');
+  await clickAction(page, 'Add entitlement…');
   await expect(page.locator('.modal').getByLabel('Year', { exact: true })).toHaveValue('2027');
   await page.locator('.modal').getByRole('button', { name: 'Cancel', exact: true }).click();
-  await pick(page, 'Maria'); await goTo(page, '/balances'); await more(page, 'Close year…');
+  await pick(page, 'Maria'); await goTo(page, '/balances'); await clickAction(page, 'Close year…');
   await expect(page.getByRole('dialog', { name: 'Close 2025', exact: true }).getByLabel('Year to close')).toHaveValue('2025');
   await page.locator('.modal').getByRole('button', { name: 'Cancel', exact: true }).click();
   await goTo(page, '/balances');

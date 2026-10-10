@@ -10,7 +10,6 @@ import {
   Field,
   Loading,
   Modal,
-  Menu,
   PageHeader,
   ReqLink,
   useToast,
@@ -601,7 +600,7 @@ function PayrollPanel({
               render: (x) => (
                 <>
                   <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void downloadFile(x)}>Download</button>
-                  {canManage && !x.transferred_at ? <><button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void markSent(x.id,'')}>Mark as sent</button><Menu className="row-menu" label={<>⋯</>} items={[{ label:'Mark as sent with a note…', disabled:busy, onSelect:() => { setErr(null); setMarkId(x.id); setMarkNote(''); } }]} /></> : null}
+                  {canManage && !x.transferred_at ? <><button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void markSent(x.id,'')}>Mark as sent</button><button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setErr(null); setMarkId(x.id); setMarkNote(''); }}>Mark as sent with a note…</button></> : null}
                 </>
               ),
             },

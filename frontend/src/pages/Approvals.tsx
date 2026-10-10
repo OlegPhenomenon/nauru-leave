@@ -52,7 +52,6 @@ function QueueRow({ it, waiting, open, onOpen, onDecided }: {
     ...(extras.includes('reassign') ? [{ label: 'Assign step to…', to: `/requests/${it.id}?action=assign` }] : []),
     ...(extras.includes('upload') ? [{ label: 'Add document…', to: `/requests/${it.id}?action=upload` }] : []),
     ...(extras.includes('withdraw') ? [{ label: 'Withdraw for employee…', to: `/requests/${it.id}?action=withdraw`, danger: true }] : []),
-    { label: 'Open full request', to: `/requests/${it.id}` },
   ];
   const sent = q.data?.current_revision.submitted_at;
   return <article className={`queue-row${open ? ' open' : ''}`}>
@@ -65,7 +64,8 @@ function QueueRow({ it, waiting, open, onOpen, onDecided }: {
         <span className="qr-l3 queue-review-label">{open ? 'Hide review' : 'Review ›'}</span>
       </button>
       <div className="queue-row-actions no-print" onClickCapture={() => setLoad(true)}>
-        {more.length === 1 ? <Link className="btn btn-secondary btn-sm" to={`/requests/${it.id}`}>Open full request</Link> : <Menu className="row-menu" label="⋯" align="end" items={more} />}
+        <Link className="btn btn-secondary btn-sm" to={`/requests/${it.id}`}>Open full request</Link>
+        {more.length > 1 ? <Menu className="row-menu" label="Actions ▾" ariaLabel={`Actions for ${it.employee.full_name}`} align="end" items={more} /> : more.map((action) => <Link key={action.to} className={`btn btn-sm ${action.danger ? 'btn-ghost danger' : 'btn-secondary'}`} to={action.to}>{action.label}</Link>)}
       </div>
     </div>
     {open ? <div id={`request-${it.id}`} className="queue-expand">

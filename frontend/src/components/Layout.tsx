@@ -20,7 +20,6 @@ import {
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 import {
-  Details,
   Empty,
   ErrBox,
   Field,
@@ -83,8 +82,6 @@ function MailboxDrawer({
   const [all, setAll] = useState(false);
   const mine = items.filter((m) => m.to_email === me.user.email);
   const shown = all ? items : mine;
-  const requestMail = shown.filter((m) => REQUEST_LINK.test(m.body));
-  const systemMail = shown.filter((m) => !REQUEST_LINK.test(m.body));
 
   const renderItem = (m: MailboxItem) => (
     <div key={m.id} className="mail-item">
@@ -97,34 +94,29 @@ function MailboxDrawer({
   );
 
   return (
-    <aside className="drawer" role="dialog" aria-label="Demo mailbox">
+    <aside className="drawer" role="dialog" aria-label="Emails">
       <div className="drawer-head">
-        <strong>Mailbox</strong>
+        <strong>Emails sent by the system</strong>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
           ✕ Close
         </button>
       </div>
       <div className="drawer-body">
-        <p className="muted small">Demo mailbox — mail stays inside the demo.</p>
-        <label className="field small">
-          <input
-            type="checkbox"
-            checked={all}
-            onChange={(e) => setAll(e.target.checked)}
-          />{' '}
-          Everyone's mail
-        </label>
+        <p className="muted small">In the demo, no real email leaves the system — every message lands here.</p>
+        <div className="tabs" role="tablist" aria-label="Whose emails">
+          <button type="button" role="tab" aria-selected={!all} className={!all ? 'active' : ''} onClick={() => setAll(false)}>
+            To {me.user.display_name} ({mine.length})
+          </button>
+          <button type="button" role="tab" aria-selected={all} className={all ? 'active' : ''} onClick={() => setAll(true)}>
+            Everyone ({items.length})
+          </button>
+        </div>
         {loading ? <Loading /> : null}
         {error ? <ErrBox error={error} /> : null}
         {!loading && !error && shown.length === 0 ? (
-          <Empty>No messages {all ? 'yet' : `for ${me.user.display_name}`}.</Empty>
+          <Empty>No emails {all ? 'yet' : `for ${me.user.display_name} yet`}.</Empty>
         ) : null}
-        {requestMail.map(renderItem)}
-        {systemMail.length > 0 ? (
-          <Details title="System updates" count={systemMail.length}>
-            {systemMail.map(renderItem)}
-          </Details>
-        ) : null}
+        {shown.map(renderItem)}
       </div>
     </aside>
   );
@@ -161,7 +153,7 @@ function MoveDateModal({ config, onClose }: { config: AppConfig; onClose: () => 
 
   return (
     <Modal
-      title="Move date forward"
+      title="Change the demo date"
       onClose={onClose}
       footer={
         <>
@@ -286,42 +278,44 @@ function DemoStrip({
   onSwitch: () => void;
   onTools: (tool: 'mailbox' | 'date' | 'reset') => void;
 }) {
-  const mobileTools = [
-    { label: `Mailbox (${mailboxCount})`, onSelect: () => onTools('mailbox') },
-    { label: 'Move date forward…', onSelect: () => onTools('date') },
-    { label: 'Reset demo…', onSelect: () => onTools('reset') },
-  ];
-
   return (
     <div className="demo-strip no-print">
       <div className="demo-strip-inner">
-        <div className="demo-note">
-          Demo<span className="demo-note-tail"> — fictional people and rules</span>
-          <InfoPopover />
+        <div className="demo-group">
+          <span className="demo-note">
+            Demo<span className="demo-note-tail"> — fictional people and rules</span>
+            <InfoPopover />
+          </span>
+          <span className="demo-today">Today {fmtDate(config.business_date)}</span>
+          <button
+            type="button"
+            className="demo-btn"
+            onClick={() => onTools('date')}
+            title="Move the demo's today forward to see how leave and balances change"
+          >
+            Change date…
+          </button>
         </div>
-        <span className="spacer" />
-        <span className="demo-today"><span className="demo-date-full">Today {fmtDate(config.business_date)}</span><span className="demo-date-short">{fmtDate(config.business_date).replace(/ \d{4}$/, '')}</span></span>
-        <span className="demo-viewing">
-          <strong>{me.user.display_name}</strong>
-          <span className="demo-viewing-role"> · {personRoleLabel(me)}</span>
-        </span>
-        <button type="button" className="btn btn-secondary demo-switch" onClick={onSwitch}>
-          Switch user
-        </button>
-        <div className="only-mobile">
-          <Menu label="Demo" align="end" items={mobileTools} />
+        <div className="demo-group">
+          <span className="demo-viewing">
+            <strong>{me.user.display_name}</strong>
+            <span className="demo-viewing-role">· {personRoleLabel(me)}</span>
+          </span>
+          <button type="button" className="demo-btn demo-btn-strong demo-switch" onClick={onSwitch}>
+            Switch user
+          </button>
+          <button
+            type="button"
+            className="demo-btn"
+            onClick={() => onTools('mailbox')}
+            title="Emails the system sent in this demo (nothing is really sent)"
+          >
+            Emails ({mailboxCount})
+          </button>
+          <button type="button" className="demo-btn" onClick={() => onTools('reset')}>
+            Reset demo…
+          </button>
         </div>
-        <span className="demo-tools-slot">
-          <Menu
-            label="Demo tools"
-            align="end"
-            items={[
-              { label: `Mailbox (${mailboxCount})`, onSelect: () => onTools('mailbox') },
-              { label: 'Move date forward…', onSelect: () => onTools('date') },
-              { label: 'Reset demo…', onSelect: () => onTools('reset') },
-            ]}
-          />
-        </span>
       </div>
     </div>
   );
