@@ -6,7 +6,7 @@ import { expect, type Page } from '@playwright/test';
 // The demo backend rate-limits bursts (login + page fetches). Wait it out.
 export async function waitOutRateLimit(page: Page) {
   for (let i = 0; i < 4; i++) {
-    if (!(await page.getByText(/rate limited/i).count())) return;
+    if (!(await page.getByText(/rate limited|Too many attempts/i).count())) return;
     await page.waitForTimeout(10_000);
     await page.reload();
     await page.waitForTimeout(800);
@@ -14,23 +14,42 @@ export async function waitOutRateLimit(page: Page) {
 }
 
 export async function pick(page: Page, name: string) {
-  for (let attempt = 0; attempt < 4; attempt++) {
-    await page.keyboard.press('Escape');
-    const card = page.locator('.persona-card', { hasText: name }).first();
-    if (!(await card.isVisible().catch(() => false))) {
-      const sw = page.getByRole('button', { name: 'Switch persona' });
-      if (await sw.count()) await sw.click();
-      else
-        await page
-          .getByRole('button', { name: /Start your private demo|Choose a persona/ })
-          .click();
+  await page.keyboard.press('Escape');
+  const card = page.locator('.persona-card', { hasText: name }).first();
+  if (!(await card.isVisible().catch(() => false))) {
+    const direct = page.getByRole('button', { name: /^Viewing as/ });
+    const viewer = page.locator('.demo-strip summary').filter({ hasText: 'Viewing as' });
+    if (await direct.isVisible().catch(() => false)) {
+      await direct.click();
+    } else if (await viewer.count()) {
+      await viewer.click();
+      await page.getByRole('menuitem', { name: 'Switch person…' }).click();
+    } else {
+      await page.getByRole('button', { name: /Start demo|Choose a persona/ }).click();
     }
-    await card.click();
-    await page.waitForTimeout(1200);
-    if (!(await page.getByText(/rate limited/i).count())) break;
-    await page.waitForTimeout(10_000);
   }
-  await expect(page.locator('.demo-bar')).toContainText('signed in as');
+  await card.click();
+  await expect(page.locator('.demo-strip')).toContainText(`Viewing as ${name}`);
+  await expect(page.locator('.modal')).toHaveCount(0);
+  await page.waitForTimeout(300);
+}
+
+export async function openDetails(page: Page, title: string) {
+  const details = page.locator('details').filter({ has: page.locator('summary').filter({ hasText: new RegExp(`^${title}(?: \\(|$)`) }) }).first();
+  if ((await details.getAttribute('open')) === null) await details.locator(':scope > summary').click();
+}
+
+export async function more(page: Page, name: string) {
+  await page.locator('.page-header').getByText('More', { exact: true }).click();
+  await page.getByRole('menuitem', { name }).click();
+}
+
+export async function moveDate(page: Page, date: string) {
+  await page.locator('.demo-tools-slot summary').click();
+  await page.getByRole('menuitem', { name: 'Move date forward…' }).click();
+  await page.getByLabel('New business date').fill(date);
+  await page.locator('.modal').getByRole('button', { name: /^Move to/ }).click();
+  await expect(page.locator('.modal')).toHaveCount(0);
 }
 
 export async function goTo(page: Page, path: string) {
@@ -42,14 +61,8 @@ export async function goTo(page: Page, path: string) {
 // Records the first (positive) outcome on the pending step: recommend_approve /
 // checked_ok / approve.
 export async function decide(page: Page) {
-  await page
-    .getByRole('button', { name: /Decide —/ })
-    .first()
-    .click();
-  await page.locator('.modal input[name="outcome"]').first().check();
-  await page.getByRole('button', { name: 'Record decision' }).click();
-  await expect(page.locator('.modal')).toHaveCount(0);
-  await page.waitForTimeout(400);
+  await page.getByRole('button', { name: /^(Recommend approval|Mark as checked|Approve)$/ }).click();
+  await page.waitForURL('**/approvals');
 }
 
 export async function approveChain(page: Page, requestId: number | string) {
@@ -95,4 +108,11 @@ export async function apiGet<T>(page: Page, path: string): Promise<T> {
 
 export function requestId(page: Page): number {
   return Number(page.url().match(/requests\/(\d+)/)![1]);
+}
+
+export async function paperPerson(page: Page, name: string) {
+  const paper = page.getByRole('button', { name: /Enter (?:a )?paper form/ });
+  if (await paper.count()) await paper.click();
+  await page.locator('input[role=combobox]').fill(name);
+  await page.getByRole('option', { name: new RegExp(name) }).click();
 }

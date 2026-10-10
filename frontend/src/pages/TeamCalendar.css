@@ -1,0 +1,70 @@
+/* "Who's away" — week list + month grid additions on top of styles.css */
+
+.cal-range {
+  align-self: center;
+}
+
+/* ---- Week list ---- */
+.away-list {
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+}
+.away-list li {
+  border-bottom: 1px solid var(--divider);
+}
+.away-list a,
+.away-list .row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-4);
+  padding: var(--sp-3) var(--sp-2);
+  color: inherit;
+  text-decoration: none;
+}
+.away-list a:hover {
+  background: var(--brand-tint);
+}
+.away-list .who {
+  font-weight: var(--fw-strong);
+}
+.away-list .when {
+  color: var(--text);
+}
+.away-list .what {
+  margin-left: auto;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* ---- Month grid ---- */
+table.cal td.cal-word,
+table.cal td.cal-a,
+table.cal td.cal-p {
+  white-space: normal;
+}
+
+/* Weekends shaded, muted */
+table.cal th.cal-we {
+  background: var(--neutral-bg);
+  color: var(--text-muted);
+}
+table.cal td.cal-we {
+  background: var(--neutral-bg);
+}
+
+/* Today's column */
+table.cal th.cal-today {
+  background: var(--brand-tint);
+  color: var(--brand-strong);
+}
+table.cal td.cal-today {
+  box-shadow: inset 0 0 0 2px var(--brand);
+}
+
+table.cal { table-layout: fixed; width: 100%; }
+table.cal :is(th, td) { min-width: 0; padding: var(--sp-1) 0; }
+table.cal :is(th, td).cal-name { width: 9rem; min-width: 0; white-space: normal; padding: var(--sp-2); }
+table.cal td a { display: block; min-height: 2rem; }
+@media (max-width: 700px) { table.cal { min-width: 48rem; } }

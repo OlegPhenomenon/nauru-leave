@@ -14,34 +14,20 @@ and history stay correct and explainable.
 - Short walkthrough video: [docs/media/demo-walkthrough.webm](docs/media/demo-walkthrough.webm)
 - Employee guide: the in-app **Help** page.
 
-## What it does
+## Using the desk
 
-| Screen | Purpose |
-|---|---|
-| My leave | Balance per leave type with "How is this calculated?", own requests, next absence, next step |
-| New request | Dates, half days, type, per-day calculation, attachments, approval route, submit |
-| Request | Revisions, decisions, questions, amendments, cancellation, history, printable decision card |
-| Approvals | Only the requests the signed-in person may act on; HR sees unassigned steps as problems |
-| Team calendar | Approved and pending absences; sensitive leave shows only "Away" |
-| People | Employees, org units, managers, schedules, transfers |
-| Balances | Ledger, reservations, accruals, period close, two-person adjustments |
-| Reports | Balances at a date, approved absences, pending requests, changes since export, CSV import/export |
-| Settings | Leave types and versioned policies, schedules, holidays, users and roles, delegations |
-| Operations | Notification delivery and retries, audit log |
+Choose **Start demo**, then a person. The demo strip identifies fictional data and rules. Use its person menu to switch roles; **Demo tools** contains the mailbox, **Move date forward…**, and **Reset demo…**.
 
-## Demo walkthrough (the main scenario)
+- **Request leave:** on **My leave**, check **Days left**, choose **Request leave**, enter dates and select morning or afternoon for a half day. **Send request** starts approval. **Show day by day** explains the calculation.
+- **Answer or change a request:** answer a question directly on **My leave**. Open a request for **Change dates**, **Cancel days**, documents and messages. **More → Print** opens the printable record; **Changes** and **History** contain earlier records.
+- **Review leave:** open a row in **Approvals**, read its documents, then **Recommend approval**, **Mark as checked**, or **Approve** for your step. Refusals and questions reveal a text field in the same card.
+- **Manage staff:** HR uses **People → Add person**. The person's row menu offers changes to their manager or work pattern, a paper form, balance correction, access and a stand-in. The **Units** tab manages units; **More → Import people…** opens CSV import.
+- **Manage leave amounts:** **Balances** shows days left and corrections awaiting a second HR officer. Use **Correct balance…**, **Add entitlement…**, **Close year…**, or **Import…**. **How is this worked out?** explains an employee's balance.
+- **Set rules:** **Settings** opens leave types, work patterns, public holidays, the approval route, users and access, and stand-ins. **System** shows email delivery and retry controls.
+- **Download a report:** **Reports** lets you choose a unit and month, then **Download CSV**. **Payroll files** creates a hand-over file and records when it was sent. **Calendar** shows who's away; restricted leave says **Away**.
+- **Trace a request:** auditors land on **History**. Search its request number and open the result to see that request's history.
 
-1. Open the demo → **Start your private demo** → choose **Alexei** (employee). Annual leave: 20 days available
-   (the rule is labelled *Fictional demo rule — not Nauru law*).
-2. **New request**: 9–13 Nov 2026, Annual leave. The preview shows five working days of 8 h, the route
-   Olga → HR check → final decision, and a warning that Lina is away the same week. Submit → 15 available,
-   5 reserved.
-3. Switch persona: **Olga** recommends, **Maria** checks, **Elena** approves. Alexei: ledger 15, available 15.
-4. Alexei requests an amendment to 9–11 Nov. After the same three steps the two freed days return: 17 available.
-5. **Time travel** to 12 Nov 2026: the request shows *Period ended*; the balance is still 17 (no second deduction).
-6. Other things to try: Tom cannot open Alexei's request; Nia's medical certificate is restricted; Sam has no login
-   and his paper form was entered by Maria; the email to Sam's address fails and can be retried in Operations;
-   **Reset demo** starts over.
+For the main example, Alexei requests Annual leave on 9–13 November 2026: five working days leave 15 days available. Olga recommends, Maria checks and Elena approves. Change the dates to 9–11 November and repeat approval: 17 days remain. Moving the demo date beyond the leave does not deduct it again.
 
 ## How balances are calculated
 
@@ -71,7 +57,7 @@ ledger entry with a unique operation key, so retries never post twice.
 
 - `backend/` — one Rust binary (`nauru-leave`): axum HTTP server, SQLite (bundled, WAL), background worker,
   CLI for provisioning, backup and restore. The React build is embedded into the binary.
-- `frontend/` — Vite + React + TypeScript, no UI framework (~113 KB gzipped JS).
+- `frontend/` — Vite + React + TypeScript, no UI framework (a single embedded frontend bundle).
 - Every mutation: server-side permission check, `BEGIN IMMEDIATE` transaction, version check, audit event and
   notification outbox in the same transaction.
 - Demo mode gives each visitor a separate SQLite file copied from a seeded template; production mode uses one

@@ -1,14 +1,14 @@
 # Test results
 
-Run on 2026-10-09, macOS arm64, Rust 1.98.1, Node 23.10 (the Docker build uses Node 22 and Rust 1.98.0).
+Backend results were recorded on 2026-10-09; frontend and browser results were refreshed on 2026-10-10. macOS arm64, Rust 1.98.1, Node 23.10 (the Docker build uses Node 22 and Rust 1.98.0).
 Every result below comes from an actual run; the complete, unedited logs are in [`docs/test-logs/`](docs/test-logs/):
 
 | Log | Command | Result |
 |---|---|---|
 | [cargo-test.log](docs/test-logs/cargo-test.log) | `cd backend && cargo test` | **156 passed, 0 failed** |
 | [cargo-clippy.log](docs/test-logs/cargo-clippy.log) | `cargo clippy --all-targets -- -D warnings` | clean |
-| [frontend.log](docs/test-logs/frontend.log) | `npx tsc --noEmit && npm test && npm run build` | tsc clean, **28 passed**, build OK |
-| [e2e-playwright.log](docs/test-logs/e2e-playwright.log) | `E2E_BASE=… npx playwright test` against the release binary, fresh demo data | **21 passed** |
+| [frontend.log](docs/test-logs/frontend.log) | `npx tsc --noEmit && npx vitest run && npx vite build` | tsc clean, **58 passed**, build OK |
+| [e2e-playwright.log](docs/test-logs/e2e-playwright.log) | `E2E_BASE=… npx playwright test` against the release backend in demo mode, fresh sandboxes | **31 passed, 0 failed** |
 | [release-build.log](docs/test-logs/release-build.log) | `touch build.rs && cargo build --release` after frontend build | release build OK |
 | [n36-backup-restore.log](docs/test-logs/n36-backup-restore.log) | production install → backup → restore into an empty directory → continue the request | all checks as expected |
 
@@ -31,6 +31,10 @@ Browser specs (Playwright, headless Chromium, release binary in demo mode):
 
 - `e2e/reaudit.spec.ts` — three fresh sandboxes: first October monthly policy through Settings and Balances (October–December); pending/applied correction disables the same date and a forced second command cannot return more minutes; quarantined-only evidence blocks final approval, then a clean upload allows the same route to complete.
 
+- `frontend/e2e/click-budget.spec.ts` — four tests measure thirteen task budgets and reject internal labels in visible body text. A fifth test checks employee/user context across People shortcuts, the shared import dialog and the Operations redirect. Measured click counts are printed in the browser log.
+- `frontend/e2e/review-regressions.spec.ts` — five tests: amendment balance, returned days, child rows and partial-cancellation dates agree with the server; the manager's pending question and the answer; nav badges follow decisions; admin shortcuts within three clicks; year defaults; chronological absence rows; payroll file in three clicks.
+- `F05 round2: actual correction confirms second approval and preserves adjustment identity` replaces the old display-ID test name in `audit-round2.spec.ts`: the UI confirmation uses plain wording, while the created adjustment ID and amount are verified through the real API. Existing lifecycle, permission, privacy, ledger and retry assertions remain covered through the redesigned controls.
+
 L07 supporting-document notes: final approval uses the submitted revision's frozen requirement and checks clean-file presence independently of download authority. Router tests `r03_required_evidence_cannot_be_satisfied_only_by_quarantined_file`, `r03_pending_failed_quarantined_and_lost_clean_gate_frozen_rule` and `r03_failed_document_clean_replacement_parent_evidence_and_medical_privacy` cover pending, quarantined, scan-failed, lost-clean and replacement files, parent evidence and medical metadata/download denial. The UI explains the blocking requirement and disables final approval until a clean document exists.
 
 Recorded walkthrough of the new-scenario spec: [docs/media/demo-walkthrough.webm](docs/media/demo-walkthrough.webm).
@@ -39,7 +43,7 @@ Recorded walkthrough of the new-scenario spec: [docs/media/demo-walkthrough.webm
 
 | ID | Check | Evidence (test or log) | Result |
 |---|---|---|---|
-| N01 | 9–13 Nov, 480-minute days → 2400 min / 5 days | `scenario::main_scenario`; e2e main-scenario (preview "5 days", "40 h") | PASS |
+| N01 | 9–13 Nov, 480-minute days → 2400 min / 5 days | `scenario::main_scenario`; e2e main-scenario (preview "5 working days", real API confirms 2400 minutes) | PASS |
 | N02 | Half day 240 / full 480; same morning blocked, other half allowed | `scenario::half_day_and_holidays`, `scenario::overlap_rules` (am+pm allowed, am+pm+am blocked) | PASS |
 | N03 | A day off inside the range is not counted and explained | `scenario::half_day_and_holidays` (holiday → 0 with its name), `audit_fixes_a::f13_revoke_used_exception_keeps_frozen_days`; e2e F13 | PASS |
 | N04 | Saturday 360, Sunday 0 | `original_acceptance::n04_saturday_360_sunday_0` | PASS |

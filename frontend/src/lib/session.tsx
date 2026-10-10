@@ -15,6 +15,7 @@ export interface Session {
   me: Me | null;
   loading: boolean;
   refreshConfig: () => Promise<void>;
+  adoptMe: (me: Me) => void;
   refreshMe: () => Promise<Me | null>;
   logout: () => Promise<void>;
   hasRole: (...roles: Role[]) => boolean;
@@ -34,6 +35,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       /* keep last known config */
     }
   }, []);
+
+  const adoptMe = useCallback((m: Me) => { setMe(m); setCsrfToken(m.csrf_token); }, []);
 
   const refreshMe = useCallback(async () => {
     try {
@@ -77,8 +80,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ config, me, loading, refreshConfig, refreshMe, logout, hasRole }),
-    [config, me, loading, refreshConfig, refreshMe, logout, hasRole],
+    () => ({ config, me, loading, refreshConfig, refreshMe, adoptMe, logout, hasRole }),
+    [config, me, loading, refreshConfig, refreshMe, adoptMe, logout, hasRole],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

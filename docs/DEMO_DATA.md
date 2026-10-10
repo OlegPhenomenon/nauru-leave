@@ -11,16 +11,16 @@ responsible HR officer before real use."
 ## Подразделения
 | code | name |
 |---|---|
-| CHR | Central HR Office (demo) |
-| IU | Infrastructure Unit (demo) |
-| CSU | Community Services Unit (demo) |
+| CHR | Central HR Office |
+| IU | Infrastructure Unit |
+| CSU | Community Services Unit |
 
 ## Графики
 - `Standard Mon–Fri 8h` — 480 × пн–пт, с 2025-01-01.
 - `Part-time Mon–Thu 6h` — 360 × пн–чт, с 2025-01-01.
 
 Календарь (демо, требует подтверждения): 2025-12-25, 2025-12-26, 2026-01-01, 2026-01-31 (Independence Day),
-2026-05-17 (Constitution Day), 2026-10-26 (Angam Day), 2026-12-25, 2026-12-28 (Christmas substitute, fictional),
+2026-05-17 (Constitution Day), 2026-10-26 (Angam Day), 2026-12-25, 2026-12-28 (Christmas substitute),
 2027-01-01. На неделе 9–13.11.2026 праздников нет.
 
 ## Виды отпусков

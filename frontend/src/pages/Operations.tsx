@@ -1,184 +1,126 @@
 import { useState } from 'react';
-import { api, post, unwrapList } from '../api/client';
-import type { AuditEvent, NotificationItem } from '../api/types';
-import { Empty, ErrBox, Field, JsonValue, Loading } from '../components/ui';
-import { fmtDateTime } from '../lib/format';
+import { Link } from 'react-router';
+import { api, ApiError, post } from '../api/client';
+import type { NotificationItem } from '../api/types';
+import { DataTable, Details, EmptyState, ErrBox, Field, Loading, PageHeader, Tag, useToast } from '../components/ui';
+import { fmtDateTime, fmtDuration, notificationStatusLabel, plural } from '../lib/format';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
+import { readAll } from './settings/data';
 
-const STATUS_OPTS = ['', 'queued', 'sent', 'retrying', 'failed', 'gave_up'];
+interface SystemSummary {
+  notifications: { status: string; count: number }[];
+  quarantined_files: number;
+  scan_failed_files: number;
+  active_reservation_minutes: number;
+  scanner: string;
+  sandbox_id: string | null;
+  generation: number | null;
+}
+const EMAIL_STATUSES = ['queued', 'sent', 'retrying', 'failed', 'gave_up'];
+
+function emailProblem(error: string | null): string {
+  if (/unreachable|recipient|address/i.test(error ?? '')) return "The address can't receive mail.";
+  if (/timeout|timed out|connection|network/i.test(error ?? '')) return 'The mail service did not respond. Try again.';
+  return 'Delivery failed. Check the address and try again.';
+}
 
 export default function Operations() {
   const { hasRole } = useSession();
   const canRetry = hasRole('tech_admin', 'hr');
+  const toast = useToast();
   const [status, setStatus] = useState('');
-  const [auditEntity, setAuditEntity] = useState('');
-  const [auditEntityId, setAuditEntityId] = useState('');
-  const [auditActor, setAuditActor] = useState('');
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const notifQ = useApi(
-    () =>
-      api<unknown>('/ops/notifications', { query: { status: status || undefined } }).then((d) =>
-        unwrapList<NotificationItem>(d),
-      ),
-    [status],
-  );
-  const summaryQ = useApi(() => api<unknown>('/ops/summary'), []);
-  const auditQ = useApi(
-    () =>
-      api<unknown>('/audit', {
-        query: {
-          entity: auditEntity || undefined,
-          entity_id: auditEntityId || undefined,
-          actor_user_id: auditActor || undefined,
-          limit: 200,
-        },
-      }).then((d) => unwrapList<AuditEvent>(d)),
-    [auditEntity, auditEntityId, auditActor],
-  );
+  const [emailsOpen, setEmailsOpen] = useState(false);
+  const [retrying, setRetrying] = useState<number[]>([]);
+  const [queued, setQueued] = useState<number[]>([]);
+  const [errors, setErrors] = useState<Record<number, ApiError>>({});
+  const summary = useApi(() => api<SystemSummary>('/ops/summary'), []);
+  const attention = useApi(async () => {
+    const groups = await Promise.all([
+      readAll<NotificationItem>('/ops/notifications', { status: 'failed' }),
+      readAll<NotificationItem>('/ops/notifications', { status: 'gave_up' }),
+    ]);
+    return groups.flat().sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }, []);
+  const emails = useApi(async () => {
+    const rows = await readAll<NotificationItem>('/ops/notifications', { status: status === 'attention' || status === 'waiting' ? '' : status });
+    return status === 'attention' ? rows.filter(n => n.status === 'failed' || n.status === 'gave_up') : status === 'waiting' ? rows.filter(n => n.status === 'queued' || n.status === 'retrying') : rows;
+  }, [status]);
 
   async function retry(id: number) {
-    setMsg(null);
+    setRetrying((ids) => [...ids, id]);
+    setErrors((old) => { const next = { ...old }; delete next[id]; return next; });
     try {
       await post(`/ops/notifications/${id}/retry`);
-      setMsg(`Notification #${id} re-queued.`);
-      notifQ.reload();
-      summaryQ.reload();
+      setQueued((ids) => [...ids, id]);
+      toast('Email queued again.');
+      summary.reload();
+      emails.reload();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Retry failed');
+      setErrors((old) => ({ ...old, [id]: e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)) }));
+    } finally {
+      setRetrying((ids) => ids.filter((n) => n !== id));
     }
   }
+  const health = summary.data;
+  const undelivered = health?.notifications.filter((n) => n.status === 'failed' || n.status === 'gave_up').reduce((n, row) => n + row.count, 0) ?? 0;
+  const waiting = health?.notifications.filter((n) => n.status === 'queued' || n.status === 'retrying').reduce((n, row) => n + row.count, 0) ?? 0;
+  const blocked = health ? health.quarantined_files + health.scan_failed_files : 0;
+  const retryButton = (n: NotificationItem) => (
+    <>
+      {queued.includes(n.id) ? <span role="status">Queued again</span> : canRetry ? (
+        <button className="btn btn-secondary btn-sm" disabled={retrying.includes(n.id)} onClick={() => void retry(n.id)} aria-label={`Retry email to ${n.to_email}`}>
+          {retrying.includes(n.id) ? 'Queuing…' : 'Retry email'}
+        </button>
+      ) : null}
+      {errors[n.id] ? <ErrBox error={errors[n.id]!} /> : null}
+    </>
+  );
 
   return (
-    <>
-      <h1>Operations</h1>
-      {msg ? <div className="alert alert-info">{msg}</div> : null}
-
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>Summary</h2>
-        {summaryQ.loading ? <Loading /> : null}
-        {summaryQ.error ? <ErrBox error={summaryQ.error} /> : null}
-        {summaryQ.data ? <JsonValue v={summaryQ.data} /> : null}
-      </div>
-
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>Notifications</h2>
-        <div className="toolbar">
-          <Field label="Status">
-            <select value={status} onChange={(e) => setStatus(e.target.value)}>
-              {STATUS_OPTS.map((s) => (
-                <option key={s} value={s}>
-                  {s || 'All'}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        {notifQ.loading ? <Loading /> : null}
-        {notifQ.error ? <ErrBox error={notifQ.error} /> : null}
-        {notifQ.data && notifQ.data.length === 0 ? <Empty>No notifications with this status.</Empty> : null}
-        {notifQ.data && notifQ.data.length ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>To</th>
-                  <th>Subject</th>
-                  <th>Status</th>
-                  <th className="num">Attempts</th>
-                  <th>Last error</th>
-                  <th>Next attempt</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {notifQ.data.map((n) => (
-                  <tr key={n.id}>
-                    <td>{n.id}</td>
-                    <td className="small">{n.to_email}</td>
-                    <td className="small">{n.subject}</td>
-                    <td>
-                      <span
-                        className={`badge ${n.status === 'gave_up' || n.status === 'failed' ? 'badge-med' : ''}`}
-                      >
-                        {n.status}
-                      </span>
-                    </td>
-                    <td className="num">{n.attempts}</td>
-                    <td className="small muted">{n.last_error ?? '—'}</td>
-                    <td className="small">{n.next_attempt_at ? fmtDateTime(n.next_attempt_at) : '—'}</td>
-                    <td>
-                      {canRetry && (n.status === 'failed' || n.status === 'gave_up' || n.status === 'queued') ? (
-                        <button className="btn btn-secondary btn-sm" onClick={() => void retry(n.id)}>
-                          Retry
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-        <p className="muted small">
-          Addresses on the @unreachable.demo domain always fail in the demo — that is intentional.
-          Message bodies are not shown here.
-        </p>
-      </div>
-
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>Audit log</h2>
-        <div className="toolbar">
-          <Field label="Entity type">
-            <input value={auditEntity} onChange={(e) => setAuditEntity(e.target.value)} placeholder="leave_request" />
-          </Field>
-          <Field label="Entity id">
-            <input type="number" value={auditEntityId} onChange={(e) => setAuditEntityId(e.target.value)} />
-          </Field>
-          <Field label="Actor user id">
-            <input type="number" value={auditActor} onChange={(e) => setAuditActor(e.target.value)} />
-          </Field>
-        </div>
-        {auditQ.loading ? <Loading /> : null}
-        {auditQ.error ? <ErrBox error={auditQ.error} /> : null}
-        {auditQ.data && auditQ.data.length === 0 ? <Empty>No events match.</Empty> : null}
-        {auditQ.data && auditQ.data.length ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Actor</th>
-                  <th>Action</th>
-                  <th>Entity</th>
-                  <th>Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {auditQ.data.map((e) => (
-                  <tr key={e.id}>
-                    <td className="small">{fmtDateTime(e.at)}</td>
-                    <td className="small">
-                      {e.actor?.display_name ?? 'system'}
-                      {e.acting_for ? ` (for ${e.acting_for.display_name})` : ''}
-                    </td>
-                    <td className="small">{e.action}</td>
-                    <td className="small">
-                      {e.entity}
-                      {e.entity_id != null ? ` #${e.entity_id}` : ''}
-                    </td>
-                    <td className="small muted">
-                      {e.details ? <code className="mono">{JSON.stringify(e.details)}</code> : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </div>
-    </>
+    <div className="stack">
+      <PageHeader title="System" subtitle="Email delivery and file checks." />
+      {summary.loading ? <Loading /> : null}
+      {summary.error ? <ErrBox error={summary.error} /> : null}
+      {health ? <div className="card-grid">
+        <div className="card"><h2>Emails</h2><a href="#all-emails" onClick={() => { setStatus(undelivered ? 'attention' : waiting ? 'waiting' : 'sent'); setEmailsOpen(true); }}>
+          <Tag tone={undelivered ? 'warn' : 'ok'}>{undelivered || waiting ? `${undelivered} not delivered · ${waiting} waiting to be sent` : 'All delivered'}</Tag>
+        </a></div>
+        <div className="card"><h2>Files</h2><Tag tone={blocked ? 'warn' : 'ok'}>{blocked ? `${blocked} blocked` : 'None blocked'}</Tag></div>
+        <div className="card"><h2>Virus scanner</h2><Tag tone={health.scan_failed_files ? 'warn' : undefined}>{health.scan_failed_files ? 'Some checks failed' : 'No failed checks'}</Tag></div>
+      </div> : null}
+      <section className="panel" aria-labelledby="attention-title">
+        <h2 id="attention-title">Needs attention</h2>
+        {attention.loading ? <Loading /> : attention.error ? <ErrBox error={attention.error} /> : (
+          <DataTable<NotificationItem> rows={attention.data ?? []} empty="No emails need attention." columns={[
+            { label: 'To', render: (n) => n.to_email },
+            { label: 'Subject', render: (n) => n.subject },
+            { label: 'Problem', render: (n) => emailProblem(n.last_error) },
+            { label: 'Action', render: retryButton },
+          ]} />
+        )}
+      </section>
+      <div id="all-emails"><Details title="All emails" defaultOpen={emailsOpen}>
+        <Field label="Delivery status"><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All emails</option><option value="attention">Not delivered</option><option value="waiting">Waiting to be sent</option>{EMAIL_STATUSES.map((s) => <option key={s} value={s}>{notificationStatusLabel(s)}</option>)}</select></Field>
+        {emails.loading ? <Loading /> : emails.error ? <ErrBox error={emails.error} /> : <DataTable<NotificationItem> rows={emails.data ?? []} empty="No emails with this status." columns={[
+          { label: 'To', render: (n) => n.to_email },
+          { label: 'Subject', render: (n) => n.subject },
+          { label: 'Status', render: (n) => notificationStatusLabel(n.status) },
+          { label: 'Delivery', render: (n) => n.sent_at ? `Sent ${fmtDateTime(n.sent_at)}` : n.next_attempt_at ? `Next try ${fmtDateTime(n.next_attempt_at)}` : 'No next try scheduled' },
+          { label: 'Details', render: (n) => <Details title="Delivery details"><p>{plural(n.attempts, 'attempt')}.</p>{n.last_error ? <p>{emailProblem(n.last_error)}</p> : null}{n.status !== 'sent' ? retryButton(n) : null}</Details> },
+        ]} />}
+      </Details></div>
+      <Details title="Technical details">
+        {health ? <dl className="kv">
+          <div className="kv-row"><dt>Waiting for approval</dt><dd>{fmtDuration(health.active_reservation_minutes)}</dd></div>
+          <div className="kv-row"><dt>Files blocked by scanning</dt><dd>{health.quarantined_files}</dd></div>
+          <div className="kv-row"><dt>Files awaiting a successful check</dt><dd>{health.scan_failed_files}</dd></div>
+          <div className="kv-row"><dt>Scanner</dt><dd>{health.scanner}</dd></div>
+          {health.sandbox_id ? <div className="kv-row"><dt>Demo environment</dt><dd>Generation {health.generation}</dd></div> : null}
+        </dl> : <EmptyState text="System details are unavailable." />}
+        <p className="muted small">Delivery failures do not reverse saved changes.</p>
+        <Link to="/history">View history</Link>
+      </Details>
+    </div>
   );
 }

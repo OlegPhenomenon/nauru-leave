@@ -1,0 +1,14 @@
+/* Row ⋯ menus: the marker itself is the affordance — no extra caret. */
+.row-menu > summary::after {
+  content: none;
+}
+.row-menu > summary {
+  min-width: 2.5rem;
+  justify-content: center;
+  font-weight: var(--fw-strong);
+  color: var(--text-muted);
+}
+.row-menu[open] > summary,
+.row-menu > summary:hover {
+  color: var(--brand);
+}

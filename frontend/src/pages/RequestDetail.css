@@ -1,0 +1,95 @@
+/* Request page — calm top, everything else behind disclosures. */
+
+.rq-page > :not(.page-header) {
+  max-width: 46rem;
+}
+
+.rq-status {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+}
+
+.rq-status-text {
+  color: var(--text-muted);
+}
+
+.rq-secondary {
+  margin-top: var(--sp-3);
+}
+
+.rq-card {
+  margin-top: var(--sp-4);
+}
+
+.rq-page .warn-list {
+  margin-top: var(--sp-3);
+}
+
+.rq-messages {
+  margin-top: var(--sp-4);
+}
+
+.rq-h2 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-section);
+}
+
+.rq-reply {
+  margin-top: var(--sp-2);
+}
+
+.rq-details {
+  margin-top: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.rq-history {
+  margin: 0;
+  padding-left: var(--sp-4);
+}
+
+.rq-history li {
+  margin-bottom: var(--sp-1);
+}
+
+.rq-tech {
+  margin-top: var(--sp-3);
+}
+
+.rq-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.rq-check {
+  display: block;
+  font-weight: var(--fw-regular);
+}
+
+.rq-error {
+  max-width: 36rem;
+  margin: var(--sp-6) auto;
+}
+
+.warn-line {
+  color: var(--warn);
+}
+
+.rq-duration { margin-top: var(--sp-3); }
+.rq-change-pending, .rq-question {
+  padding: var(--sp-3);
+  background: var(--brand-tint);
+  border-radius: var(--r-control);
+}
+.rq-messages > .disclosure { margin-top: var(--sp-4); }
+.rq-check { min-height: 44px; padding: var(--sp-2) 0; }
+.rq-page .rq-card { padding: var(--sp-4); }
+.rq-page .page-header h1 { overflow-wrap: anywhere; }

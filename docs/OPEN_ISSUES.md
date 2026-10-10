@@ -19,3 +19,11 @@ transaction. Доставка через конкретного внешнего
 область из строк файла и сохранившихся датированных HR-прав. Если демо-часы отличались от timestamps, условия
 были перезаписаны или старые права удалены, точное прежнее состояние восстановить из БД невозможно; такие
 исторические сведения требуют проверки HR по исходным документам. Новые записи сохраняют эти данные явно.
+
+## Frontend review limitations
+
+- Admin A2: the import API only accepts its existing CSV headers, leave-type/unit codes, and whole minutes. The dialog uploads the chosen CSV unchanged; its template keeps those headers and the adjacent help explains each value. Direct days entry requires a backend contract or a separate CSV-building form.
+- Admin A5: an authoritative per-person year-close preview and the last unclosed year are unavailable in the API. The dialog defaults to the last finished year and explains carry-over rules; the commit response reports whether any balance entries were posted. Zero entries can also mean a first close with no deductions, so it cannot truthfully be labelled “already closed”.
+- Admin A11: notification responses mask HR recipient addresses and remove recipient identity and request links. The frontend cannot identify the affected person without guessing; the API must return an authorized display name or recipient reference.
+- Staff U22 / Admin B8: event timestamps intentionally use the real clock in Pacific/Nauru while the demo business date controls leave rules. This behavior follows the product decision; changing timestamps would conceal the audit time.
+- Admin B4: sick-leave masking in the calendar, absence CSV and payroll files is intentional privacy and remains in place.

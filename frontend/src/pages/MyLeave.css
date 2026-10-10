@@ -1,0 +1,53 @@
+/* My leave — compact balance rows and the "Action needed" card. */
+
+.action-card {
+  background: var(--brand-tint);
+  border: 1px solid var(--brand);
+  border-radius: var(--r-surface);
+  padding: var(--sp-4) var(--sp-5);
+}
+.action-card h2 {
+  margin-bottom: var(--sp-1);
+}
+.action-card .q {
+  margin: var(--sp-2) 0;
+}
+.action-card .btn-row {
+  margin-top: var(--sp-3);
+}
+
+.days-list {
+  display: flex;
+  flex-direction: column;
+}
+.day-row {
+  padding: var(--sp-2) 0 var(--sp-3);
+  border-bottom: 1px solid var(--divider);
+}
+.day-row:last-child {
+  border-bottom: none;
+}
+.day-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-4);
+}
+.day-name {
+  font-weight: var(--fw-strong);
+}
+.day-num {
+  font-size: var(--fs-section);
+  font-weight: var(--fw-strong);
+  color: var(--brand);
+  white-space: nowrap;
+}
+.day-note {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  margin: 0;
+}
+
+.coming-up {
+  margin: 0;
+}

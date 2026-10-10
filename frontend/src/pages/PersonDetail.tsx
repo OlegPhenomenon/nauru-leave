@@ -1,65 +1,120 @@
-import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router';
-import { api, ApiError, post, put, unwrapList } from '../api/client';
+import { useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router';
+import { api, ApiError, put, unwrapList } from '../api/client';
 import type {
   EmployeeDetail,
   EmployeeListItem,
   OrgUnit,
+  RequestSummary,
   Schedule,
 } from '../api/types';
-import { Dur, Empty, ErrBox, Field, Loading, Modal } from '../components/ui';
-import { fmtDate } from '../lib/format';
+import {
+  DataTable,
+  Details,
+  ErrBox,
+  Field,
+  Loading,
+  Modal,
+  PageHeader,
+  StatusBadge,
+  Tag,
+  useToast,
+} from '../components/ui';
+import { fmtDate, fmtDuration, fmtRange, orgUnitName } from '../lib/format';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
+import { ApprovedRequestActions } from './request/ApprovedActions';
+import {
+  EndEmploymentDialog,
+  PatternDialog,
+  TransferDialog,
+  type AffectedRequest,
+} from './people/dialogs';
 
-type Dialog = 'edit' | 'transfer' | 'schedule' | 'deactivate' | null;
+type Dialog = 'edit' | 'transfer' | 'pattern' | 'end' | null;
+
+/** The API returns schedule history rows flat: {id, name, valid_from, valid_to}. */
+type SchedHist = { id: number; name: string; valid_from: string; valid_to: string | null };
 
 export default function PersonDetail() {
   const { id } = useParams();
-  const { hasRole } = useSession();
+  const { hasRole, config } = useSession();
   const canEdit = hasRole('hr');
+  const today = config?.business_date ?? '';
+  const [sp] = useSearchParams();
+  const isNew = sp.get('new') === '1';
+  const toast = useToast();
+
   const q = useApi(() => api<EmployeeDetail>(`/employees/${id}`), [id]);
   const unitsQ = useApi(() => api<unknown>('/org-units').then((d) => unwrapList<OrgUnit>(d)), []);
   const schedulesQ = useApi(() => api<unknown>('/schedules').then((d) => unwrapList<Schedule>(d)), []);
-  const employeesQ = useApi(
+  const peopleQ = useApi(
     () => api<unknown>('/employees').then((d) => unwrapList<EmployeeListItem>(d)),
     [],
   );
+  const reqsQ = useApi(
+    () =>
+      api<unknown>('/requests', {
+        query: { scope: 'all', employee_id: id ?? '' },
+      }).then((d) => unwrapList<RequestSummary>(d)),
+    [id],
+  );
 
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [affected, setAffected] = useState<AffectedRequest[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<ApiError | null>(null);
-  const [affected, setAffected] = useState<{ id: number; number: string }[] | null>(null);
-
-  const [edit, setEdit] = useState({ full_name: '', email: '', end_date: '', active: true });
-  const [transfer, setTransfer] = useState({
-    org_unit_id: 0,
-    manager_employee_id: 0,
-    valid_from: '',
-    reassign_open_steps: false,
-  });
-  const [sched, setSched] = useState({ schedule_id: 0, valid_from: '' });
+  const [edit, setEdit] = useState({ full_name: '', email: '' });
 
   const e = q.data;
-  useEffect(() => {
-    if (e && dialog === 'edit')
-      setEdit({
-        full_name: e.full_name,
-        email: e.email ?? '',
-        end_date: e.end_date ?? '',
-        active: e.active,
-      });
-  }, [e, dialog]);
 
-  async function run(fn: () => Promise<void>) {
+  function openEdit() {
+    if (!e) return;
+    setEdit({ full_name: e.full_name, email: e.email ?? '' });
+    setErr(null);
+    setDialog('edit');
+  }
+
+  async function saveEdit() {
+    if (!e) return;
     setBusy(true);
     setErr(null);
     try {
-      await fn();
+      await put(`/employees/${e.id}`, {
+        full_name: edit.full_name.trim(),
+        email: edit.email.trim() || null,
+        end_date: e.end_date,
+        active: e.active,
+        expected_version: e.version,
+      });
       setDialog(null);
-      q.reload();
+      setFlash('Details saved.');
+      void q.reload();
     } catch (ex) {
       setErr(ex instanceof ApiError ? ex : new ApiError(0, 'unknown', String(ex)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reinstate() {
+    if (!e) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await put(`/employees/${e.id}`, {
+        full_name: e.full_name,
+        email: e.email,
+        end_date: null,
+        active: true,
+        expected_version: e.version,
+      });
+      setFlash(`${e.full_name} is active again.`);
+      void q.reload();
+    } catch (ex) {
+      setErr(ex instanceof ApiError ? ex : new ApiError(0, 'unknown', String(ex)));
+      toast('Could not save that. Try again.', 'err');
     } finally {
       setBusy(false);
     }
@@ -69,323 +124,360 @@ export default function PersonDetail() {
   if (q.error) return <ErrBox error={q.error} />;
   if (!e) return null;
 
+  const unit = e.org_unit ? orgUnitName(e.org_unit.name) : null;
+  const units = unitsQ.data?.filter((u) => u.active) ?? [];
+  const schedHistory = e.schedules as unknown as SchedHist[];
+  const reqs = reqsQ.data ?? [];
+
+  const subline = [
+    `Staff no. ${e.service_id}`,
+    unit,
+    e.manager ? `reports to ${e.manager.full_name}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const requestColumns = [
+    { label: 'Dates', title: true, render: (r: RequestSummary) => fmtRange(r.start_date, r.end_date) },
+    { label: 'Type', render: (r: RequestSummary) => r.leave_type_name },
+    {
+      label: 'Days',
+      className: 'nowrap',
+      render: (r: RequestSummary) => fmtDuration(r.total_minutes, r.minutes_per_day),
+    },
+    {
+      label: 'Status',
+      render: (r: RequestSummary) => <StatusBadge status={r.status} />,
+    },
+    ...(canEdit ? [{ label: 'Actions', render: (r: RequestSummary) => r.kind === 'leave' && r.status === 'approved' ? <ApprovedRequestActions requestId={r.id} /> : null }] : []),
+  ];
+
   return (
     <>
-      <h1>
-        {e.full_name} {!e.active ? <span className="badge">inactive</span> : null}
-      </h1>
+      <PageHeader
+        back={{ to: '/people', label: 'People' }}
+        title={
+          <>
+            {e.full_name}{' '}
+            <Tag>{e.active ? 'Active' : `Left${e.end_date ? ` ${fmtDate(e.end_date)}` : ''}`}</Tag>
+          </>
+        }
+        subtitle={subline}
+        primary={
+          canEdit ? (
+            <Link className="btn" to={isNew ? `/balances?employee=${e.id}&correct=1` : `/requests/new?employee=${e.id}`}>
+              {isNew ? 'Set opening balance…' : 'Enter paper form'}
+            </Link>
+          ) : undefined
+        }
+        more={
+          canEdit
+            ? [
+                { label: 'Edit name or email', onSelect: openEdit },
+                e.active
+                  ? { label: 'End employment…', danger: true, onSelect: () => setDialog('end') }
+                  : { label: 'Reinstate…', onSelect: () => void reinstate() },
+              ]
+            : undefined
+        }
+      />
+
+      {isNew ? (
+        <p className="next-hint">
+          <strong>{e.full_name} is added.</strong> Next step:{' '}
+          <Link to={`/balances?employee=${e.id}&correct=1`}>set their opening balance</Link>.
+        </p>
+      ) : null}
+
       <div className="panel">
         <dl className="kv">
           <div className="kv-row">
-            <dt>Service ID</dt>
-            <dd className="mono">{e.service_id}</dd>
+            <dt>Contact</dt>
+            <dd>
+              {e.email ?? 'No email'}{' '}
+              {canEdit ? (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={openEdit}>
+                  Change…
+                </button>
+              ) : null}
+            </dd>
           </div>
           <div className="kv-row">
-            <dt>Org unit</dt>
-            <dd>{e.org_unit?.name ?? '—'}</dd>
+            <dt>Unit &amp; manager</dt>
+            <dd>
+              {unit ?? '—'}
+              {e.manager ? ` · reports to ${e.manager.full_name}` : ''}{' '}
+              {canEdit ? (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDialog('transfer')}>
+                  Change…
+                </button>
+              ) : null}
+            </dd>
           </div>
           <div className="kv-row">
-            <dt>Manager</dt>
-            <dd>{e.manager?.full_name ?? '—'}</dd>
-          </div>
-          <div className="kv-row">
-            <dt>Schedule</dt>
-            <dd>{e.schedule?.name ?? '—'}</dd>
+            <dt>Work pattern</dt>
+            <dd>
+              {e.schedule?.name ?? '—'}{' '}
+              {canEdit ? (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDialog('pattern')}>
+                  Change…
+                </button>
+              ) : null}
+            </dd>
           </div>
           <div className="kv-row">
             <dt>Employment</dt>
             <dd>
-              {fmtDate(e.start_date)} – {e.end_date ? fmtDate(e.end_date) : 'present'}
-            </dd>
-          </div>
-          <div className="kv-row">
-            <dt>Login</dt>
-            <dd>
-              {e.user ? `${e.user.email} (user #${e.user.id})` : e.has_login ? 'yes' : 'no login — served on paper'}
+              {e.end_date
+                ? `${fmtDate(e.start_date)} – ${fmtDate(e.end_date)}`
+                : `since ${fmtDate(e.start_date)}`}{' '}
+              {canEdit && e.active ? (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDialog('end')}>
+                  End…
+                </button>
+              ) : null}
             </dd>
           </div>
         </dl>
-        {canEdit ? (
-          <div className="btn-row">
-            <button className="btn btn-secondary" onClick={() => setDialog('edit')}>
-              Edit
-            </button>
-            <button className="btn btn-secondary" onClick={() => setDialog('transfer')}>
-              Transfer
-            </button>
-            <button className="btn btn-secondary" onClick={() => setDialog('schedule')}>
-              Change schedule
-            </button>
-            {e.active ? (
-              <button className="btn btn-danger" onClick={() => setDialog('deactivate')}>
-                Deactivate
-              </button>
-            ) : null}
-          </div>
+        {flash ? <p className="alert alert-ok">{flash}</p> : null}
+        {affected.length > 0 ? (
+          <p className="alert alert-info">
+            {affected.length} future {affected.length === 1 ? 'request needs' : 'requests need'}{' '}
+            checking:{' '}
+            {affected.map((r) => (
+              <Link key={r.id} className="req-num" to={`/requests/${r.id}`}>
+                {r.number}
+              </Link>
+            ))}
+          </p>
         ) : null}
       </div>
 
-      <div className="two-col">
+      {e.balances && e.balances.filter((b) => b.leave_type.uses_balance).length > 0 ? (
         <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Assignments</h2>
-          {e.assignments.length === 0 ? (
-            <Empty>No assignment history.</Empty>
-          ) : (
-            <table className="small">
-              <thead>
-                <tr>
-                  <th>Org unit</th>
-                  <th>Manager</th>
-                  <th>From</th>
-                  <th>To</th>
-                </tr>
-              </thead>
-              <tbody>
-                {e.assignments.map((a) => (
-                  <tr key={a.id}>
-                    <td>{a.org_unit?.name ?? '—'}</td>
-                    <td>{a.manager?.full_name ?? '—'}</td>
-                    <td>{fmtDate(a.valid_from)}</td>
-                    <td>{a.valid_to ? fmtDate(a.valid_to) : 'present'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Schedules</h2>
-          {e.schedules.length === 0 ? (
-            <Empty>No schedule history.</Empty>
-          ) : (
-            <table className="small">
-              <thead>
-                <tr>
-                  <th>Schedule</th>
-                  <th>From</th>
-                  <th>To</th>
-                </tr>
-              </thead>
-              <tbody>
-                {e.schedules.map((s) => (
-                  <tr key={s.id}>
-                    <td>{s.schedule?.name ?? '—'}</td>
-                    <td>{fmtDate(s.valid_from)}</td>
-                    <td>{s.valid_to ? fmtDate(s.valid_to) : 'present'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-
-      {e.balances ? (
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Balances</h2>
-          <div className="card-grid">
-            {e.balances.filter((b) => b.leave_type.uses_balance).map((b) => (
-              <div className="card" key={b.leave_type.id}>
-                <h3>{b.leave_type.name}</h3>
-                <span className="balance-num">
-                  <Dur minutes={b.available_minutes} mpd={b.minutes_per_day} />
-                </span>
-                <span className="balance-sub">
-                  ledger <Dur minutes={b.ledger_minutes} mpd={b.minutes_per_day} /> · reserved{' '}
-                  <Dur minutes={b.reserved_minutes} mpd={b.minutes_per_day} />
-                </span>
-                <div>
-                  <Link className="small" to={`/balances/${e.id}/explain?leave_type_id=${b.leave_type.id}`}>
-                    How is this calculated?
-                  </Link>
+          <h2>Leave left</h2>
+          <dl className="kv">
+            {e.balances
+              .filter((b) => b.leave_type.uses_balance)
+              .map((b) => (
+                <div className="kv-row" key={b.leave_type.id}>
+                  <dt>{b.leave_type.name}</dt>
+                  <dd>
+                    <strong>{fmtDuration(b.available_minutes, b.minutes_per_day)} left</strong>
+                    {b.reserved_minutes > 0 ? (
+                      <span className="muted">
+                        {' '}
+                        · {fmtDuration(b.reserved_minutes, b.minutes_per_day)} waiting for approval
+                      </span>
+                    ) : null}{' '}
+                    {canEdit ? (
+                      <Link className="small" to={`/balances?employee=${e.id}&correct=1`}>
+                        Correct…
+                      </Link>
+                    ) : null}{' '}
+                    <Link
+                      className="small"
+                      to={`/balances/${e.id}/explain?leave_type_id=${b.leave_type.id}`}
+                    >
+                      How is this worked out?
+                    </Link>
+                  </dd>
                 </div>
+              ))}
+          </dl>
+        </div>
+      ) : null}
+
+      {reqs.length > 0 ? (
+        <div className="panel">
+          <h2>Requests</h2>
+          <DataTable<RequestSummary>
+            columns={requestColumns}
+            rows={reqs.slice(0, 5)}
+            rowLink={(r) => `/requests/${r.id}`}
+            empty="No requests yet."
+          />
+          {reqs.length > 5 ? (
+            <Details title="Older requests" count={reqs.length - 5}>
+              <DataTable<RequestSummary>
+                columns={requestColumns}
+                rows={reqs.slice(5)}
+                rowLink={(r) => `/requests/${r.id}`}
+              />
+            </Details>
+          ) : null}
+        </div>
+      ) : null}
+
+      <Details title="History">
+        <div className="two-col">
+          <div>
+            <h3>Unit &amp; manager</h3>
+            {e.assignments.length === 0 ? (
+              <p className="empty">No history.</p>
+            ) : (
+              <div className="table-wrap">
+                <table className="small">
+                  <thead>
+                    <tr>
+                      <th>Unit</th>
+                      <th>Manager</th>
+                      <th>Period</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {e.assignments.map((a, i) => (
+                      <tr key={i}>
+                        <td>{a.org_unit ? orgUnitName(a.org_unit.name) : '—'}</td>
+                        <td>{a.manager?.full_name ?? '—'}</td>
+                        <td className="nowrap">
+                          {fmtDate(a.valid_from)} – {a.valid_to ? fmtDate(a.valid_to) : 'now'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            ))}
+            )}
+          </div>
+          <div>
+            <h3>Work pattern</h3>
+            {schedHistory.length === 0 ? (
+              <p className="empty">No history.</p>
+            ) : (
+              <div className="table-wrap">
+                <table className="small">
+                  <thead>
+                    <tr>
+                      <th>Pattern</th>
+                      <th>Period</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {schedHistory.map((s) => (
+                      <tr key={s.id}>
+                        <td>{s.name}</td>
+                        <td className="nowrap">
+                          {fmtDate(s.valid_from)} – {s.valid_to ? fmtDate(s.valid_to) : 'now'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
-      ) : null}
+      </Details>
 
-      {affected ? (
-        <div className="alert alert-info">
-          The schedule change affects these future requests:{' '}
-          {affected.map((r) => (
-            <Link key={r.id} to={`/requests/${r.id}`} style={{ marginRight: '0.5rem' }}>
-              {r.number}
-            </Link>
-          ))}
-        </div>
-      ) : null}
+      <Details title="Login &amp; access">
+        {e.user ? (
+          <dl className="kv">
+            <div className="kv-row">
+              <dt>Sign-in email</dt>
+              <dd>{e.user.email}</dd>
+            </div>
+            <div className="kv-row">
+              <dt>Access</dt>
+              <dd>
+                <Link to={`/settings/users?user=${e.user.id}`}>Edit access</Link>
+              </dd>
+            </div>
+            <div className="kv-row">
+              <dt>Stand-in</dt>
+              <dd>
+                <Link to={`/settings/delegations?new=1&for=${e.user.id}`}>Set stand-in</Link>
+              </dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="empty">No sign-in — {e.full_name} is served on paper.</p>
+        )}
+      </Details>
 
       {dialog === 'edit' ? (
-        <Modal title="Edit employee" onClose={() => setDialog(null)}>
-          {err ? <ErrBox error={err} /> : null}
-          <Field label="Full name">
-            <input value={edit.full_name} onChange={(x) => setEdit({ ...edit, full_name: x.target.value })} />
+        <Modal
+          title="Edit name or email"
+          onClose={() => setDialog(null)}
+          footer={
+            <>
+              <button type="button" className="btn btn-ghost" onClick={() => setDialog(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || edit.full_name.trim() === ''}
+                onClick={() => void saveEdit()}
+              >
+                Save
+              </button>
+            </>
+          }
+        >
+          <ErrBox error={err} />
+          <Field label="Name">
+            <input
+              type="text"
+              value={edit.full_name}
+              onChange={(x) => setEdit({ ...edit, full_name: x.target.value })}
+            />
           </Field>
           <Field label="Email">
-            <input type="email" value={edit.email} onChange={(x) => setEdit({ ...edit, email: x.target.value })} />
+            <input
+              type="email"
+              value={edit.email}
+              onChange={(x) => setEdit({ ...edit, email: x.target.value })}
+            />
           </Field>
-          <Field label="End date (leave empty if still employed)">
-            <input type="date" value={edit.end_date} onChange={(x) => setEdit({ ...edit, end_date: x.target.value })} />
-          </Field>
-          <label className="field">
-            <input type="checkbox" checked={edit.active} onChange={(x) => setEdit({ ...edit, active: x.target.checked })} />{' '}
-            active
-          </label>
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy}
-              onClick={() =>
-                void run(() =>
-                  put(`/employees/${e.id}`, {
-                    full_name: edit.full_name,
-                    email: edit.email,
-                    end_date: edit.end_date || null,
-                    active: edit.active,
-                    expected_version: e.version,
-                  }).then(() => undefined),
-                )
-              }
-            >
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setDialog(null)}>
-              Cancel
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {dialog === 'deactivate' ? (
-        <Modal title="Deactivate employee" onClose={() => setDialog(null)}>
-          <p>
-            Deactivate {e.full_name}? Existing requests and history are kept; the person stops
-            appearing as active.
-          </p>
-          {err ? <ErrBox error={err} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn btn-danger"
-              disabled={busy}
-              onClick={() =>
-                void run(() =>
-                  put(`/employees/${e.id}`, {
-                    active: false,
-                    expected_version: e.version,
-                  }).then(() => undefined),
-                )
-              }
-            >
-              {busy ? 'Working…' : 'Deactivate'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setDialog(null)}>
-              Cancel
-            </button>
-          </div>
         </Modal>
       ) : null}
 
       {dialog === 'transfer' ? (
-        <Modal title="Transfer employee" onClose={() => setDialog(null)}>
-          {err ? <ErrBox error={err} /> : null}
-          <Field label="New org unit">
-            <select value={transfer.org_unit_id} onChange={(x) => setTransfer({ ...transfer, org_unit_id: Number(x.target.value) })}>
-              <option value={0}>—</option>
-              {unitsQ.data?.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="New manager">
-            <select
-              value={transfer.manager_employee_id}
-              onChange={(x) => setTransfer({ ...transfer, manager_employee_id: Number(x.target.value) })}
-            >
-              <option value={0}>—</option>
-              {employeesQ.data
-                ?.filter((x) => x.id !== e.id)
-                .map((x) => (
-                  <option key={x.id} value={x.id}>
-                    {x.full_name}
-                  </option>
-                ))}
-            </select>
-          </Field>
-          <Field label="Valid from">
-            <input type="date" value={transfer.valid_from} onChange={(x) => setTransfer({ ...transfer, valid_from: x.target.value })} />
-          </Field>
-          <label className="field">
-            <input
-              type="checkbox"
-              checked={transfer.reassign_open_steps}
-              onChange={(x) => setTransfer({ ...transfer, reassign_open_steps: x.target.checked })}
-            />{' '}
-            reassign open approval steps to the new manager
-          </label>
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !transfer.org_unit_id || !transfer.valid_from}
-              onClick={() =>
-                void run(() =>
-                  post(`/employees/${e.id}/transfer`, {
-                    org_unit_id: transfer.org_unit_id,
-                    manager_employee_id: transfer.manager_employee_id || undefined,
-                    valid_from: transfer.valid_from,
-                    reassign_open_steps: transfer.reassign_open_steps,
-                  }).then(() => undefined),
-                )
-              }
-            >
-              {busy ? 'Saving…' : 'Transfer'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setDialog(null)}>
-              Cancel
-            </button>
-          </div>
-        </Modal>
+        <TransferDialog
+          employee={e}
+          units={units}
+          people={(peopleQ.data ?? []).filter((p) => p.active)}
+          today={today}
+          onClose={() => setDialog(null)}
+          onSaved={(msg) => {
+            setDialog(null);
+            setAffected([]);
+            setFlash(msg);
+            void q.reload();
+          }}
+        />
       ) : null}
 
-      {dialog === 'schedule' ? (
-        <Modal title="Change schedule" onClose={() => setDialog(null)}>
-          {err ? <ErrBox error={err} /> : null}
-          <Field label="New schedule">
-            <select value={sched.schedule_id} onChange={(x) => setSched({ ...sched, schedule_id: Number(x.target.value) })}>
-              <option value={0}>—</option>
-              {schedulesQ.data?.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Valid from">
-            <input type="date" value={sched.valid_from} onChange={(x) => setSched({ ...sched, valid_from: x.target.value })} />
-          </Field>
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !sched.schedule_id || !sched.valid_from}
-              onClick={() =>
-                void run(async () => {
-                  const r = await post<{ affected_future_requests?: { id: number; number: string }[] }>(
-                    `/employees/${e.id}/schedule`,
-                    { schedule_id: sched.schedule_id, valid_from: sched.valid_from, expected_version: e.version },
-                  );
-                  setAffected(r.affected_future_requests ?? []);
-                })
-              }
-            >
-              {busy ? 'Saving…' : 'Change schedule'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setDialog(null)}>
-              Cancel
-            </button>
-          </div>
-        </Modal>
+      {dialog === 'pattern' ? (
+        <PatternDialog
+          employeeId={e.id}
+          detail={e}
+          schedules={schedulesQ.data ?? []}
+          today={today}
+          onClose={() => setDialog(null)}
+          onSaved={(msg, aff) => {
+            setDialog(null);
+            setAffected(aff);
+            setFlash(msg);
+            void q.reload();
+          }}
+        />
+      ) : null}
+
+      {dialog === 'end' ? (
+        <EndEmploymentDialog
+          employeeId={e.id}
+          detail={e}
+          today={today}
+          onClose={() => setDialog(null)}
+          onSaved={(msg) => {
+            setDialog(null);
+            setAffected([]);
+            setFlash(msg);
+            void q.reload();
+          }}
+        />
       ) : null}
     </>
   );

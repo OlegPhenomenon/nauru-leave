@@ -1,49 +1,142 @@
+import { useEffect, useState, type ReactNode } from 'react';
+import { Link } from 'react-router';
+import { PageHeader } from '../components/ui';
+
+// One help question. A native <details> with the same classes as the shared
+// Details component, but openable from a URL hash (#request, #answer…).
+// `anchors` are extra hash targets inside the answer that open this question.
+function Qa({
+  id,
+  q,
+  anchors = [],
+  children,
+}: {
+  id: string;
+  q: string;
+  anchors?: string[] | undefined;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(() =>
+    [id, ...anchors].includes(window.location.hash.slice(1)),
+  );
+
+  useEffect(() => {
+    const hit = () => {
+      const h = window.location.hash.slice(1);
+      return [id, ...anchors].includes(h) ? h : null;
+    };
+    const target = hit();
+    if (target) document.getElementById(target)?.scrollIntoView();
+    const onHash = () => {
+      const t = hit();
+      if (t) {
+        setOpen(true);
+        document.getElementById(t)?.scrollIntoView();
+      }
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, [id, anchors]);
+
+  return (
+    <details
+      id={id}
+      className="disclosure"
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      <summary>{q}</summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
+  );
+}
+
 export default function Help() {
   return (
-    <div className="panel" style={{ maxWidth: '46rem' }}>
-      <h1>How to use Nauru Leave Desk</h1>
+    <div className="stack">
+      <PageHeader title="Help" />
 
-      <h2>Requesting leave</h2>
-      <ol>
-        <li>Open <strong>New request</strong>, pick a leave type and your dates. For half days,
-          choose “Morning” or “Afternoon” where the leave type allows it.</li>
-        <li>The preview shows exactly which days count, how much time each takes, and which year’s
-          balance it comes from. Days off and holidays inside your range are not counted.</li>
-        <li>Press <strong>Submit for approval</strong>. The days are reserved from your balance while
-          the request travels: manager recommendation → HR check → final decision.</li>
-        <li>If you need to attach a document (for example a certificate), press
-          <strong> Save draft</strong> first, upload the file on the request page, then submit.</li>
-      </ol>
+      <Qa id="request" q="How do I request leave?" anchors={['certificate']}>
+        <ol>
+          <li>
+            Press <strong>Request leave</strong> at the top of{' '}
+            <Link to="/my">My leave</Link>.
+          </li>
+          <li>
+            Pick the leave type and your start and end dates. For a single day you can
+            choose morning or afternoon instead of a full day where the type allows it.
+            The summary under the dates shows how many working days it will use.
+          </li>
+          <li id="certificate">
+            Some leave types need a document (for example a certificate) — the form
+            shows a document area when that applies. The file uploads when your
+            request is created.
+          </li>
+          <li>
+            Press <strong>Send request</strong>. Your days are held while it is
+            decided — your manager and HR can see it. Or press{' '}
+            <strong>Save as draft</strong> and finish it later from My leave.
+          </li>
+        </ol>
+      </Qa>
 
-      <h2>What the statuses mean</h2>
-      <ul>
-        <li><strong>Draft</strong> — saved but not sent; it reserves nothing.</li>
-        <li><strong>Submitted / Under review</strong> — in the approval route; days are reserved.</li>
-        <li><strong>Needs information</strong> — someone asked you a question; answer it on the
-          request page, or change the dates there (changes restart the route).</li>
-        <li><strong>Approved</strong> — final decision made; the time is recorded in your ledger.</li>
-        <li><strong>Rejected / Withdrawn / Cancelled</strong> — closed; the reservation is released.</li>
-      </ul>
-      <p>Separately, a request can be <em>upcoming</em>, <em>in progress</em> or
-        <em> period ended</em> — that is about the dates, not the decision.</p>
+      <Qa id="answer" q="How do I answer a question?">
+        <p>
+          If your manager or HR asks for more information, an{' '}
+          <strong>Action needed</strong> card appears at the top of{' '}
+          <Link to="/my">My leave</Link>. Type your answer there and press{' '}
+          <strong>Send answer</strong>. If you would rather move the leave, press{' '}
+          <strong>Change dates instead</strong> on the same card — that opens the
+          request page where you can change it.
+        </p>
+      </Qa>
 
-      <h2>How your balance is calculated</h2>
-      <p>
-        <strong>Available = ledger − reservations.</strong> The ledger adds your opening balance,
-        accruals and corrections, and subtracts approved leave at the moment it is approved.
-        Reservations are held by requests that are still being decided — drafts do not reserve.
-        Follow the “How is this calculated?” link on My leave to see every entry with a running total.
-      </p>
+      <Qa id="change" q="How do I change or cancel leave?">
+        <p>
+          Open the request from <Link to="/my">My leave</Link> and choose{' '}
+          <strong>Change dates</strong> or <strong>Cancellation of days</strong> on
+          the request page. This creates a change that is approved like a normal
+          request — the original leave stays in force until the change is decided.
+          For days that have already happened, ask HR to correct the record.
+        </p>
+      </Qa>
 
-      <h2>After approval</h2>
-      <ul>
-        <li>Need different dates? Use <strong>Request amendment</strong> — the approved leave stays in
-          force until the amendment is decided.</li>
-        <li>Need to give days back? Use <strong>Request cancellation</strong> for all or part of the
-          range. Past days are corrected by HR, not cancelled.</li>
-        <li>The printable card on the request page is a record of the decision — it is not a
-          government electronic signature.</li>
-      </ul>
+      <Qa id="statuses" q="What do the statuses mean?">
+        <ul>
+          <li>
+            <strong>Draft</strong> — saved but not sent yet.
+          </li>
+          <li>
+            <strong>Waiting</strong> — being decided. The days are already held for
+            you so nobody can take them.
+          </li>
+          <li>
+            <strong>Needs an answer</strong> — someone asked you a question; see
+            “How do I answer a question?”.
+          </li>
+          <li>
+            <strong>Approved</strong> — decided; the leave is booked.
+          </li>
+          <li>
+            <strong>Refused</strong> — not approved; the reason is on the request
+            page.
+          </li>
+          <li>
+            <strong>Withdrawn / Cancelled</strong> — closed, and the held days are
+            given back.
+          </li>
+        </ul>
+      </Qa>
+
+      <Qa id="balance" q="How are my days left worked out?">
+        <p>
+          <strong>Days left</strong> on My leave is what you can still use: your
+          allowance for the year, minus leave already approved and anything still
+          waiting for a decision. Press <strong>How is this worked out?</strong> on
+          any line to see the full story — every addition, every day used, and what
+          is on hold.
+        </p>
+      </Qa>
     </div>
   );
 }

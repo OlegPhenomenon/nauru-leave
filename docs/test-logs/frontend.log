@@ -1,28 +1,24 @@
-tsc --noEmit: OK
-
-> nauru-leave-frontend@0.1.0 test
-> vitest run
-
 
  RUN  v5.0.2 /Users/oleghasjanov/projects/nauru/frontend
 
 
- Test Files  2 passed (2)
-      Tests  28 passed (28)
-   Start at  17:45:12
-   Duration  126ms (transform 66%, import 21%, tests 8%, worker 5%)
-
-
-> nauru-leave-frontend@0.1.0 build
-> vite build
+ Test Files  5 passed (5)
+      Tests  58 passed (58)
+   Start at  11:23:55
+   Duration  188ms (transform 56%, import 35%, tests 6%, worker 3%)
 
 vite v8.3.1 building client environment for production...
 transforming...
-✓ 45 modules transformed.
+✓ 80 modules transformed.
 rendering chunks...
 computing gzip size...
 dist/index.html                   0.52 kB │ gzip:   0.33 kB
-dist/assets/index-CVDlYiXJ.css   11.51 kB │ gzip:   3.21 kB
-dist/assets/index-DJPesH6d.js   420.39 kB │ gzip: 116.88 kB
+dist/assets/index-Dr5Z1pXs.css   33.91 kB │ gzip:   6.78 kB
+dist/assets/index-DkkMoFJI.js   544.26 kB │ gzip: 157.14 kB
 
-✓ built in 112ms
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 131ms

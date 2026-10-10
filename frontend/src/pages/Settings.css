@@ -1,0 +1,137 @@
+/* Settings shell: left sub-nav + section content. */
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: var(--sp-5);
+  align-items: start;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings-nav a {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-control);
+  color: var(--text-muted);
+  text-decoration: none;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+}
+.settings-nav a:hover {
+  background: var(--neutral-bg);
+}
+.settings-nav a.active {
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-weight: var(--fw-strong);
+}
+@media (max-width: 700px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+  .settings-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+}
+
+/* One fact per line (leave rules, stand-ins, versions). */
+.sentence-list {
+  list-style: none;
+  margin: var(--sp-2) 0;
+  padding: 0;
+}
+.sentence-list li {
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--divider);
+  display: flex;
+  gap: var(--sp-3);
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.sentence-list li:last-child {
+  border-bottom: none;
+}
+
+/* Public holidays: the inline add row at the top of the section. */
+.inline-add {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin: var(--sp-3) 0;
+}
+.inline-add .field {
+  margin: 0;
+  flex: 1 1 140px;
+}
+.inline-add .field-add {
+  flex: 0 0 auto;
+}
+
+/* Radio/checkbox groups on one line (carry-over, expiry). */
+.field-row {
+  display: flex;
+  gap: var(--sp-4);
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.field-row input[type='number'] {
+  width: 4.5rem;
+}
+
+/* Nested control under a role checkbox. */
+.indent {
+  margin-left: var(--sp-5);
+}
+
+/* Action cell hugging the right edge of a table row. */
+td.row-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Approval route: numbered steps. */
+.route-steps {
+  list-style: none;
+  counter-reset: step;
+  margin: var(--sp-3) 0;
+  padding: 0;
+}
+.route-steps li {
+  counter-increment: step;
+  display: flex;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--divider);
+}
+.route-steps li:last-child {
+  border-bottom: none;
+}
+.route-steps li::before {
+  content: counter(step);
+  flex-shrink: 0;
+  width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 999px;
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-weight: var(--fw-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.route-steps .step-body {
+  flex: 1;
+}
+.route-steps .step-who {
+  font-weight: var(--fw-strong);
+}
+
+.settings-panel-shade { position: fixed; inset: 0; z-index: 55; background: rgb(10 20 40 / 20%); }
+.settings-content { min-width: 0; }
+.settings-content .card-grid { grid-template-columns: 1fr; }

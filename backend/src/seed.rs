@@ -66,9 +66,9 @@ pub fn seed_template(conn: &mut Connection, files_dir: &Path) -> Res<()> {
     let now_ts = "2025-01-01T09:00:00Z";
 
     // ------------------------------------------------------------- org units
-    let chr = people::create_org_unit(conn, "CHR", "Central HR Office (demo)", None)?;
-    let iu = people::create_org_unit(conn, "IU", "Infrastructure Unit (demo)", None)?;
-    let csu = people::create_org_unit(conn, "CSU", "Community Services Unit (demo)", None)?;
+    let chr = people::create_org_unit(conn, "CHR", "Central HR Office", None)?;
+    let iu = people::create_org_unit(conn, "IU", "Infrastructure Unit", None)?;
+    let csu = people::create_org_unit(conn, "CSU", "Community Services Unit", None)?;
     let _ = (chr, iu, csu);
 
     // ------------------------------------------------------------- schedules
@@ -96,7 +96,7 @@ pub fn seed_template(conn: &mut Connection, files_dir: &Path) -> Res<()> {
         ("2026-05-17", "Constitution Day"),
         ("2026-10-26", "Angam Day"),
         ("2026-12-25", "Christmas Day"),
-        ("2026-12-28", "Christmas substitute (fictional)"),
+        ("2026-12-28", "Christmas substitute"),
         ("2027-01-01", "New Year's Day"),
     ] {
         people::create_calendar_exception(conn, d(date), name, 0, None, now_ts)?;

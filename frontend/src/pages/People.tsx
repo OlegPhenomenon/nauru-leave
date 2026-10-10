@@ -1,19 +1,63 @@
 import { useState } from 'react';
-import { Link } from 'react-router';
-import { api, ApiError, post, unwrapList } from '../api/client';
-import type { EmployeeListItem, OrgUnit, Schedule } from '../api/types';
-import { Empty, ErrBox, Field, Loading, Modal } from '../components/ui';
-import { fmtDate } from '../lib/format';
+import { Link, useNavigate, useSearchParams } from 'react-router';
+import { api, unwrapList } from '../api/client';
+import type { EmployeeDetail, EmployeeListItem, OrgUnit, Schedule } from '../api/types';
+import { ImportDialog } from '../components/ImportDialog';
+import {
+  type Column,
+  DataTable,
+  EmptyState,
+  ErrBox,
+  Field,
+  Loading,
+  Menu,
+  PageHeader,
+  Tag,
+  useToast,
+} from '../components/ui';
+import { orgUnitName } from '../lib/format';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
+import {
+  AddPersonDialog,
+  EndEmploymentDialog,
+  EditPersonDialog,
+  PatternDialog,
+  TransferDialog,
+  UnitDialog,
+} from './people/dialogs';
+import './People.css';
+
+type Dialog =
+  | { kind: 'edit' | 'transfer' | 'pattern' | 'end'; employee: EmployeeListItem }
+  | { kind: 'unit'; unit: OrgUnit | null }
+  | null;
 
 export default function People() {
-  const { hasRole } = useSession();
+  const { hasRole, config } = useSession();
   const canEdit = hasRole('hr');
-  const [q, setQ] = useState('');
-  const [orgUnit, setOrgUnit] = useState('');
-  const [inclInactive, setInclInactive] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const today = config?.business_date ?? '';
+  const navigate = useNavigate();
+  const toast = useToast();
+
+  const [sp, setSp] = useSearchParams();
+  const tab = sp.get('tab') === 'units' ? 'units' : 'people';
+  const q = sp.get('q') ?? '';
+  const unit = sp.get('unit') ?? '';
+  const former = sp.get('former') === '1';
+  const setParams = (patch: Record<string, string | null>) => {
+    const next = new URLSearchParams(sp);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null || v === '') next.delete(k);
+      else next.set(k, v);
+    }
+    setSp(next, { replace: true });
+  };
+
+  const [dialog, setDialog] = useState<Dialog>(sp.get('action') === 'add-unit' ? { kind: 'unit', unit: null } : null);
+  const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [affected, setAffected] = useState<{ id: number; number: string }[]>([]);
 
   const unitsQ = useApi(
     () => api<unknown>('/org-units').then((d) => unwrapList<OrgUnit>(d)),
@@ -23,198 +67,357 @@ export default function People() {
     () => api<unknown>('/schedules').then((d) => unwrapList<Schedule>(d)),
     [],
   );
+  // The manager dropdown and unit counts need everyone, not the filtered rows.
+  const allQ = useApi(
+    () => api<unknown>('/employees').then((d) => unwrapList<EmployeeListItem>(d)),
+    [],
+  );
   const listQ = useApi(
     () =>
       api<unknown>('/employees', {
         query: {
           q: q || undefined,
-          org_unit_id: orgUnit || undefined,
-          include_inactive: inclInactive || undefined,
+          org_unit_id: unit || undefined,
+          include_inactive: former || undefined,
         },
       }).then((d) => unwrapList<EmployeeListItem>(d)),
-    [q, orgUnit, inclInactive],
+    [q, unit, former],
   );
 
-  // create form
-  const [f, setF] = useState({
-    service_id: '',
-    full_name: '',
-    email: '',
-    start_date: '',
-    org_unit_id: 0,
-    manager_employee_id: 0,
-    schedule_id: 0,
-  });
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<ApiError | null>(null);
+  const units = unitsQ.data ?? [];
+  const activeUnits = units.filter((u) => u.active);
+  const schedules = schedulesQ.data ?? [];
+  const everyone = allQ.data ?? [];
 
-  async function create() {
-    setBusy(true);
-    setErr(null);
+  /** Row actions that need the linked user account (stand-in, access). */
+  async function goForUser(employeeId: number, make: (userId: number) => string) {
     try {
-      await post('/employees', {
-        service_id: f.service_id,
-        full_name: f.full_name,
-        email: f.email || undefined,
-        start_date: f.start_date,
-        org_unit_id: f.org_unit_id || undefined,
-        manager_employee_id: f.manager_employee_id || undefined,
-        schedule_id: f.schedule_id || undefined,
-      });
-      setCreating(false);
-      setF({ service_id: '', full_name: '', email: '', start_date: '', org_unit_id: 0, manager_employee_id: 0, schedule_id: 0 });
-      listQ.reload();
-    } catch (e) {
-      setErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
-    } finally {
-      setBusy(false);
+      const d = await api<EmployeeDetail>(`/employees/${employeeId}`);
+      if (d.user) navigate(make(d.user.id));
+      else toast('This person has no sign-in.', 'info');
+    } catch {
+      toast('Could not open that. Try again.', 'err');
     }
   }
 
+  const rowMenu = (e: EmployeeListItem) => (
+    <span onClick={(ev) => ev.stopPropagation()}>
+      <Menu
+        className="row-menu"
+        label={
+          <>
+            <span className="visually-hidden">Actions for {e.full_name}</span>⋯
+          </>
+        }
+        align="end"
+        items={[
+          { label: 'Change manager or unit…', onSelect: () => setDialog({ kind: 'transfer', employee: e }) },
+          { label: 'Change work pattern…', onSelect: () => setDialog({ kind: 'pattern', employee: e }) },
+          { label: 'Correct balance…', to: `/balances?employee=${e.id}&correct=1` },
+          e.has_login
+            ? {
+                label: 'Set stand-in…',
+                onSelect: () => void goForUser(e.id, (u) => `/settings/delegations?new=1&for=${u}`),
+              }
+            : { label: 'Set stand-in…', disabled: true, hint: 'No sign-in' },
+          e.has_login
+            ? { label: 'Access…', onSelect: () => void goForUser(e.id, (u) => `/settings/users?user=${u}`) }
+            : { label: 'Access…', disabled: true, hint: 'No sign-in' },
+          { label: 'Enter paper form', to: `/requests/new?employee=${e.id}` },
+          { label: '', divider: true },
+          e.active
+            ? { label: 'End employment…', danger: true, onSelect: () => setDialog({ kind: 'end', employee: e }) }
+            : { label: 'End employment…', disabled: true },
+        ]}
+      />
+    </span>
+  );
+
+  const peopleColumns: Column<EmployeeListItem>[] = [
+    {
+      label: 'Name',
+      title: true,
+      render: (e) => (
+        <>
+          {e.full_name}{' '}
+          {e.active ? null : <Tag>Left{e.end_date ? ` ${e.end_date.slice(0, 4)}` : ''}</Tag>}
+          <div className="muted small">{e.service_id}</div>
+        </>
+      ),
+    },
+    { label: 'Unit', render: (e) => (e.org_unit ? orgUnitName(e.org_unit.name) : '—') },
+    { label: 'Manager', render: (e) => e.manager?.full_name ?? '—' },
+    { label: 'Work pattern', render: (e) => e.schedule?.name ?? '—' },
+    ...(canEdit
+      ? [{ label: '', className: 'nowrap', render: (e: EmployeeListItem) => <span className="btn-row" onClick={(ev) => ev.stopPropagation()}><button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog({ kind: 'edit', employee: e })}>Edit</button>{rowMenu(e)}</span> } satisfies Column<EmployeeListItem>]
+      : []),
+  ];
+
+  const unitColumns: Column<OrgUnit>[] = [
+    {
+      label: 'Name',
+      title: true,
+      render: (u) => (
+        <>
+          {orgUnitName(u.name)} {u.active ? null : <Tag>Not in use</Tag>}
+        </>
+      ),
+    },
+    {
+      label: 'Inside',
+      render: (u) => {
+        const p = units.find((x) => x.id === u.parent_id);
+        return p ? orgUnitName(p.name) : '—';
+      },
+    },
+    {
+      label: 'People',
+      className: 'num',
+      render: (u) => everyone.filter((e) => e.org_unit?.id === u.id).length,
+    },
+    ...(canEdit
+      ? [
+          {
+            label: '',
+            className: 'nowrap',
+            render: (u: OrgUnit) => (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                aria-label={`Rename ${u.name}`}
+                onClick={() => setDialog({ kind: 'unit', unit: u })}
+              >
+                Rename…
+              </button>
+            ),
+          } satisfies Column<OrgUnit>,
+        ]
+      : []),
+  ];
+
   return (
     <>
-      <h1>People</h1>
-      <div className="panel">
-        <div className="toolbar">
-          <Field label="Search">
-            <input
-              type="text"
-              value={q}
-              placeholder="name or service ID"
-              onChange={(e) => setQ(e.target.value)}
-            />
-          </Field>
-          <Field label="Org unit">
-            <select value={orgUnit} onChange={(e) => setOrgUnit(e.target.value)}>
-              <option value="">All</option>
-              {unitsQ.data?.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <label className="field" style={{ paddingBottom: '0.5rem' }}>
-            <input
-              type="checkbox"
-              checked={inclInactive}
-              onChange={(e) => setInclInactive(e.target.checked)}
-            />{' '}
-            include deactivated
-          </label>
-          {canEdit ? (
-            <button className="btn" onClick={() => setCreating(true)}>
-              New employee
-            </button>
-          ) : null}
-        </div>
+      <PageHeader
+        title="People"
+        primary={
+          canEdit ? (
+            tab === 'people' ? (
+              <><button type="button" className="btn" onClick={() => setAdding(true)}>
+                Add person
+              </button></>
+            ) : (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setDialog({ kind: 'unit', unit: null })}
+              >
+                Add unit
+              </button>
+            )
+          ) : undefined
+        }
+        more={
+          canEdit && tab === 'people'
+            ? [{ label: 'Enter paper form', onSelect: () => navigate('/requests/new?paper=1') }, { label: 'Add unit', onSelect: () => setDialog({ kind: 'unit', unit: null }) }, { label: 'Import people…', onSelect: () => setImporting(true) }]
+            : undefined
+        }
+      />
 
-        {listQ.loading ? <Loading /> : null}
-        {listQ.error ? <ErrBox error={listQ.error} /> : null}
-        {listQ.data && listQ.data.length === 0 ? <Empty>No employees match.</Empty> : null}
-        {listQ.data && listQ.data.length > 0 ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Service ID</th>
-                  <th>Org unit</th>
-                  <th>Manager</th>
-                  <th>Schedule</th>
-                  <th>Employed</th>
-                  <th>Login</th>
-                </tr>
-              </thead>
-              <tbody>
-                {listQ.data.map((e) => (
-                  <tr key={e.id} style={e.active ? undefined : { opacity: 0.55 }}>
-                    <td>
-                      <Link className="req-num" to={`/people/${e.id}`}>
-                        {e.full_name}
-                      </Link>
-                      {!e.active ? <span className="badge" style={{ marginLeft: '0.4rem' }}>inactive</span> : null}
-                    </td>
-                    <td className="mono small">{e.service_id}</td>
-                    <td className="small">{e.org_unit?.name ?? '—'}</td>
-                    <td className="small">{e.manager?.full_name ?? '—'}</td>
-                    <td className="small">{e.schedule?.name ?? '—'}</td>
-                    <td className="small">
-                      {fmtDate(e.start_date)}
-                      {e.end_date ? ` – ${fmtDate(e.end_date)}` : ' –'}
-                    </td>
-                    <td className="small">{e.has_login ? 'yes' : 'no'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
+      <div className="tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'people'}
+          className={tab === 'people' ? 'active' : ''}
+          onClick={() => setParams({ tab: null })}
+        >
+          People
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'units'}
+          className={tab === 'units' ? 'active' : ''}
+          onClick={() => setParams({ tab: 'units' })}
+        >
+          Units
+        </button>
       </div>
 
-      {creating ? (
-        <Modal title="New employee" onClose={() => setCreating(false)}>
-          {err ? <ErrBox error={err} /> : null}
-          <div className="form-grid">
-            <Field label="Service ID">
-              <input value={f.service_id} onChange={(e) => setF({ ...f, service_id: e.target.value })} />
+      {tab === 'people' ? (
+        <div className="panel">
+          <div className="toolbar">
+            <Field label="Search">
+              <input
+                type="search"
+                value={q}
+                placeholder="Name or staff number"
+                onChange={(e) => setParams({ q: e.target.value || null })}
+              />
             </Field>
-            <Field label="Full name">
-              <input value={f.full_name} onChange={(e) => setF({ ...f, full_name: e.target.value })} />
-            </Field>
-          </div>
-          <Field label="Email (optional — creates a login only when a user record is added)">
-            <input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} />
-          </Field>
-          <div className="form-grid">
-            <Field label="Start date">
-              <input type="date" value={f.start_date} onChange={(e) => setF({ ...f, start_date: e.target.value })} />
-            </Field>
-            <Field label="Org unit">
-              <select value={f.org_unit_id} onChange={(e) => setF({ ...f, org_unit_id: Number(e.target.value) })}>
-                <option value={0}>—</option>
-                {unitsQ.data?.map((u) => (
+            <Field label="Unit">
+              <select value={unit} onChange={(e) => setParams({ unit: e.target.value || null })}>
+                <option value="">All units</option>
+                {activeUnits.map((u) => (
                   <option key={u.id} value={u.id}>
-                    {u.name}
+                    {orgUnitName(u.name)}
                   </option>
                 ))}
               </select>
             </Field>
+            <label className="field">
+              <input
+                type="checkbox"
+                checked={former}
+                onChange={(e) => setParams({ former: e.target.checked ? '1' : null })}
+              />{' '}
+              Show former staff
+            </label>
           </div>
-          <div className="form-grid">
-            <Field label="Manager">
-              <select
-                value={f.manager_employee_id}
-                onChange={(e) => setF({ ...f, manager_employee_id: Number(e.target.value) })}
-              >
-                <option value={0}>—</option>
-                {listQ.data?.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.full_name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Schedule">
-              <select value={f.schedule_id} onChange={(e) => setF({ ...f, schedule_id: Number(e.target.value) })}>
-                <option value={0}>—</option>
-                {schedulesQ.data?.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-          <div className="btn-row">
-            <button className="btn" disabled={busy || !f.service_id || !f.full_name || !f.start_date} onClick={() => void create()}>
-              {busy ? 'Saving…' : 'Create'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setCreating(false)}>
-              Cancel
-            </button>
-          </div>
-        </Modal>
+
+          {affected.length > 0 ? (
+            <p className="alert alert-info">
+              Future requests to check:{' '}
+              {affected.map((r) => (
+                <Link key={r.id} to={`/requests/${r.id}`} className="req-num">
+                  {r.number}
+                </Link>
+              ))}
+            </p>
+          ) : null}
+
+          {listQ.error ? <ErrBox error={listQ.error} /> : null}
+          {listQ.loading ? <Loading /> : null}
+          {listQ.data ? (
+            <DataTable<EmployeeListItem>
+              columns={peopleColumns}
+              rows={listQ.data}
+              rowLink={(e) => `/people/${e.id}`}
+              empty={
+                q || unit || former
+                  ? 'No one matches this search.'
+                  : 'No people yet.'
+              }
+            />
+          ) : null}
+        </div>
+      ) : (
+        <div className="panel">
+          {unitsQ.error ? <ErrBox error={unitsQ.error} /> : null}
+          {unitsQ.loading ? <Loading /> : null}
+          {unitsQ.data ? (
+            <DataTable<OrgUnit>
+              columns={unitColumns}
+              rows={unitsQ.data}
+              empty={
+                <EmptyState
+                  text="No units yet."
+                  action={
+                    canEdit ? (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setDialog({ kind: 'unit', unit: null })}
+                      >
+                        Add unit
+                      </button>
+                    ) : undefined
+                  }
+                />
+              }
+            />
+          ) : null}
+        </div>
+      )}
+
+      {adding ? (
+        <AddPersonDialog
+          units={activeUnits}
+          schedules={schedules}
+          people={everyone.filter((e) => e.active)}
+          today={today}
+          onClose={() => setAdding(false)}
+          onSaved={(id, name) => {
+            toast(`${name} added.`);
+            void allQ.reload();
+            void listQ.reload();
+            navigate(`/people/${id}?new=1`);
+          }}
+        />
+      ) : null}
+
+      {dialog?.kind === 'edit' ? <EditPersonDialog employeeId={dialog.employee.id} units={activeUnits} people={everyone.filter((e) => e.active)} schedules={schedules} today={today} onClose={() => setDialog(null)} onSaved={(msg, requests) => {
+        setDialog(null); setAffected(requests); toast(msg); listQ.reload(); allQ.reload();
+      }} /> : null}
+
+      {dialog?.kind === 'transfer' ? (
+        <TransferDialog
+          employee={dialog.employee}
+          units={activeUnits}
+          people={everyone.filter((e) => e.active)}
+          today={today}
+          onClose={() => setDialog(null)}
+          onSaved={(msg) => {
+            setDialog(null);
+            toast(msg);
+            void listQ.reload();
+            void allQ.reload();
+          }}
+        />
+      ) : null}
+
+      {dialog?.kind === 'pattern' ? (
+        <PatternDialog
+          employeeId={dialog.employee.id}
+          schedules={schedules}
+          today={today}
+          onClose={() => setDialog(null)}
+          onSaved={(msg, aff) => {
+            setDialog(null);
+            setAffected(aff);
+            toast(msg);
+            void listQ.reload();
+          }}
+        />
+      ) : null}
+
+      {dialog?.kind === 'end' ? (
+        <EndEmploymentDialog
+          employeeId={dialog.employee.id}
+          today={today}
+          onClose={() => setDialog(null)}
+          onSaved={(msg) => {
+            setDialog(null);
+            toast(msg);
+            void listQ.reload();
+            void allQ.reload();
+          }}
+        />
+      ) : null}
+
+      {dialog?.kind === 'unit' ? (
+        <UnitDialog
+          unit={dialog.unit}
+          units={units}
+          onClose={() => setDialog(null)}
+          onSaved={(msg) => {
+            setDialog(null);
+            toast(msg);
+            void unitsQ.reload();
+          }}
+        />
+      ) : null}
+
+      {importing ? (
+        <ImportDialog
+          kind="employees"
+          onClose={() => setImporting(false)}
+          onDone={() => {
+            setImporting(false);
+            void listQ.reload();
+            void allQ.reload();
+          }}
+        />
       ) : null}
     </>
   );

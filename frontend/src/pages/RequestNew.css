@@ -1,0 +1,143 @@
+/* Request leave — single-column form, segmented part-of-day, file drop
+   zone and the HR paper-mode person picker. */
+
+.req-form {
+  max-width: 32rem;
+}
+.req-form .field {
+  margin: var(--sp-4) 0;
+}
+
+/* segmented control (Part of day) */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-control);
+  overflow: hidden;
+}
+.seg .seg-opt {
+  font-size: var(--fs-body);
+  padding: var(--sp-2) var(--sp-4);
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--surface);
+}
+.seg .seg-opt + .seg-opt {
+  border-left: 1px solid var(--control-border);
+}
+.seg .seg-opt.on {
+  background: var(--brand);
+  color: #fff;
+}
+.seg .seg-opt input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.seg .seg-opt:has(input:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: -3px;
+}
+
+/* live summary */
+.summary-line {
+  font-size: var(--fs-body);
+  margin: var(--sp-3) 0 var(--sp-1);
+}
+
+/* file drop zone */
+.dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--sp-2);
+  min-height: 4.5rem;
+  padding: var(--sp-4);
+  border: 2px dashed var(--control-border);
+  border-radius: var(--r-control);
+  color: var(--text-muted);
+  cursor: pointer;
+  background: var(--surface);
+}
+.dropzone:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.dropzone.drag {
+  border-color: var(--brand);
+  background: var(--brand-tint);
+  color: var(--brand);
+}
+.dropzone.has-file {
+  border-style: solid;
+  color: var(--text);
+}
+.dropzone:focus-within {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* person picker (HR paper entry) */
+.picker {
+  position: relative;
+}
+.picker input {
+  width: 100%;
+}
+.picker-list {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-control);
+  box-shadow: var(--shadow-overlay);
+  max-height: 16rem;
+  overflow-y: auto;
+  padding: var(--sp-1);
+}
+.picker-group {
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-strong);
+  color: var(--text-muted);
+  padding: var(--sp-2) var(--sp-3) 0;
+}
+.picker-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  border: none;
+  background: none;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-control);
+  cursor: pointer;
+}
+.picker-opt:hover,
+.picker-opt.active {
+  background: var(--brand-tint);
+}
+.picker-empty {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+}
+.picker-selected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  border: 1px solid var(--divider);
+  border-radius: var(--r-control);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+}
+
+.req-form { margin-top: 0; }
+.req-form .btn-ghost { padding-left: 0; }

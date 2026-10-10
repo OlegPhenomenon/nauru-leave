@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { DayRow, LeaveType, PolicyVersion, Revision } from '../api/types';
 import {
   IntentKeys,
+  accrualPlanFor,
   accrualPolicyForYear,
   accrualPeriodPolicy,
   daysToMinutes,
   inForceRevision,
   minutesToDays,
+  policyInForceOn,
+  shiftMonths,
   workedMinutesByAccount,
   correctableDays,
 } from './domain';
@@ -220,5 +223,54 @@ describe('r01 selected accrual period', () => {
   });
   it('year without policy', () => {
     expect(accrualPeriodPolicy(t([]), 2025, 10)).toBeNull();
+  });
+});
+
+describe('accrualPlanFor', () => {
+  const t = (policies: PolicyVersion[]) => ({ policies, policy: null });
+
+  it('annual entitlement is publishable advance_publish_months early', () => {
+    const type = t([policy({ advance_publish_months: 3 })]);
+    expect(accrualPlanFor(type, 2027, 10)).toEqual({
+      kind: 'annual',
+      runnableFrom: '2026-10-01',
+    });
+  });
+
+  it('monthly entitlement is runnable from the month itself', () => {
+    const type = t([policy({ accrual_mode: 'monthly' })]);
+    expect(accrualPlanFor(type, 2026, 11)).toEqual({
+      kind: 'monthly',
+      runnableFrom: '2026-11-01',
+    });
+  });
+
+  it('nothing to add when the period policy is none, missing or non-balance', () => {
+    expect(accrualPlanFor(t([policy({ accrual_mode: 'none' })]), 2026, 10)).toBeNull();
+    expect(accrualPlanFor(t([]), 2026, 10)).toBeNull();
+    expect(accrualPlanFor(t([policy({ uses_balance: false })]), 2026, 10)).toBeNull();
+  });
+});
+
+describe('policyInForceOn / shiftMonths', () => {
+  const t = (policies: PolicyVersion[]) => ({ policies, policy: null });
+
+  it('picks the latest version in force on an arbitrary date', () => {
+    const type = t([
+      policy({ id: 1, valid_from: '2026-01-01' }),
+      policy({ id: 2, valid_from: '2026-12-15' }),
+    ]);
+    expect(policyInForceOn(type, '2026-12-31')?.id).toBe(2);
+    expect(policyInForceOn(type, '2026-12-14')?.id).toBe(1);
+  });
+
+  it('shiftMonths moves across year boundaries', () => {
+    expect(shiftMonths('2027-01-01', -3)).toBe('2026-10-01');
+    expect(shiftMonths('2026-10-31', 2)).toBe('2026-12-31');
+  });
+
+  it('clamps dates to the end of the target month', () => {
+    expect(shiftMonths('2026-01-31', 1)).toBe('2026-02-28');
+    expect(shiftMonths('2028-03-31', -1)).toBe('2028-02-29');
   });
 });

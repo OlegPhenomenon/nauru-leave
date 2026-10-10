@@ -1,1462 +1,378 @@
-import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
-import { api, ApiError, del, newIdempotencyKey, post, postForm, put, unwrapList } from '../api/client';
-import type {
-  AllowedAction,
-  AuditEvent,
-  DraftInput,
-  LeaveType,
-  Outcome,
-  Part,
-  RequestDetail as RD,
-  UserListItem,
-} from '../api/types';
-import {
-  Dur,
-  Empty,
-  ErrBox,
-  Field,
-  Loading,
-  Modal,
-  PhaseBadge,
-  ReqLink,
-  StatusBadge,
-  stepStatusLabel,
-  WarnList,
-} from '../components/ui';
-import {
-  fmtBytes,
-  fmtDate,
-  fmtDateTime,
-  fmtHours,
-  fmtWeekday,
-  outcomeLabel,
-  partLabel,
-  stepLabel,
-} from '../lib/format';
-import { inForceRevision, workedMinutesByAccount, correctableDays } from '../lib/domain';
+// The request page — one component, two views.
+// Owner: what happens next + send/answer/change/cancel.
+// Reviewer: the DecisionCard for the pending step + a quiet record below.
+// Everything else lives behind collapsed disclosures.
+
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
+import { api, post } from '../api/client';
+import type { AllowedAction, LeaveType, Outcome, RequestDetail as RD } from '../api/types';
+import { AttachmentLines, DecisionCard } from '../components/DecisionCard';
+import { ErrBox, Loading, PageHeader, StatusBadge, useToast } from '../components/ui';
+import { IntentKeys, remainingRanges } from '../lib/domain';
+import { fmtDate, fmtDuration, fmtRange, statusLabel } from '../lib/format';
+import { homeFor } from '../lib/nav';
+import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
+import {
+  AssignModal,
+  CancelModal,
+  ChangeDatesModal,
+  ConfirmActualModal,
+  DeleteDraftModal,
+  EditDraftModal,
+  RecordAnswerModal,
+  SubmitModal,
+  UploadModal,
+  WithdrawModal,
+  WorkedModal,
+  type ModalCtx,
+} from './request/modals';
+import {
+  ActualDetails,
+  ChangesDetails,
+  DaysDetails,
+  DocumentsDetails,
+  EffectDetails,
+  HistoryDetails,
+  Messages,
+  StepsDetails,
+} from './request/sections';
+import {
+  changeSummary,
+  decisionToast,
+  firstName,
+  fmtStampDay,
+  statusSentence,
+  thingsToKnow,
+} from './request/text';
+import { approvedActions } from './request/ApprovedActions';
+import './RequestDetail.css';
 
-const REASON_REQUIRED: Outcome[] = [
-  'reject',
-  'recommend_reject',
-  'needs_information',
-  'checked_problem',
-];
-
-function DaysTable({ days }: { days: RD['current_revision']['days'] }) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Part</th>
-            <th className="num">Counted</th>
-            <th>Period / account</th>
-            <th>Explanation</th>
-          </tr>
-        </thead>
-        <tbody>
-          {days.map((d) => (
-            <tr key={d.date}>
-              <td>
-                {fmtWeekday(d.date)} {fmtDate(d.date)}
-              </td>
-              <td>{partLabel(d.part)}</td>
-              <td className="num">{d.minutes > 0 ? fmtHours(d.minutes) : '—'}</td>
-              <td className="small">
-                {d.allocations.length
-                  ? d.allocations.map((a) => (
-                      <div key={a.account_id}>
-                        {a.period_year} — {fmtHours(a.minutes)}
-                        {a.carryover ? (
-                          <span className="badge" style={{ marginLeft: '0.3rem' }}>
-                            carry-over
-                          </span>
-                        ) : null}
-                      </div>
-                    ))
-                  : d.period_year}
-              </td>
-              <td className="small muted">{d.explanation}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-interface RevisionFieldValue {
-  leave_type_id: number;
-  start_date: string;
-  end_date: string;
-  start_part: Part;
-  end_part: Part;
-  note: string;
-}
-
-/** Shared mini-form used by edit-draft, respond-with-changes and amend. */
-function RevisionFields({
-  leaveTypes,
-  value,
-  onChange,
-}: {
-  leaveTypes: LeaveType[];
-  value: RevisionFieldValue;
-  onChange: (patch: Partial<RevisionFieldValue>) => void;
-}) {
-  // Patch-style updates: the parent merges into current state, so an edit that
-  // lands in the same tick as the prefill effect can't clobber other fields.
-  const set = (patch: Partial<RevisionFieldValue>) => onChange(patch);
-  const lt = leaveTypes.find((t) => t.id === value.leave_type_id);
-  const halfDay = lt?.allow_half_day ?? false;
-  return (
-    <>
-      <Field label="Leave type">
-        <select
-          value={value.leave_type_id}
-          onChange={(e) => set({ leave_type_id: Number(e.target.value) })}
-        >
-          {leaveTypes.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <div className="form-grid">
-        <Field label="Start date">
-          <input
-            type="date"
-            value={value.start_date}
-            onChange={(e) => set({ start_date: e.target.value })}
-          />
-        </Field>
-        <Field label="End date">
-          <input
-            type="date"
-            value={value.end_date}
-            min={value.start_date}
-            onChange={(e) => set({ end_date: e.target.value })}
-          />
-        </Field>
-      </div>
-      {halfDay ? (
-        <div className="form-grid">
-          <Field label="Start day part">
-            <select value={value.start_part} onChange={(e) => set({ start_part: e.target.value as Part })}>
-              <option value="full">Full day</option>
-              <option value="am">Morning</option>
-              <option value="pm">Afternoon</option>
-            </select>
-          </Field>
-          <Field label="End day part">
-            <select value={value.end_part} onChange={(e) => set({ end_part: e.target.value as Part })}>
-              <option value="full">Full day</option>
-              <option value="am">Morning</option>
-              <option value="pm">Afternoon</option>
-            </select>
-          </Field>
-        </div>
-      ) : null}
-      <Field label="Note">
-        <textarea value={value.note} onChange={(e) => set({ note: e.target.value })} />
-      </Field>
-    </>
-  );
-}
-
-type ActionKind =
+type ModalKind =
+  | 'submit'
   | 'edit'
   | 'delete'
-  | 'submit'
   | 'withdraw'
-  | 'respond'
-  | 'revise'
-  | 'decide'
+  | 'respond-change'
   | 'amend'
   | 'cancel'
-  | 'reassign'
-  | 'actual'
+  | 'assign'
+  | 'actual-confirm'
+  | 'actual-worked'
+  | 'record'
   | 'upload';
 
+const MODAL_NAMES: ModalKind[] = ['submit', 'edit', 'delete', 'withdraw', 'respond-change', 'amend', 'cancel', 'assign', 'actual-confirm', 'actual-worked', 'record', 'upload'];
+function modalFromUrl(action: string | null): ModalKind | null {
+  return MODAL_NAMES.includes(action as ModalKind) ? action as ModalKind : null;
+}
+
+const CHIP_WHEN_DECIDABLE = {
+  manager_recommendation: 'Waiting for your recommendation',
+  hr_check: 'Waiting for your HR check',
+  final_decision: 'Waiting for your decision',
+} as const;
+
+function ownerTitle(d: RD): string {
+  if (d.kind === 'amendment') {
+    const rev = d.current_revision;
+    return `Change to ${d.leave_type_name.toLowerCase()} · ${fmtRange(rev.start_date, rev.end_date)}`;
+  }
+  if (d.kind === 'cancellation') {
+    const ch = changeSummary(d);
+    return `Cancel ${ch?.cancelledRange ?? fmtRange(d.current_revision.start_date, d.current_revision.end_date)} · ${d.leave_type_name.toLowerCase()}`;
+  }
+  const rev = d.in_force_revision ?? d.current_revision;
+  return `${d.leave_type_name} · ${remainingRanges(rev).map(([a, b]) => fmtRange(a, b)).join(', ') || fmtRange(rev.start_date, rev.end_date)}`;
+}
+
+function reviewerTitle(d: RD): string {
+  if (d.kind === 'amendment')
+    return `${d.employee.full_name} — Change to ${d.leave_type_name.toLowerCase()}`;
+  if (d.kind === 'cancellation') return `${d.employee.full_name} — Cancellation`;
+  return `${d.employee.full_name} — ${ownerTitle(d)}`;
+}
+
 export default function RequestDetail() {
+  const { me, config } = useSession();
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
   const navigate = useNavigate();
+  const toast = useToast();
   const q = useApi(() => api<RD>(`/requests/${id}`), [id]);
   const leaveTypesQ = useApi(() => api<LeaveType[]>('/leave-types'), []);
-  const [action, setAction] = useState<ActionKind | null>(null);
-  const [stale, setStale] = useState(false);
-  const [actionErr, setActionErr] = useState<ApiError | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [comment, setComment] = useState('');
-  const [commentErr, setCommentErr] = useState<ApiError | null>(null);
-
-  // modal field state
-  const [reason, setReason] = useState('');
-  const [basisDoc, setBasisDoc] = useState('');
-  const [outcome, setOutcome] = useState<Outcome | ''>('');
-  const [body, setBody] = useState('');
-  const [withChanges, setWithChanges] = useState(false);
-  const [fields, setFields] = useState({
-    leave_type_id: 0,
-    start_date: '',
-    end_date: '',
-    start_part: 'full' as Part,
-    end_part: 'full' as Part,
-    note: '',
-  });
-  const [changeReason, setChangeReason] = useState('');
-  const [cancelFrom, setCancelFrom] = useState('');
-  const [cancelTo, setCancelTo] = useState('');
-  const [stepId, setStepId] = useState(0);
-  const [assigneeId, setAssigneeId] = useState(0);
-  const [actualAction, setActualAction] = useState<'confirm' | 'propose_adjustment'>('confirm');
-  const [workedDates, setWorkedDates] = useState<string[]>([]);
-  const [file, setFile] = useState<File | null>(null);
-  const [sensitivity, setSensitivity] = useState<'normal' | 'medical'>('normal');
-  const [notice, setNotice] = useState<string | null>(null);
+  const [modal, setModal] = useState<ModalKind | null>(
+    modalFromUrl(searchParams.get('action')),
+  );
+  const keys = useRef(new IntentKeys());
+  const hadData = useRef<string | null>(null);
+  const responseIntent = useRef('');
+  useEffect(() => { setModal(modalFromUrl(searchParams.get('action'))); }, [id, searchParams]);
 
   const d = q.data;
+  const today = config?.business_date ?? '';
+  const isOwner = !!me?.employee && !!d && me.employee.id === d.employee.id;
 
-  // reassign target list — users endpoint may be admin-only; degrade gracefully
-  const usersQ = useApi(
-    () =>
-      action === 'reassign'
-        ? api<unknown>('/users').then((r) => unwrapList<UserListItem>(r))
-        : Promise.resolve(null),
-    [action === 'reassign'],
-  );
+  // Toasts passed via router state ("Request sent." after RequestNew).
+  useEffect(() => {
+    const st = location.state as { toast?: string } | null;
+    if (st?.toast) {
+      toast(st.toast);
+      navigate(location.pathname + location.search, { replace: true, state: null });
+    }
+    // mount only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    if (d && (action === 'amend' || action === 'revise' || action === 'respond' || action === 'edit')) {
-      // Amend/cancel start from what is actually in force; draft edits start
-      // from this request's own latest revision.
-      const r = action === 'amend' ? inForceRevision(d) : d.current_revision;
-      setFields({
-        leave_type_id: r.leave_type?.id ?? 0,
-        start_date: r.start_date,
-        end_date: r.end_date,
-        start_part: r.start_part,
-        end_part: r.end_part,
-        note: r.note ?? '',
-      });
-    }
-    if (d && action === 'cancel') {
-      const r = inForceRevision(d);
-      setCancelFrom(r.start_date);
-      setCancelTo(r.end_date);
-    }
-    if (d && action === 'decide' && d.decidable_step) {
-      setOutcome(d.decidable_step.outcomes[0] ?? '');
-      setStepId(d.decidable_step.id);
-    }
-    if (d && action === 'reassign') {
-      const pending = d.steps.filter((s) => s.status === 'pending');
-      setStepId(pending[0]?.id ?? 0);
-    }
-  }, [action, d]);
+    if (d && d.id === Number(id) && !q.loading && !q.error) hadData.current = id ?? null;
+  }, [d, id, q.loading, q.error]);
 
-  // One Idempotency-Key per click-intent; reused if the user retries (API.md).
-  const [opKey, setOpKey] = useState('');
-  function patchFields(patch: Partial<typeof fields>) {
-    setFields((f) => ({ ...f, ...patch }));
-  }
-  function openAction(a: ActionKind | null) {
-    setOpKey(newIdempotencyKey());
-    setActionErr(null);
-    setReason('');
-    setBasisDoc('');
-    setOutcome('');
-    setBody('');
-    setWithChanges(false);
-    setChangeReason('');
-    setWorkedDates([]);
-    setFile(null);
-    setSensitivity('normal');
-    setAction(a);
-  }
-
-  function handleErr(e: unknown) {
-    const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
-    if (ae.code === 'stale_version') setStale(true);
-    else setActionErr(ae);
-  }
-
-  async function run(fn: () => Promise<RD | void>) {
-    setBusy(true);
-    setActionErr(null);
-    try {
-      const r = await fn();
-      if (r) q.reload();
-      setAction(null);
-    } catch (e) {
-      handleErr(e);
-      // A definitive server error ends this intent: a corrected retry must
-      // not reuse the key (same key + different body → idempotency_key_reused).
-      // Only a dropped connection (status 0) keeps the key for a safe retry.
-      if (!(e instanceof ApiError) || e.status !== 0) setOpKey(newIdempotencyKey());
-    } finally {
-      setBusy(false);
+  // If a post-decision (or post-action) reload loses access — e.g. the
+  // request moved out of the viewer's scope — go back to the queue with a
+  // toast instead of showing a fatal error page.
+  useEffect(() => {
+    if (q.error?.status === 403 && hadData.current === id) {
+      toast('Done — the request has moved on.', 'info');
+      navigate('/approvals', { replace: true });
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q.error]);
 
   if (q.loading) return <Loading />;
   if (q.error) {
-    // A request someone links you can be outside your scope (sensitive leave,
-    // another unit). Say so plainly instead of showing a raw API error.
+    const home = me ? homeFor(me) : '/my';
     if (q.error.status === 403)
       return (
-        <div className="panel" style={{ maxWidth: '36rem', margin: '2rem auto' }}>
+        <div className="panel rq-error">
           <h1>You don’t have access to this request</h1>
           <p className="muted">
             This request is not shared with you. It may belong to another team or contain
             restricted (e.g. medical) details. If you believe you should see it, ask an HR
             officer to check your role and scope.
           </p>
-          <Link className="btn btn-secondary" to="/my">
-            Back to My leave
+          <Link className="btn btn-secondary" to={home}>
+            Back
           </Link>
         </div>
       );
     if (q.error.status === 404)
       return (
-        <div className="panel" style={{ maxWidth: '36rem', margin: '2rem auto' }}>
+        <div className="panel rq-error">
           <h1>Request not found</h1>
           <p className="muted">This link does not match any request you can see.</p>
-          <Link className="btn btn-secondary" to="/my">
-            Back to My leave
+          <Link className="btn btn-secondary" to={home}>
+            Back
           </Link>
         </div>
       );
     return <ErrBox error={q.error} />;
   }
-  if (!d) return null;
-  const mpd = d.minutes_per_day;
+  if (!d || !me) return null;
+
   const can = (a: AllowedAction) => d.allowed_actions.includes(a);
-  // The card always shows what is actually in force; a superseded original
-  // revision is only ever rendered as history below.
-  const rev = inForceRevision(d);
-  const amended = d.in_force_revision !== null && d.in_force_revision.id !== d.current_revision.id;
-  const proposed = d.kind !== 'leave';
+  const viewer = isOwner ? 'owner' : 'reviewer';
+  const first = firstName(d.employee.full_name);
+  const decidable = !isOwner && !!d.decidable_step;
 
-  async function postComment() {
-    if (!comment.trim()) return;
-    setCommentErr(null);
-    try {
-      await post(`/requests/${d!.id}/messages`, { body: comment.trim() });
-      setComment('');
-      q.reload();
-    } catch (e) {
-      setCommentErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
-    }
-  }
+  /* ----- header ----- */
 
-  return (
+  const chipLabel = decidable ? CHIP_WHEN_DECIDABLE[d.decidable_step!.kind] : undefined;
+  const submitted =
+    d.current_revision.submitted_at ??
+    [...d.revisions].reverse().find((r) => r.submitted_at)?.submitted_at ??
+    null;
+  const subtitleBits = [
+    d.number,
+    submitted ? `sent ${fmtStampDay(submitted)}` : 'not sent yet',
+    d.source === 'paper'
+      ? `paper form${d.paper_received_date ? ` received ${fmtDate(d.paper_received_date)}` : ''}`
+      : null,
+    d.entered_by.id !== me.user.id ? `entered by ${d.entered_by.display_name}` : null,
+  ].filter(Boolean);
+  const subtitle = (
     <>
-      {notice ? <div className="alert alert-info">{notice}</div> : null}
-      {stale ? (
-        <div className="alert alert-error stale-banner">
-          This request changed while you were viewing it.{' '}
-          <button
-            className="btn btn-sm"
-            onClick={() => {
-              setStale(false);
-              q.reload();
-            }}
-          >
-            Reload
-          </button>
-        </div>
-      ) : null}
-
-      <div className="panel">
-        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
-          <h1 style={{ margin: 0 }}>{d.number}</h1>
-          <StatusBadge status={d.status} label={d.status_label} />
-          <PhaseBadge phase={d.date_phase} />
-          {d.kind !== 'leave' ? <span className="badge">{d.kind}</span> : null}
-          {d.source === 'paper' ? (
-            <span className="badge" title={`Received on paper ${d.paper_received_date ?? ''}`}>
-              paper form
-            </span>
-          ) : null}
-        </div>
-        <dl className="kv" style={{ marginTop: '0.6rem' }}>
-          <div className="kv-row">
-            <dt>Employee</dt>
-            <dd>
-              {d.employee.full_name} ({d.employee.service_id}
-              {d.employee.org_unit ? ` · ${d.employee.org_unit.name}` : ''})
-            </dd>
-          </div>
-          <div className="kv-row">
-            <dt>Leave type</dt>
-            <dd>{d.leave_type_name}</dd>
-          </div>
-          <div className="kv-row">
-            <dt>{proposed ? 'Proposed dates' : 'Dates'}</dt>
-            <dd>
-              {rev.total_minutes === 0 && d.status === 'cancelled' ? (
-                <>— fully cancelled ({d.revisions.length ? 'see history below' : 'no days in force'})</>
-              ) : (
-                <>
-                  {fmtDate(rev.start_date)} – {fmtDate(rev.end_date)} (
-                  <Dur minutes={rev.total_minutes} mpd={mpd} />)
-                  {rev.start_part !== 'full' || rev.end_part !== 'full'
-                    ? ` · ${partLabel(rev.start_part)} / ${partLabel(rev.end_part)}`
-                    : ''}
-                  {d.in_force_revision ? (
-                    <span className="badge badge-ok" style={{ marginLeft: '0.4rem' }}>In force</span>
-                  ) : null}
-                  {proposed ? (
-                    <span className="badge" style={{ marginLeft: '0.4rem' }}>proposed</span>
-                  ) : null}
-                </>
-              )}
-            </dd>
-          </div>
-          {proposed && d.parent_in_force_revision ? (
-            <div className="kv-row">
-              <dt>Now in force</dt>
-              <dd>
-                {fmtDate(d.parent_in_force_revision.start_date)} –{' '}
-                {fmtDate(d.parent_in_force_revision.end_date)} (
-                <Dur minutes={d.parent_in_force_revision.total_minutes} mpd={mpd} />)
-                {d.parent ? (
-                  <>
-                    {' '}
-                    — on <ReqLink id={d.parent.id} number={d.parent.number} />
-                  </>
-                ) : null}
-              </dd>
-            </div>
-          ) : null}
-          <div className="kv-row">
-            <dt>Entered by</dt>
-            <dd>
-              {d.entered_by.display_name}
-              {d.paper_received_date ? ` · paper received ${fmtDate(d.paper_received_date)}` : ''}
-            </dd>
-          </div>
-          {amended ? (
-            <div className="kv-row">
-              <dt>In force</dt>
-              <dd>
-                revision {d.in_force_revision!.rev_no} is in force
-                {d.children.find((c) => c.status === 'approved')
-                  ? ` — set by an approved ${d.children.find((c) => c.status === 'approved')!.kind}`
-                  : ''}
-                ; the original revision {d.current_revision.rev_no} is kept as history below
-              </dd>
-            </div>
-          ) : null}
-          {d.next_action ? (
-            <div className="kv-row">
-              <dt>Next</dt>
-              <dd>{d.next_action}</dd>
-            </div>
-          ) : null}
-        </dl>
-        {rev.note ? <p className="muted">“{rev.note}”</p> : null}
-        <WarnList warnings={d.warnings} />
-
-        <div className="btn-row no-print">
-          {can('submit') ? (
-            <button className="btn" onClick={() => openAction('submit')}>
-              Submit for approval
-            </button>
-          ) : null}
-          {can('decide') && d.decidable_step ? (
-            <button className="btn" onClick={() => openAction('decide')}>
-              Decide — {stepLabel(d.decidable_step.kind)}
-              {d.decidable_step.acting_for ? ` (for ${d.decidable_step.acting_for.display_name})` : ''}
-            </button>
-          ) : null}
-          {can('edit') ? (
-            <button className="btn btn-secondary" onClick={() => openAction('edit')}>
-              Edit draft
-            </button>
-          ) : null}
-          {can('delete') ? (
-            <button className="btn btn-danger" onClick={() => openAction('delete')}>
-              Delete draft
-            </button>
-          ) : null}
-          {can('respond') ? (
-            <button className="btn" onClick={() => openAction('respond')}>
-              Respond to question
-            </button>
-          ) : null}
-          {can('revise') ? (
-            <button className="btn btn-secondary" onClick={() => openAction('revise')}>
-              Change dates / type
-            </button>
-          ) : null}
-          {can('withdraw') ? (
-            <button className="btn btn-secondary" onClick={() => openAction('withdraw')}>
-              Withdraw
-            </button>
-          ) : null}
-          {can('amend') ? (
-            <button className="btn btn-secondary" onClick={() => openAction('amend')}>
-              Request amendment
-            </button>
-          ) : null}
-          {can('cancel') ? (
-            <button className="btn btn-secondary" onClick={() => openAction('cancel')}>
-              Request cancellation
-            </button>
-          ) : null}
-          {can('reassign') ? (
-            <button className="btn btn-secondary" onClick={() => openAction('reassign')}>
-              Reassign a step
-            </button>
-          ) : null}
-          {can('confirm_actual') || can('propose_actual_adjustment') ? (
-            <button className="btn btn-secondary" onClick={() => openAction('actual')}>
-              Confirm actual / propose adjustment
-            </button>
-          ) : null}
-          {can('upload') ? (
-            <button className="btn btn-secondary" onClick={() => openAction('upload')}>
-              Upload attachment
-            </button>
-          ) : null}
-          {can('print') ? (
-            <Link className="btn btn-secondary" to={`/requests/${d.id}/print`}>
-              Printable card
-            </Link>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>
-          {proposed
-            ? 'Proposed days'
-            : amended
-              ? `Days in force (revision ${rev.rev_no})`
-              : `Days in revision ${rev.rev_no}`}
-        </h2>
-        {rev.days.length === 0 ? (
-          <Empty>No days in force — the leave was fully cancelled.</Empty>
-        ) : (
-          <DaysTable days={rev.days} />
-        )}
-        {rev.change_reason ? (
-          <p className="muted small">Change reason: {rev.change_reason}</p>
-        ) : null}
-      </div>
-
-      <div className="two-col">
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Approval route</h2>
-          {d.steps.length === 0 ? (
-            <Empty>No steps — the request has not been submitted.</Empty>
-          ) : (
-            <ol className="timeline">
-              {d.steps.map((s) => (
-                <li key={s.id}>
-                  <span className="tl-dot" aria-hidden="true">
-                    {s.status === 'done' ? '●' : s.status === 'pending' ? '◐' : '○'}
-                  </span>
-                  <span className="tl-body">
-                    <strong>{stepLabel(s.kind)}</strong>{' '}
-                    <span className="muted small">
-                      rev {s.revision_no} · {stepStatusLabel(s.status)}
-                    </span>
-                    <br />
-                    <span className="small">
-                      {s.assignee ? s.assignee.display_name : s.eligible_description}
-                    </span>
-                    {s.problem ? (
-                      <div className="badge badge-med" style={{ marginTop: '0.2rem' }}>
-                        {s.problem}
-                      </div>
-                    ) : null}
-                    {s.outcome ? (
-                      <div className="small">
-                        {outcomeLabel(s.outcome)}
-                        {s.completed_at ? ` · ${fmtDateTime(s.completed_at)}` : ''}
-                      </div>
-                    ) : null}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          )}
-
-          <h2>Decisions</h2>
-          {d.decisions.length === 0 ? (
-            <Empty>No decisions yet.</Empty>
-          ) : (
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>When</th>
-                    <th>Step</th>
-                    <th>By</th>
-                    <th>Outcome</th>
-                    <th>Reason / basis</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.decisions.map((x) => (
-                    <tr key={x.id}>
-                      <td className="small">{fmtDateTime(x.created_at)}</td>
-                      <td className="small">
-                        {stepLabel(x.step_kind)} (rev {x.revision_no})
-                      </td>
-                      <td className="small">
-                        {x.actor.display_name}
-                        {x.acting_for ? ` (for ${x.acting_for.display_name})` : ''}
-                        <div className="muted">{x.authority}</div>
-                      </td>
-                      <td className="small">{outcomeLabel(x.outcome)}</td>
-                      <td className="small">
-                        {x.reason ?? ''}
-                        {x.basis_document ? (
-                          <div className="muted">basis: {x.basis_document}</div>
-                        ) : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Questions &amp; comments</h2>
-          {d.messages.length === 0 ? <Empty>No messages yet.</Empty> : null}
-          {d.messages.map((m) => (
-            <div key={m.id} className={`msg msg-${m.kind}`}>
-              <div className="small muted">
-                {m.kind === 'question' ? 'Question' : m.kind === 'system' ? 'System' : m.kind}
-                {m.author ? ` · ${m.author.display_name}` : ''} · {fmtDateTime(m.created_at)}
-              </div>
-              <div>{m.body}</div>
-            </div>
-          ))}
-          {can('comment') ? (
-            <div className="no-print">
-              <Field label="Add a comment">
-                <textarea value={comment} onChange={(e) => setComment(e.target.value)} />
-              </Field>
-              {commentErr ? <ErrBox error={commentErr} /> : null}
-              <button className="btn btn-secondary btn-sm" onClick={() => void postComment()}>
-                Post comment
-              </button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>Attachments</h2>
-        {d.supporting_document_required && !d.supporting_document_ready ? (
-          <p className="alert alert-error">A readable supporting document is required before final approval.</p>
-        ) : null}
-        {d.attachments.length === 0 ? <Empty>No attachments.</Empty> : null}
-        <ul>
-          {d.attachments.map((a) =>
-            'restricted' in a && a.restricted ? (
-              <li key={a.id}>
-                <span className="badge badge-med">Restricted document</span>
-                <span className="muted small"> — you do not have access to this file</span>
-              </li>
-            ) : (
-              <li key={(a as { id: number }).id}>
-                {(() => {
-                  const att = a as Extract<typeof a, { filename: string }>;
-                  return (
-                    <>
-                      {att.can_download && att.scan_status === 'clean' ? (
-                        <a href={`/api/attachments/${att.id}`}>{att.filename}</a>
-                      ) : (
-                        <span>{att.filename}</span>
-                      )}{' '}
-                      <span className="muted small">
-                        {fmtBytes(att.size_bytes)} · {att.uploaded_by.display_name}
-                      </span>{' '}
-                      {att.sensitivity === 'medical' ? (
-                        <span className="badge badge-med">medical</span>
-                      ) : null}
-                      {att.scan_status === 'clean' ? (
-                        <span className="badge badge-ok">Clean</span>
-                      ) : att.scan_status === 'quarantined' ? (
-                        <span className="badge badge-med">Quarantined — not downloadable</span>
-                      ) : att.scan_status === 'scan_failed' ? (
-                        <span className="badge badge-med">Scan failed — not downloadable</span>
-                      ) : (
-                        <span className="badge">Scan pending</span>
-                      )}
-                      {att.scan_note ? (
-                        <span className="muted small"> {att.scan_note}</span>
-                      ) : null}
-                    </>
-                  );
-                })()}
-              </li>
-            ),
-          )}
-        </ul>
-      </div>
-
-      {d.reservations.length || d.ledger_entries.length ? (
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Effect on the ledger</h2>
-          <div className="two-col">
-            <div>
-              <h3>Reservations</h3>
-              {d.reservations.length === 0 ? (
-                <Empty>None active.</Empty>
-              ) : (
-                <table className="small">
-                  <thead>
-                    <tr>
-                      <th>Period</th>
-                      <th className="num">Minutes</th>
-                      <th>Revision</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {d.reservations.map((r) => (
-                      <tr key={r.id}>
-                        <td>{r.period_year}</td>
-                        <td className="num">
-                          <Dur minutes={r.minutes} mpd={mpd} />
-                        </td>
-                        <td>{r.revision_no}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-            <div>
-              <h3>Ledger entries</h3>
-              {d.ledger_entries.length === 0 ? (
-                <Empty>None yet — entries appear when a request is approved.</Empty>
-              ) : (
-                <table className="small">
-                  <thead>
-                    <tr>
-                      <th>Effective</th>
-                      <th>Kind</th>
-                      <th className="num">Minutes</th>
-                      <th>Basis</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {d.ledger_entries.map((e) => (
-                      <tr key={e.id}>
-                        <td>{fmtDate(e.effective_date)}</td>
-                        <td>{e.kind}</td>
-                        <td className="num">
-                          {e.minutes > 0 ? '+' : ''}
-                          <Dur minutes={e.minutes} mpd={mpd} />
-                        </td>
-                        <td className="muted">{e.basis}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {d.revisions.length > 1 || d.parent || d.children.length || d.previous_request ? (
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>History &amp; links</h2>
-          {d.parent ? (
-            <p>
-              This is a {d.kind} of <ReqLink id={d.parent.id} number={d.parent.number} />.
-            </p>
-          ) : null}
-          {d.previous_request ? (
-            <p>
-              Follow-up to <ReqLink id={d.previous_request.id} number={d.previous_request.number} />.
-            </p>
-          ) : null}
-          {d.children.length ? (
-            <p>
-              Related:{' '}
-              {d.children.map((c) => (
-                <span key={c.id} style={{ marginRight: '0.6rem' }}>
-                  <ReqLink id={c.id} number={c.number} /> <span className="badge">{c.kind}</span>{' '}
-                  <StatusBadge status={c.status} />
-                </span>
-              ))}
-            </p>
-          ) : null}
-          {(() => {
-            // The in-force revision may live on an approved amendment request —
-            // show it in the timeline even when it is not in revisions[].
-            const rows = [...d.revisions];
-            if (d.in_force_revision && !rows.some((r) => r.id === d.in_force_revision!.id)) {
-              rows.push(d.in_force_revision);
-            }
-            rows.sort((a, b) => (a.submitted_at ?? a.created_at).localeCompare(b.submitted_at ?? b.created_at));
-            if (rows.length <= 1) return null;
-            return (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Rev</th>
-                      <th>Type</th>
-                      <th>Dates</th>
-                      <th className="num">Length</th>
-                      <th>Changed by</th>
-                      <th>Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((r, i) => {
-                      const prev = i > 0 ? rows[i - 1] : null;
-                      const changed =
-                        prev &&
-                        (prev.start_date !== r.start_date ||
-                          prev.end_date !== r.end_date ||
-                          prev.leave_type?.id !== r.leave_type?.id);
-                      const inForce = d.in_force_revision?.id === r.id;
-                      const superseded = d.in_force_revision !== null && !inForce;
-                      return (
-                        <tr key={r.id} style={inForce ? { fontWeight: 600 } : undefined}>
-                          <td>
-                            {r.rev_no}
-                            {inForce ? <span className="badge badge-ok">in force</span> : null}
-                            {superseded ? <span className="badge">superseded</span> : null}
-                            {!d.in_force_revision && r.id === d.current_revision.id
-                              ? ' (current)'
-                              : ''}
-                          </td>
-                          <td>{r.leave_type?.name ?? 'Restricted'}</td>
-                          <td>
-                            {fmtDate(r.start_date)} – {fmtDate(r.end_date)}
-                            {changed ? (
-                              <span className="badge" style={{ marginLeft: '0.3rem' }}>changed</span>
-                            ) : null}
-                          </td>
-                          <td className="num">
-                            <Dur minutes={r.total_minutes} mpd={mpd} />
-                          </td>
-                          <td className="small">
-                            {r.created_by.display_name}
-                            <div className="muted">{fmtDateTime(r.created_at)}</div>
-                          </td>
-                          <td className="small">{r.change_reason ?? '—'}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
-        </div>
-      ) : null}
-
-      {d.actual ? (
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Actual period</h2>
-          <p>
-            Confirmed by {d.actual.confirmed_by.display_name} on {fmtDateTime(d.actual.confirmed_at)}
-            {d.actual.note ? ` — ${d.actual.note}` : ''}
-          </p>
-        </div>
-      ) : null}
-
-      <details className="audit panel">
-        <summary>Audit trail ({d.audit.length} events)</summary>
-        <AuditTable events={d.audit} />
-      </details>
-
-      {/* ------- action modals ------- */}
-
-      {action === 'submit' ? (
-        <Modal title="Submit for approval" onClose={() => setAction(null)}>
-          <p>
-            Submit {d.number} — <Dur minutes={d.total_minutes} mpd={mpd} /> — through the approval
-            route? The balance will be reserved until a decision.
-          </p>
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy}
-              onClick={() =>
-                void run(() =>
-                  post<RD>(`/requests/${d.id}/submit`, { expected_version: d.version }, opKey),
-                )
-              }
-            >
-              {busy ? 'Submitting…' : 'Submit'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'edit' ? (
-        <Modal title="Edit draft" onClose={() => setAction(null)} wide>
-          <RevisionFields
-            leaveTypes={leaveTypesQ.data ?? []}
-            value={fields}
-            onChange={patchFields}
-          />
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy}
-              onClick={() =>
-                void run(() =>
-                  put<RD>(`/requests/${d.id}`, {
-                    leave_type_id: fields.leave_type_id,
-                    start_date: fields.start_date,
-                    end_date: fields.end_date,
-                    start_part: fields.start_part,
-                    end_part: fields.end_part,
-                    note: fields.note,
-                    expected_version: d.version,
-                  } satisfies DraftInput & { expected_version: number }),
-                )
-              }
-            >
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Cancel
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'delete' ? (
-        <Modal title="Delete draft" onClose={() => setAction(null)}>
-          <p>Delete draft {d.number}? This cannot be undone (the audit record stays).</p>
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn btn-danger"
-              disabled={busy}
-              onClick={() =>
-                void run(async () => {
-                  await del(`/requests/${d.id}`, { expected_version: d.version });
-                  navigate('/my');
-                })
-              }
-            >
-              {busy ? 'Deleting…' : 'Delete'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Keep
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'withdraw' ? (
-        <Modal title="Withdraw request" onClose={() => setAction(null)}>
-          <p>Withdraw {d.number}? The reservation is released immediately.</p>
-          <Field label="Reason (optional)">
-            <textarea value={reason} onChange={(e) => setReason(e.target.value)} />
-          </Field>
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn btn-danger"
-              disabled={busy}
-              onClick={() =>
-                void run(() =>
-                  post<RD>(`/requests/${d.id}/withdraw`, {
-                    expected_version: d.version,
-                    reason: reason || undefined,
-                  }),
-                )
-              }
-            >
-              {busy ? 'Withdrawing…' : 'Withdraw'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'decide' && d.decidable_step ? (
-        <Modal title={`Decide — ${stepLabel(d.decidable_step.kind)}`} onClose={() => setAction(null)}>
-          {d.decidable_step.acting_for ? (
-            <p className="alert alert-info">
-              You are acting for {d.decidable_step.acting_for.display_name} under a delegation.
-            </p>
-          ) : null}
-          <Field label="Outcome">
-            <div>
-              {d.decidable_step.outcomes.map((o) => (
-                <label key={o} style={{ display: 'block', margin: '0.25rem 0' }}>
-                  <input
-                    type="radio"
-                    name="outcome"
-                    checked={outcome === o}
-                    onChange={() => setOutcome(o)}
-                  />{' '}
-                  {outcomeLabel(o)}
-                </label>
-              ))}
-            </div>
-          </Field>
-          <Field
-            label={REASON_REQUIRED.includes(outcome as Outcome) ? 'Reason (required)' : 'Reason'}
-          >
-            <textarea value={reason} onChange={(e) => setReason(e.target.value)} />
-          </Field>
-          <Field label="Basis document (optional)">
-            <input type="text" value={basisDoc} onChange={(e) => setBasisDoc(e.target.value)} />
-          </Field>
-          {outcome === 'approve' && d.supporting_document_required && !d.supporting_document_ready ? (
-            <p className="alert alert-error">A readable supporting document is required</p>
-          ) : null}
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !outcome || (outcome === 'approve' && d.supporting_document_required && !d.supporting_document_ready) || (REASON_REQUIRED.includes(outcome as Outcome) && !reason.trim())}
-              onClick={() =>
-                void run(() =>
-                  post<RD>(
-                    `/requests/${d.id}/decide`,
-                    {
-                      expected_version: d.version,
-                      step_id: d.decidable_step!.id,
-                      outcome,
-                      reason: reason || undefined,
-                      basis_document: basisDoc || undefined,
-                    },
-                    opKey,
-                  ),
-                )
-              }
-            >
-              {busy ? 'Saving…' : 'Record decision'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'respond' || action === 'revise' ? (
-        <Modal
-          title={action === 'respond' ? 'Respond' : 'Change dates or type'}
-          onClose={() => setAction(null)}
-          wide
-        >
-          {action === 'respond' ? (
-            <label style={{ display: 'block', margin: '0.4rem 0' }}>
-              <input
-                type="checkbox"
-                checked={withChanges}
-                onChange={(e) => setWithChanges(e.target.checked)}
-              />{' '}
-              Also change dates / leave type (starts the approval route again)
-            </label>
-          ) : null}
-          {action === 'revise' || withChanges ? (
-            <>
-              <RevisionFields leaveTypes={leaveTypesQ.data ?? []} value={fields} onChange={patchFields} />
-              <Field label="Change reason (required)">
-                <input
-                  type="text"
-                  value={changeReason}
-                  onChange={(e) => setChangeReason(e.target.value)}
-                />
-              </Field>
-            </>
-          ) : null}
-          <Field label={action === 'respond' ? 'Your answer' : 'Message (optional)'}>
-            <textarea value={body} onChange={(e) => setBody(e.target.value)} />
-          </Field>
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={
-                busy ||
-                (action === 'respond' && !withChanges && !body.trim()) ||
-                ((withChanges || action === 'revise') && !changeReason.trim())
-              }
-              onClick={() =>
-                void run(() =>
-                  post<RD>(
-                    `/requests/${d.id}/respond`,
-                    {
-                      expected_version: d.version,
-                      body: body || '(dates changed)',
-                      changes:
-                        withChanges || action === 'revise'
-                          ? {
-                              leave_type_id: fields.leave_type_id,
-                              start_date: fields.start_date,
-                              end_date: fields.end_date,
-                              start_part: fields.start_part,
-                              end_part: fields.end_part,
-                              note: fields.note,
-                              change_reason: changeReason,
-                            }
-                          : undefined,
-                    },
-                    opKey,
-                  ),
-                )
-              }
-            >
-              {busy ? 'Sending…' : 'Send'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'amend' ? (
-        <Modal title="Request amendment" onClose={() => setAction(null)} wide>
-          <p className="muted small">
-            Creates a new amendment request — the approved dates stay in force until the amendment is
-            decided.
-          </p>
-          <RevisionFields leaveTypes={leaveTypesQ.data ?? []} value={fields} onChange={patchFields} />
-          <Field label="Change reason (required)">
-            <input type="text" value={changeReason} onChange={(e) => setChangeReason(e.target.value)} />
-          </Field>
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !changeReason.trim()}
-              onClick={() =>
-                void run(async () => {
-                  const r = await post<RD>(
-                    `/requests/${d.id}/amend`,
-                    {
-                      expected_version: d.version,
-                      leave_type_id: fields.leave_type_id,
-                      start_date: fields.start_date,
-                      end_date: fields.end_date,
-                      start_part: fields.start_part,
-                      end_part: fields.end_part,
-                      change_reason: changeReason,
-                    },
-                    opKey,
-                  );
-                  navigate(`/requests/${r.id}`);
-                })
-              }
-            >
-              {busy ? 'Creating…' : 'Create amendment'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'cancel' ? (
-        <Modal title="Request cancellation" onClose={() => setAction(null)}>
-          <p className="muted small">
-            Cancel the whole range or part of it. Days already in the past need an HR correction
-            instead.
-          </p>
-          <div className="form-grid">
-            <Field label="Cancel from">
-              <input type="date" value={cancelFrom} onChange={(e) => setCancelFrom(e.target.value)} />
-            </Field>
-            <Field label="to">
-              <input type="date" value={cancelTo} min={cancelFrom} onChange={(e) => setCancelTo(e.target.value)} />
-            </Field>
-          </div>
-          <Field label="Reason (required)">
-            <input type="text" value={changeReason} onChange={(e) => setChangeReason(e.target.value)} />
-          </Field>
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !changeReason.trim()}
-              onClick={() =>
-                void run(async () => {
-                  const r = await post<RD>(
-                    `/requests/${d.id}/cancel`,
-                    {
-                      expected_version: d.version,
-                      from_date: cancelFrom,
-                      to_date: cancelTo,
-                      change_reason: changeReason,
-                    },
-                    opKey,
-                  );
-                  navigate(`/requests/${r.id}`);
-                })
-              }
-            >
-              {busy ? 'Creating…' : 'Create cancellation'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'reassign' ? (
-        <Modal title="Reassign an approval step" onClose={() => setAction(null)}>
-          <Field label="Step">
-            <select value={stepId} onChange={(e) => setStepId(Number(e.target.value))}>
-              {d.steps
-                .filter((s) => s.status === 'pending')
-                .map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {stepLabel(s.kind)} — currently {s.assignee?.display_name ?? s.eligible_description}
-                  </option>
-                ))}
-            </select>
-          </Field>
-          {usersQ.data ? (
-            <Field label="Assign to">
-              <select value={assigneeId} onChange={(e) => setAssigneeId(Number(e.target.value))}>
-                <option value={0}>— choose user —</option>
-                {usersQ.data.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.display_name} ({u.email})
-                  </option>
-                ))}
-              </select>
-            </Field>
-          ) : (
-            <Field label="Assign to user id" hint="User list is not available to your role; enter the numeric user id.">
-              <input
-                type="number"
-                value={assigneeId || ''}
-                onChange={(e) => setAssigneeId(Number(e.target.value))}
-              />
-            </Field>
-          )}
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !stepId || !assigneeId}
-              onClick={() =>
-                void run(() =>
-                  post<RD>(`/requests/${d.id}/reassign`, {
-                    expected_version: d.version,
-                    step_id: stepId,
-                    assignee_user_id: assigneeId,
-                  }),
-                )
-              }
-            >
-              {busy ? 'Saving…' : 'Reassign'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'actual' ? (
-        <Modal title="Actual period" onClose={() => setAction(null)} wide>
-          <Field label="Action">
-            <select
-              value={actualAction}
-              onChange={(e) => setActualAction(e.target.value as 'confirm' | 'propose_adjustment')}
-            >
-              {can('confirm_actual') ? <option value="confirm">Confirm the period happened</option> : null}
-              {can('propose_actual_adjustment') ? (
-                <option value="propose_adjustment">Propose a correction (needs a second approver)</option>
-              ) : null}
-            </select>
-          </Field>
-          {actualAction === 'propose_adjustment' ? (
-            <>
-              <p className="muted small">
-                Tick the days the employee actually worked. Their minutes are returned to the
-                accounts that originally paid for them — a proposed adjustment is created per
-                account and needs a second approver.
-              </p>
-              <Field label="Days actually worked">
-                <div>
-                  {rev.days
-                    .filter((day) => day.minutes > 0)
-                    .map((day) => {
-                      const corrections = d.actual_corrections.filter((c) => c.date === day.date);
-                      const pending = corrections.some((c) => c.pending_minutes > 0);
-                      const fullyCorrected = correctableDays([day], corrections)[0]!.allocations.every((a) => a.minutes === 0);
-                      return (
-                      <label key={day.date} style={{ display: 'block', margin: '0.25rem 0' }}>
-                        <input
-                          type="checkbox"
-                          disabled={pending || fullyCorrected}
-                          checked={workedDates.includes(day.date)}
-                          onChange={(e) =>
-                            setWorkedDates(
-                              e.target.checked
-                                ? [...workedDates, day.date]
-                                : workedDates.filter((x) => x !== day.date),
-                            )
-                          }
-                        />{' '}
-                        {fmtWeekday(day.date)} {fmtDate(day.date)} — {fmtHours(day.minutes)}
-                        {day.part !== 'full' ? ` (${partLabel(day.part)})` : ''}
-                        {pending ? ' — Correction pending' : corrections.length ? (fullyCorrected ? ' — Already corrected' : ' — Partly corrected') : ''}
-                      </label>
-                      );
-                    })}
-                </div>
-              </Field>
-              {workedDates.length ? (
-                <p className="small">
-                  Returns per account:{' '}
-                  {workedMinutesByAccount(correctableDays(rev.days, d.actual_corrections), workedDates)
-                    .map((a) => `${a.period_year} — ${fmtHours(a.minutes)}`)
-                    .join('; ')}
-                  .
-                </p>
-              ) : null}
-            </>
-          ) : null}
-          <Field label={actualAction === 'propose_adjustment' ? 'Note (required)' : 'Note'}>
-            <textarea value={reason} onChange={(e) => setReason(e.target.value)} />
-          </Field>
-          <Field label="Basis document">
-            <input type="text" value={basisDoc} onChange={(e) => setBasisDoc(e.target.value)} />
-          </Field>
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || (actualAction === 'propose_adjustment' && !workedDates.length)}
-              onClick={() =>
-                void run(async () => {
-                  const r = await post<RD & { adjustment_ids?: number[] }>(
-                    `/requests/${d.id}/actual`,
-                    {
-                      expected_version: d.version,
-                      action: actualAction,
-                      note: reason,
-                      worked_dates:
-                        actualAction === 'propose_adjustment' ? workedDates : undefined,
-                      basis_document: basisDoc || undefined,
-                    },
-                    opKey,
-                  );
-                  const ids = r.adjustment_ids;
-                  setNotice(
-                    actualAction === 'propose_adjustment'
-                      ? `Proposed ${ids?.length ? `${ids.length} ` : ''}correction${ids && ids.length > 1 ? 's' : ''}${
-                          ids?.length ? ` (${ids.map((x) => `#${x}`).join(', ')})` : ''
-                        } — a second approver must apply it.`
-                      : 'Actual period confirmed.',
-                  );
-                  return r;
-                })
-              }
-            >
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {action === 'upload' ? (
-        <Modal title="Upload attachment" onClose={() => setAction(null)}>
-          <Field label="File" hint="PDF, PNG or JPEG — up to 2 MB (1 MB in demo).">
-            <input type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          </Field>
-          <Field label="Sensitivity">
-            <select
-              value={sensitivity}
-              onChange={(e) => setSensitivity(e.target.value as 'normal' | 'medical')}
-            >
-              <option value="normal">Normal</option>
-              <option value="medical">Medical (restricted access)</option>
-            </select>
-          </Field>
-          {actionErr ? <ErrBox error={actionErr} /> : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !file}
-              onClick={() =>
-                void run(async () => {
-                  const fd = new FormData();
-                  fd.set('file', file!);
-                  fd.set('sensitivity', sensitivity);
-                  await postForm(`/requests/${d.id}/attachments`, fd, opKey);
-                  q.reload();
-                })
-              }
-            >
-              {busy ? 'Uploading…' : 'Upload'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => openAction(null)}>
-              Back
-            </button>
-          </div>
-        </Modal>
+      {subtitleBits.join(' · ')}
+      {d.parent ? (
+        <>
+          {' · '}
+          {d.kind === 'amendment' ? 'changes' : 'for'}{' '}
+          <Link to={`/requests/${d.parent.id}`}>{d.parent.number}</Link>
+        </>
       ) : null}
     </>
   );
-}
 
-function AuditTable({ events }: { events: AuditEvent[] }) {
-  if (!events.length) return <Empty>No audit events.</Empty>;
+  const pastLeave = d.kind === 'leave' && d.date_phase === 'period_ended';
+  const canChange = d.kind !== 'cancellation' && d.status !== 'draft' && !pastLeave && (can('revise') || can('amend'));
+  const canCancel = !pastLeave && can('cancel');
+  const changeModal = can('amend') ? 'amend' : 'respond-change';
+  const primary = can('submit') ? (
+    <button type="button" className="btn" onClick={() => setModal('submit')}>
+      Send request
+    </button>
+  ) : isOwner && !can('respond') && canChange ? (
+    <><button type="button" className="btn" onClick={() => setModal(changeModal)}>Change dates</button>{canCancel ? <button type="button" className="btn btn-secondary" onClick={() => setModal('cancel')}>Cancel days</button> : null}</>
+  ) : isOwner && !can('respond') && canCancel ? <button type="button" className="btn" onClick={() => setModal('cancel')}>Cancel days</button> : null;
+
+  const employeeActions = !isOwner ? approvedActions(d) : [];
+  const more: { label: string; onSelect: () => void; danger?: boolean }[] = [];
+  if (can('edit')) more.push({ label: 'Edit draft…', onSelect: () => setModal('edit') });
+  if (canChange && can('revise') && (!isOwner || can('respond')))
+    more.push({ label: isOwner ? 'Change dates…' : `Change dates for ${first}…`, onSelect: () => setModal('respond-change') });
+  if (!isOwner && canChange && can('amend') && !employeeActions.some((a) => a.action === 'amend'))
+    more.push({ label: isOwner ? 'Change dates…' : `Change dates for ${first}…`, onSelect: () => setModal('amend') });
+  if (!isOwner && canCancel && !employeeActions.some((a) => a.action === 'cancel'))
+    more.push({ label: `Cancel part of ${first}’s leave…`, onSelect: () => setModal('cancel') });
+  if (!isOwner && can('respond'))
+    more.push({ label: `Record ${first}’s answer…`, onSelect: () => setModal('record') });
+  if (can('reassign')) more.push({ label: 'Assign step to…', onSelect: () => setModal('assign') });
+  const canUpload = can('upload') && !['withdrawn', 'cancelled', 'rejected'].includes(d.status);
+  if (canUpload) more.push({ label: 'Add document…', onSelect: () => setModal('upload') });
+  if (can('confirm_actual'))
+    more.push({ label: 'Confirm leave was taken', onSelect: () => setModal('actual-confirm') });
+  if (can('propose_actual_adjustment') && !employeeActions.some((a) => a.action === 'actual-worked'))
+    more.push({ label: 'Days actually worked…', onSelect: () => setModal('actual-worked') });
+  if (can('print'))
+    more.push({ label: 'Print', onSelect: () => navigate(`/requests/${d.id}/print`) });
+  if (can('withdraw'))
+    more.push({
+      label: isOwner ? 'Withdraw…' : `Withdraw ${first}’s request…`,
+      danger: true,
+      onSelect: () => setModal('withdraw'),
+    });
+  if (can('delete'))
+    more.push({ label: 'Delete draft…', danger: true, onSelect: () => setModal('delete') });
+
+  /* ----- handlers ----- */
+
+  const ctx: ModalCtx = {
+    d,
+    leaveTypes: leaveTypesQ.data ?? [],
+    businessDate: today,
+    isOwner,
+    onDone: (text) => {
+      setModal(null);
+      toast(text);
+      q.reload();
+    },
+    onNavigate: (to, text) => {
+      setModal(null);
+      if (text) toast(text);
+      navigate(to);
+    },
+    onStale: () => {
+      setModal(null);
+      q.reload();
+      toast('This request changed — the page was updated. Please try again.', 'info');
+    },
+    onClose: () => setModal(null),
+  };
+
+  async function sendMessage(body: string, asAnswer: boolean) {
+    if (!d) return;
+    try {
+      if (asAnswer) {
+        if (responseIntent.current !== body) { keys.current.reset('respond'); responseIntent.current = body; }
+        await post<RD>(
+          `/requests/${d.id}/respond`,
+          { expected_version: d.version, body },
+          keys.current.forIntent('respond'),
+        );
+        keys.current.reset('respond');
+      } else {
+        await post(`/requests/${d.id}/messages`, { body });
+      }
+    } catch (e) {
+      if (!(e && typeof e === 'object' && 'status' in e && e.status === 0)) keys.current.reset('respond');
+      throw e;
+    }
+    q.reload();
+    toast(asAnswer ? 'Answer sent.' : 'Comment posted.');
+  }
+
+  function onDecided(outcome: Outcome) {
+    if (!d) return;
+    toast(decisionToast(outcome, d.employee.full_name, d.kind));
+    navigate('/approvals');
+  }
+
+  const know = decidable || ['approved', 'rejected', 'withdrawn', 'cancelled'].includes(d.status) ? [] : thingsToKnow(d);
+  const canAnswer = isOwner && can('respond');
+  const activeChange = d.children.find(c => ['draft', 'submitted', 'under_review', 'needs_information'].includes(c.status));
+  const modalAction: Record<ModalKind, AllowedAction> = { submit: 'submit', edit: 'edit', delete: 'delete', withdraw: 'withdraw', 'respond-change': 'revise', amend: 'amend', cancel: 'cancel', assign: 'reassign', 'actual-confirm': 'confirm_actual', 'actual-worked': 'propose_actual_adjustment', record: 'respond', upload: 'upload' };
+  const visibleModal = modal && can(modalAction[modal]) && (modal !== 'respond-change' || canChange) && (modal !== 'upload' || canUpload) && (!(modal === 'amend' || modal === 'cancel') || !pastLeave) ? modal : null;
+
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>When</th>
-            <th>Actor</th>
-            <th>Action</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {events.map((e) => (
-            <tr key={e.id}>
-              <td className="small">{fmtDateTime(e.at)}</td>
-              <td className="small">
-                {e.actor?.display_name ?? 'system'}
-                {e.acting_for ? ` (for ${e.acting_for.display_name})` : ''}
-              </td>
-              <td className="small">{e.action}</td>
-              <td className="small muted">
-                {e.details ? <code className="mono">{JSON.stringify(e.details)}</code> : '—'}
-              </td>
-            </tr>
+    <div className="rq-page">
+      <PageHeader
+        back={{ to: isOwner ? '/my' : '/approvals', label: isOwner ? 'My leave' : 'Approvals' }}
+        title={isOwner ? ownerTitle(d) : reviewerTitle(d)}
+        subtitle={subtitle}
+        primary={primary}
+        more={more}
+      />
+
+      <div className="btn-row no-print">
+        {employeeActions.map(({ action, label }) => <button key={action} type="button" className="btn btn-secondary" onClick={() => setModal(action)}>{label}</button>)}
+      </div>
+
+      <div className="rq-status">
+        <StatusBadge status={d.status} label={chipLabel ?? (isOwner && d.status === 'needs_information' ? 'Question for you' : statusLabel(d.status))} />
+        <span className="rq-status-text">{statusSentence(d, viewer, today)}</span>
+      </div>
+
+      <p className="rq-duration">{d.kind === 'cancellation' ? changeSummary(d)?.headline : `${fmtDuration((d.in_force_revision ?? d.current_revision).total_minutes, d.minutes_per_day)} of leave`}</p>
+      {isOwner && d.attachments.length ? <AttachmentLines d={d} owner /> : null}
+      {activeChange ? <p className="rq-change-pending">A {activeChange.kind === 'cancellation' ? 'cancellation' : 'change'} is waiting for approval. <Link to={`/requests/${activeChange.id}`}>View request</Link></p> : null}
+      {isOwner && pastLeave ? <p className="muted small">Past leave can be corrected by HR.</p> : null}
+
+      {decidable ? (
+        <div className="panel rq-card">
+          <DecisionCard request={d} onDecided={onDecided} onRefresh={q.reload} />
+        </div>
+      ) : null}
+
+      {!decidable && know.length ? (
+        <ul className="warn-list">
+          {know.map((t, i) => (
+            <li key={i}>{t}</li>
           ))}
-        </tbody>
-      </table>
+        </ul>
+      ) : null}
+
+      <Messages
+        d={d}
+        canAnswer={canAnswer}
+        canComment={can('comment') && !canAnswer}
+        onSend={sendMessage}
+        onChangeInstead={canAnswer && canChange ? () => setModal('respond-change') : undefined}
+      />
+
+      <div className="rq-details">
+        <DaysDetails d={d} />
+        <StepsDetails d={d} viewer={viewer} />
+        <ChangesDetails d={d} />
+        <DocumentsDetails d={d} owner={isOwner} />
+        <EffectDetails d={d} />
+        <ActualDetails d={d} />
+        <HistoryDetails d={d} startOpen={searchParams.get('history') === 'open'} />
+      </div>
+
+      {visibleModal === 'submit' ? <SubmitModal ctx={ctx} /> : null}
+      {visibleModal === 'edit' ? <EditDraftModal ctx={ctx} /> : null}
+      {visibleModal === 'delete' ? <DeleteDraftModal ctx={ctx} /> : null}
+      {visibleModal === 'withdraw' ? <WithdrawModal ctx={ctx} /> : null}
+      {visibleModal === 'respond-change' ? <ChangeDatesModal ctx={ctx} mode="respond-change" /> : null}
+      {visibleModal === 'amend' ? <ChangeDatesModal ctx={ctx} mode="amend" /> : null}
+      {visibleModal === 'cancel' ? <CancelModal ctx={ctx} /> : null}
+      {visibleModal === 'assign' ? <AssignModal ctx={ctx} /> : null}
+      {visibleModal === 'actual-confirm' ? <ConfirmActualModal ctx={ctx} /> : null}
+      {visibleModal === 'actual-worked' ? <WorkedModal ctx={ctx} /> : null}
+      {visibleModal === 'record' ? <RecordAnswerModal ctx={ctx} /> : null}
+      {visibleModal === 'upload' ? <UploadModal ctx={ctx} /> : null}
     </div>
   );
 }

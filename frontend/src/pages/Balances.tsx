@@ -1,100 +1,238 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { api, ApiError, newIdempotencyKey, post, unwrapList } from '../api/client';
 import type {
   Adjustment,
   BalanceRow,
+  BalanceSummary,
+  EmployeeDetail,
   EmployeeListItem,
+  EmployeeRef,
   LeaveType,
   OrgUnit,
+  PolicyVersion,
 } from '../api/types';
-import { Dur, Empty, ErrBox, Field, Loading, Modal } from '../components/ui';
-import { fmtDate, fmtDateTime } from '../lib/format';
-import { accrualPeriodPolicy, IntentKeys } from '../lib/domain';
+import { ImportDialog } from '../components/ImportDialog';
+import {
+  DataTable,
+  Details,
+  ErrBox,
+  Field,
+  Loading,
+  Menu,
+  Modal,
+  PageHeader,
+  useToast,
+} from '../components/ui';
+import {
+  adjustmentStatusLabel,
+  fmtDate,
+  fmtDateTime,
+  fmtDuration,
+  orgUnitName,
+  plural,
+} from '../lib/format';
+import {
+  accrualPlanFor,
+  daysToMinutes,
+  IntentKeys,
+  policyInForceOn,
+  STANDARD_DAY_MINUTES,
+} from '../lib/domain';
+import { describeError } from '../lib/errors';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+type Adj = Adjustment & { decision_note?: string | null };
+
+interface RunResult {
+  typeId: number;
+  ok: boolean;
+  text: string;
+}
+
+function RunResults({ results }: { results: RunResult[] }) {
+  return (
+    <ul>
+      {results.map((r, i) => (
+        <li key={i} className={r.ok ? undefined : 'field-error'}>
+          {r.text}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Keeps a per-type idempotency key only while a result is unconfirmed. */
+function resetUnlessNetwork(keys: IntentKeys, intent: string, e: ApiError) {
+  if (e.status !== 0) keys.reset(intent);
+}
+
+async function allItems<T>(path: string, query: Record<string, string | number | undefined> = {}): Promise<T[]> {
+  const result: T[] = [];
+  for (;;) {
+    const data = await api<unknown>(path, { query: { ...query, limit: 500, offset: result.length } });
+    const page = unwrapList<T>(data);
+    result.push(...page);
+    const total = data && typeof data === 'object' && 'total' in data ? Number(data.total) : result.length;
+    if (!page.length || result.length >= total) return result;
+  }
+}
+
 export default function Balances() {
-  const { me, hasRole } = useSession();
+  const { me, hasRole, config } = useSession();
+  const toast = useToast();
   const canEdit = hasRole('hr');
   const isApprover = hasRole('adjustment_approver');
+  const businessDate = config?.business_date ?? '';
+  const businessYear = Number(businessDate.slice(0, 4));
 
-  const [orgUnit, setOrgUnit] = useState('');
-  const [leaveType, setLeaveType] = useState('');
+  const [sp, setSp] = useSearchParams();
+  const initialAction = sp.get('action');
+  const [q, setQ] = useState('');
+  const [unit, setUnit] = useState('');
+  const [typeId, setTypeId] = useState<number | null>(null);
   const [asOf, setAsOf] = useState('');
-  const [adjStatus, setAdjStatus] = useState('proposed');
-  const [modal, setModal] = useState<'adjust' | 'accrual' | 'close' | null>(null);
+  const [histStatus, setHistStatus] = useState('');
+  const [modal, setModal] = useState<'entitlement' | 'close' | null>(initialAction === 'entitlement' || initialAction === 'close' ? initialAction : null);
+  const [importKind, setImportKind] = useState<'opening_balances' | 'historical_leave' | null>(
+    initialAction === 'opening_balances' || initialAction === 'historical_leave' ? initialAction : null,
+  );
+  const [correct, setCorrect] = useState<{
+    employee: EmployeeRef | null;
+    leaveTypeId: number;
+    minutesPerDay?: number;
+  } | null>(null);
+  const [rejecting, setRejecting] = useState<number | null>(null);
+  const [rejectNote, setRejectNote] = useState('');
+  const [rejectErr, setRejectErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<ApiError | null>(null);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [bannerErr, setBannerErr] = useState<ApiError | null>(null);
 
-  const unitsQ = useApi(() => api<unknown>('/org-units').then((d) => unwrapList<OrgUnit>(d)), []);
-  const typesQ = useApi(() => api<LeaveType[]>('/leave-types'), []);
-  const employeesQ = useApi(
-    () => api<unknown>('/employees').then((d) => unwrapList<EmployeeListItem>(d)),
-    [],
-  );
-  const tableQ = useApi(
-    () =>
-      api<unknown>('/balances', {
-        query: {
-          org_unit_id: orgUnit || undefined,
-          leave_type_id: leaveType || undefined,
-          date: asOf || undefined,
-        },
-      })
-        .then((d) => unwrapList<BalanceRow>(d))
-        // Types that do not use a balance (e.g. unpaid leave) have nothing to show here.
-        .then((rows) => rows.filter((r) => r.summary.leave_type.uses_balance)),
-    [orgUnit, leaveType, asOf],
-  );
-  const adjQ = useApi(
-    () =>
-      api<unknown>('/adjustments', { query: { status: adjStatus || undefined } }).then((d) =>
-        unwrapList<Adjustment>(d),
-      ),
-    [adjStatus],
-  );
-
-  const [adj, setAdj] = useState({
-    employee_id: 0,
-    leave_type_id: 0,
-    period_year: new Date().getFullYear(),
-    minutes: 0,
-    reason: '',
-    basis_document: '',
-  });
-  const [accrual, setAccrual] = useState({ leave_type_id: 0, period_year: new Date().getFullYear() + 1, month: 1 });
-  // One Idempotency-Key per form-open (reused on retry after a network error);
-  // decide buttons get a stable key per adjustment so a lost response cannot
-  // be decided twice.
-  const [formKey, setFormKey] = useState(() => newIdempotencyKey());
   const decideKeys = useRef(new IntentKeys());
 
-  function openModal(m: 'adjust' | 'accrual' | 'close') {
-    setFormKey(newIdempotencyKey());
-    setErr(null);
-    setMsg(null);
-    setModal(m);
+  const unitsQ = useApi(() => allItems<OrgUnit>('/org-units'), []);
+  const typesQ = useApi(() => api<LeaveType[]>('/leave-types'), []);
+  const balanceTypes = (typesQ.data ?? [])
+    .filter((t) => t.uses_balance || t.policies?.some((p) => p.uses_balance))
+    .sort((a, b) => Number(b.uses_balance) - Number(a.uses_balance));
+  // Segmented control: the chosen type, defaulting to the first balance type.
+  const selTypeId = typeId ?? balanceTypes[0]?.id ?? null;
+
+  const tableQ = useApi(
+    () =>
+      selTypeId === null
+        ? Promise.resolve([] as BalanceRow[])
+        : allItems<BalanceRow>('/balances', {
+              org_unit_id: unit || undefined,
+              leave_type_id: selTypeId,
+              date: asOf || undefined,
+          })
+            .then((rows) => rows.filter((r) => r.summary.leave_type.uses_balance)),
+    [unit, selTypeId, asOf],
+  );
+  const waitingQ = useApi(
+    () =>
+      allItems<Adj>('/adjustments', { status: 'proposed' }),
+    [],
+  );
+  const histQ = useApi(
+    () =>
+      allItems<Adj>('/adjustments', { status: histStatus || undefined }),
+    [histStatus],
+  );
+
+  // Deep link: /balances?employee=<id>&correct=1 opens the Correct dialog.
+  useEffect(() => {
+    const empId = sp.get('employee');
+    if (sp.get('correct') !== '1' || !empId || !/^\d+$/.test(empId) || !canEdit || selTypeId === null) return;
+    let cancelled = false;
+    api<EmployeeDetail>(`/employees/${empId}`)
+      .then((e) => {
+        if (cancelled) return;
+        setCorrect({
+          employee: {
+            id: e.id,
+            service_id: e.service_id,
+            full_name: e.full_name,
+            org_unit: e.org_unit,
+          },
+          leaveTypeId: balanceTypes.find((t) => t.id === Number(sp.get('leave_type_id')))?.id ?? selTypeId,
+        });
+        setSp(
+          (p) => {
+            const n = new URLSearchParams(p);
+            n.delete('correct');
+            return n;
+          },
+          { replace: true },
+        );
+      })
+      .catch((e: unknown) => { if (!cancelled) setBannerErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e))); });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sp, canEdit, selTypeId]);
+
+  const rows = (tableQ.data ?? []).filter((r) => {
+    if (!q.trim()) return true;
+    const needle = q.trim().toLowerCase();
+    return (
+      r.employee.full_name.toLowerCase().includes(needle) ||
+      r.employee.service_id.toLowerCase().includes(needle)
+    );
+  });
+  const anyReserved = rows.some((r) => r.summary.reserved_minutes > 0);
+
+  const waiting = waitingQ.data ?? [];
+  const waitingForMe = waiting.filter((a) => a.proposed_by.id !== me?.user.id);
+  const waitingFromMe = waiting.filter((a) => a.proposed_by.id === me?.user.id);
+
+  function reloadAll() {
+    tableQ.reload();
+    waitingQ.reload();
+    histQ.reload();
   }
 
-  async function run(fn: () => Promise<void>, ok?: string, intent?: string) {
+  async function decide(a: Adj, decision: 'apply' | 'reject', note: string) {
     setBusy(true);
-    setErr(null);
-    setMsg(null);
+    setBannerErr(null);
+    const intent = JSON.stringify([decision, a.id, note]);
     try {
-      await fn();
-      setModal(null);
-      if (ok) setMsg(ok);
-      tableQ.reload();
-      adjQ.reload();
+      await post(
+        `/adjustments/${a.id}/decide`,
+        { decision, note },
+        decideKeys.current.forIntent(intent),
+      );
+      decideKeys.current.reset(intent);
+      toast(
+        decision === 'apply'
+          ? `Correction approved for ${a.employee.full_name}.`
+          : `Correction refused for ${a.employee.full_name}.`,
+      );
+      setRejecting(null);
+      setRejectNote('');
+      reloadAll();
     } catch (e) {
-      setErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
-      // A definitive server error ends the intent — a corrected retry needs a
-      // fresh key. Only an unconfirmed network result (status 0) keeps it.
-      if (!(e instanceof ApiError) || e.status !== 0) {
-        setFormKey(newIdempotencyKey());
-        if (intent !== undefined) decideKeys.current.reset(intent);
-      }
+      const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
+      resetUnlessNetwork(decideKeys.current, intent, ae);
+      setBannerErr(ae);
     } finally {
       setBusy(false);
     }
@@ -102,351 +240,854 @@ export default function Balances() {
 
   return (
     <>
-      <h1>Balances</h1>
-      {msg ? <div className="alert alert-ok">{msg}</div> : null}
+      <PageHeader
+        title="Balances"
+        primary={
+          canEdit ? (
+            <>
+              <button type="button" className={isApprover && waitingForMe.length ? 'btn btn-secondary' : 'btn'} disabled={selTypeId === null || !businessDate} onClick={() => {
+                if (selTypeId !== null) setCorrect({ employee: null, leaveTypeId: selTypeId });
+              }}>Correct balance…</button>
+            </>
+          ) : undefined
+        }
+        more={
+          canEdit
+            ? [
+                { label: 'Add entitlement…', onSelect: () => setModal('entitlement') },
+                { label: 'Close year…', onSelect: () => setModal('close') },
+                {
+                  label: 'Import opening balances…',
+                  onSelect: () => setImportKind('opening_balances'),
+                },
+                { label: 'Import past leave…', onSelect: () => setImportKind('historical_leave') },
+              ]
+            : undefined
+        }
+      />
+      {bannerErr ? <ErrBox error={bannerErr} /> : null}
+      {waitingQ.error ? <ErrBox error={waitingQ.error} /> : null}
 
-      <div className="panel">
+      {isApprover && waitingForMe.length > 0 ? (
+        <section className="panel" aria-label="Corrections waiting for you">
+          <h2>Waiting for you</h2>
+          {waitingForMe.map((a) => (
+            <div className="msg" key={a.id}>
+              <p>
+                <strong>{a.employee.full_name}</strong> · {a.leave_type.name} {a.period_year} ·{' '}
+                <strong>
+                  {a.minutes > 0 ? '+' : ''}
+                  {fmtDuration(a.minutes, a.minutes_per_day || 480)}
+                </strong>{' '}
+                · {a.reason}
+                {a.basis_document ? ` (${a.basis_document})` : ''} · proposed by{' '}
+                {a.proposed_by.display_name}
+              </p>
+              {rejecting === a.id ? (
+                <>
+                  <Field label="Reason for the refusal (required)" error={rejectErr}>
+                    <input
+                      type="text"
+                      value={rejectNote}
+                      onChange={(e) => setRejectNote(e.target.value)}
+                    />
+                  </Field>
+                  <div className="btn-row">
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      disabled={busy}
+                      onClick={() => {
+                        if (!rejectNote.trim()) {
+                          setRejectErr('Add a reason.');
+                          return;
+                        }
+                        void decide(a, 'reject', rejectNote.trim());
+                      }}
+                    >
+                      Refuse correction
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        setRejecting(null);
+                        setRejectErr('');
+                      }}
+                    >
+                      Back
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="btn-row">
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy}
+                    onClick={() => void decide(a, 'apply', '')}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    disabled={busy}
+                    onClick={() => {
+                      setRejecting(a.id);
+                      setRejectNote('');
+                      setRejectErr('');
+                    }}
+                  >
+                    Refuse…
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </section>
+      ) : null}
+      {waitingFromMe.length > 0 ? (
+        <p className="muted">
+          {plural(waitingFromMe.length, 'correction')} waiting for approval.
+        </p>
+      ) : null}
+
+      <section className="panel">
+        {typesQ.error ? <ErrBox error={typesQ.error} /> : null}
+        {unitsQ.error ? <ErrBox error={unitsQ.error} /> : null}
         <div className="toolbar">
-          <Field label="Org unit">
-            <select value={orgUnit} onChange={(e) => setOrgUnit(e.target.value)}>
-              <option value="">All</option>
+          <Field label="Search person">
+            <input
+              type="search"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Name or staff number"
+            />
+          </Field>
+          <Field label="Unit">
+            <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+              <option value="">All units</option>
               {unitsQ.data?.map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.name}
+                  {orgUnitName(u.name)}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="Leave type">
-            <select value={leaveType} onChange={(e) => setLeaveType(e.target.value)}>
-              <option value="">All</option>
-              {typesQ.data?.filter((t) => t.uses_balance).map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="As of date">
-            <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} />
-          </Field>
-          {canEdit ? (
-            <div className="btn-row" style={{ marginTop: 0 }}>
-              <button className="btn btn-secondary" onClick={() => openModal('adjust')}>
-                Propose adjustment
-              </button>
-              <button className="btn btn-secondary" onClick={() => openModal('accrual')}>
-                Run accrual
-              </button>
-              <button className="btn btn-secondary" onClick={() => openModal('close')}>
-                Close period
-              </button>
-            </div>
-          ) : null}
         </div>
+
+        {balanceTypes.length ? (
+          <div className="tabs" role="group" aria-label="Leave type">
+            {balanceTypes.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={t.id === selTypeId ? 'active' : ''}
+                aria-pressed={t.id === selTypeId}
+                onClick={() => setTypeId(t.id)}
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {asOf ? <p className="muted small">Showing balances on {fmtDate(asOf)}.</p> : null}
 
         {tableQ.loading ? <Loading /> : null}
         {tableQ.error ? <ErrBox error={tableQ.error} /> : null}
-        {tableQ.data && tableQ.data.length === 0 ? <Empty>No balances in this scope.</Empty> : null}
-        {tableQ.data && tableQ.data.length > 0 ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Employee</th>
-                  <th>Leave type</th>
-                  <th className="num">Ledger</th>
-                  <th className="num">Reserved</th>
-                  <th className="num">Available</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {tableQ.data.map((r, i) => (
-                  <tr key={i}>
-                    <td>
-                      {r.employee.full_name}
-                      <div className="muted small">
-                        {r.employee.service_id} · {r.employee.org_unit?.name ?? '—'}
-                      </div>
-                    </td>
-                    <td>{r.summary.leave_type.name}</td>
-                    <td className="num">
-                      <Dur minutes={r.summary.ledger_minutes} mpd={r.summary.minutes_per_day} />
-                    </td>
-                    <td className="num">
-                      <Dur minutes={r.summary.reserved_minutes} mpd={r.summary.minutes_per_day} />
-                    </td>
-                    <td className="num">
-                      <strong>
-                        <Dur minutes={r.summary.available_minutes} mpd={r.summary.minutes_per_day} />
-                      </strong>
-                    </td>
-                    <td className="small">
-                      <a href={`/balances/${r.employee.id}/explain?leave_type_id=${r.summary.leave_type.id}`}>
-                        Explain
-                      </a>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>Adjustments</h2>
-        <div className="toolbar">
-          <Field label="Status">
-            <select value={adjStatus} onChange={(e) => setAdjStatus(e.target.value)}>
-              <option value="proposed">Proposed</option>
-              <option value="applied">Applied</option>
-              <option value="rejected">Rejected</option>
-              <option value="">All</option>
-            </select>
-          </Field>
-        </div>
-        {adjQ.loading ? <Loading /> : null}
-        {adjQ.error ? <ErrBox error={adjQ.error} /> : null}
-        {adjQ.data && adjQ.data.length === 0 ? <Empty>No adjustments with this status.</Empty> : null}
-        {adjQ.data && adjQ.data.length > 0 ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Employee</th>
-                  <th>Type / period</th>
-                  <th className="num">Change</th>
-                  <th className="num">Before → after</th>
-                  <th>Reason</th>
-                  <th>Proposed by</th>
-                  <th>Decision</th>
-                </tr>
-              </thead>
-              <tbody>
-                {adjQ.data.map((a) => (
-                  <tr key={a.id}>
-                    <td>{a.employee.full_name}</td>
-                    <td>
-                      {a.leave_type.name} {a.period_year}
-                    </td>
-                    <td className="num">
-                      {a.minutes > 0 ? '+' : ''}
-                      <Dur minutes={a.minutes} mpd={a.minutes_per_day || 480} />
-                    </td>
-                    <td className="num small">
-                      <Dur minutes={a.balance_before} mpd={a.minutes_per_day || 480} /> →{' '}
-                      <Dur minutes={a.balance_after_if_applied} mpd={a.minutes_per_day || 480} />
-                    </td>
-                    <td className="small">
-                      {a.reason}
-                      {a.basis_document ? <div className="muted">basis: {a.basis_document}</div> : null}
-                    </td>
-                    <td className="small">
-                      {a.proposed_by.display_name}
-                      <div className="muted">{fmtDateTime(a.created_at)}</div>
-                    </td>
-                    <td>
-                      {a.status === 'proposed' && isApprover && a.proposed_by.id !== me?.user.id ? (
-                        <div className="btn-row" style={{ marginTop: 0 }}>
-                          <button
-                            className="btn btn-sm"
-                            disabled={busy}
-                            onClick={() =>
-                              void run(
-                                () =>
-                                  post(
-                                    `/adjustments/${a.id}/decide`,
-                                    { decision: 'apply', note: '' },
-                                    decideKeys.current.forIntent(`apply:${a.id}`),
-                                  ).then(() => decideKeys.current.reset(`apply:${a.id}`)),
-                                'Adjustment applied.',
-                                `apply:${a.id}`,
-                              )
+        {tableQ.data && !tableQ.loading ? (
+          <DataTable<BalanceRow>
+            columns={[
+              { label: 'Person', title: true, render: (r) => r.employee.full_name },
+              {
+                label: 'Unit',
+                render: (r) =>
+                  r.employee.org_unit ? orgUnitName(r.employee.org_unit.name) : '—',
+              },
+              {
+                label: 'Days left',
+                className: 'num',
+                render: (r) => (
+                  <strong>
+                    {fmtDuration(r.summary.available_minutes, r.summary.minutes_per_day)}
+                  </strong>
+                ),
+              },
+              ...(anyReserved
+                ? [
+                    {
+                      label: 'Waiting for approval',
+                      className: 'num',
+                      render: (r: BalanceRow) =>
+                        r.summary.reserved_minutes
+                          ? fmtDuration(
+                              r.summary.reserved_minutes,
+                              r.summary.minutes_per_day,
+                            )
+                          : '—',
+                    },
+                  ]
+                : []),
+              ...(canEdit
+                ? [
+                    {
+                      label: '',
+                      render: (r: BalanceRow) => (
+                        <span
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                        >
+                          <Menu
+                            align="end"
+                            label={
+                              <>
+                                <span className="visually-hidden">
+                                  Actions for {r.employee.full_name}
+                                </span>
+                                <span aria-hidden="true">⋯</span>
+                              </>
                             }
-                          >
-                            Apply
-                          </button>
-                          <button
-                            className="btn btn-danger btn-sm"
-                            disabled={busy}
-                            onClick={() =>
-                              void run(
-                                () =>
-                                  post(
-                                    `/adjustments/${a.id}/decide`,
-                                    { decision: 'reject', note: '' },
-                                    decideKeys.current.forIntent(`reject:${a.id}`),
-                                  ).then(() => decideKeys.current.reset(`reject:${a.id}`)),
-                                'Adjustment rejected.',
-                                `reject:${a.id}`,
-                              )
-                            }
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="badge">
-                          {a.status}
-                          {a.decided_by ? ` · ${a.decided_by.display_name}` : ''}
-                          {a.decided_at ? ` · ${fmtDate(a.decided_at)}` : ''}
+                            items={[
+                              {
+                                label: 'Correct…',
+                                onSelect: () =>
+                                  selTypeId !== null &&
+                                  setCorrect({
+                                    employee: r.employee,
+                                    leaveTypeId: selTypeId,
+                                    minutesPerDay: r.summary.minutes_per_day,
+                                  }),
+                              },
+                            ]}
+                          />
                         </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                      ),
+                    },
+                  ]
+                : []),
+            ]}
+            rows={rows}
+            rowLink={(r) =>
+              `/balances/${r.employee.id}/explain?leave_type_id=${r.summary.leave_type.id}${asOf ? `&date=${asOf}` : ''}`
+            }
+            empty={
+              typesQ.loading
+                ? 'Loading…'
+                : balanceTypes.length
+                  ? 'No balances match these filters.'
+                  : 'No balances to show.'
+            }
+          />
         ) : null}
-      </div>
 
-      {modal === 'adjust' ? (
-        <Modal title="Propose balance adjustment" onClose={() => setModal(null)}>
-          <p className="muted small">
-            A proposed adjustment is applied only after a second approver confirms it.
-          </p>
-          {err ? <ErrBox error={err} /> : null}
-          <Field label="Employee">
-            <select value={adj.employee_id} onChange={(e) => setAdj({ ...adj, employee_id: Number(e.target.value) })}>
-              <option value={0}>—</option>
-              {employeesQ.data?.map((x) => (
-                <option key={x.id} value={x.id}>
-                  {x.full_name} ({x.service_id})
-                </option>
-              ))}
-            </select>
-          </Field>
-          <div className="form-grid">
-            <Field label="Leave type">
-              <select value={adj.leave_type_id} onChange={(e) => setAdj({ ...adj, leave_type_id: Number(e.target.value) })}>
-                <option value={0}>—</option>
-                {typesQ.data?.filter((t) => t.uses_balance).map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
+        <Details title="Show balances on another date">
+          <div className="toolbar">
+            <Field label="On date">
+              <input
+                type="date"
+                value={asOf || businessDate}
+                onChange={(e) =>
+                  setAsOf(e.target.value === businessDate ? '' : e.target.value)
+                }
+              />
+            </Field>
+            {asOf ? (
+              <button type="button" className="btn btn-ghost" onClick={() => setAsOf('')}>
+                Back to today
+              </button>
+            ) : null}
+          </div>
+        </Details>
+      </section>
+
+      <section className="panel">
+        <Details title="Corrections history" count={histQ.data?.length}>
+          <div className="toolbar">
+            <Field label="Status">
+              <select value={histStatus} onChange={(e) => setHistStatus(e.target.value)}>
+                <option value="">All</option>
+                <option value="proposed">Waiting for approval</option>
+                <option value="applied">Applied</option>
+                <option value="rejected">Refused</option>
               </select>
             </Field>
-            <Field label="Period year">
-              <input type="number" value={adj.period_year} onChange={(e) => setAdj({ ...adj, period_year: Number(e.target.value) })} />
-            </Field>
           </div>
-          <Field label="Minutes (+ add / − remove)" hint="480 minutes = one day on a full-time schedule.">
-            <input type="number" step="30" value={adj.minutes} onChange={(e) => setAdj({ ...adj, minutes: Number(e.target.value) })} />
-          </Field>
-          <Field label="Reason">
-            <input value={adj.reason} onChange={(e) => setAdj({ ...adj, reason: e.target.value })} />
-          </Field>
-          <Field label="Basis document">
-            <input value={adj.basis_document} onChange={(e) => setAdj({ ...adj, basis_document: e.target.value })} />
-          </Field>
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !adj.employee_id || !adj.leave_type_id || !adj.minutes || !adj.reason}
-              onClick={() =>
-                void run(
-                  () => post('/adjustments', adj, formKey).then(() => undefined),
-                  'Adjustment proposed.',
-                )
-              }
-            >
-              {busy ? 'Saving…' : 'Propose'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setModal(null)}>
+          {histQ.loading ? <Loading /> : null}
+          {histQ.error ? <ErrBox error={histQ.error} /> : null}
+          {histQ.data ? (
+            <DataTable<Adj>
+              columns={[
+                { label: 'Person', title: true, render: (a) => a.employee.full_name },
+                {
+                  label: 'Type',
+                  render: (a) => (
+                    <>
+                      {a.leave_type.name} <span className="muted">{a.period_year}</span>
+                    </>
+                  ),
+                },
+                {
+                  label: 'Change',
+                  className: 'num',
+                  render: (a) => (
+                    <>
+                      {a.minutes > 0 ? '+' : ''}
+                      {fmtDuration(a.minutes, a.minutes_per_day || 480)}
+                    </>
+                  ),
+                },
+                {
+                  label: 'Reason',
+                  render: (a) => (
+                    <>
+                      {a.reason}
+                      {a.basis_document ? (
+                        <div className="muted small">{a.basis_document}</div>
+                      ) : null}
+                    </>
+                  ),
+                },
+                {
+                  label: 'Proposed by',
+                  render: (a) => (
+                    <>
+                      {a.proposed_by.display_name}
+                      <div className="muted small">{fmtDateTime(a.created_at)}</div>
+                    </>
+                  ),
+                },
+                {
+                  label: 'Decision',
+                  render: (a) =>
+                    a.status === 'proposed' ? (
+                      <span className="muted">{adjustmentStatusLabel(a.status)}</span>
+                    ) : (
+                      <>
+                        {adjustmentStatusLabel(a.status)}
+                        {a.decided_by ? ` by ${a.decided_by.display_name}` : ''}
+                        {a.decided_at ? ` · ${fmtDateTime(a.decided_at)}` : ''}
+                        {a.decision_note ? (
+                          <div className="muted small">{a.decision_note}</div>
+                        ) : null}
+                      </>
+                    ),
+                },
+              ]}
+              rows={histQ.data}
+              empty="No corrections here."
+            />
+          ) : null}
+        </Details>
+      </section>
+
+      {correct ? (
+        <CorrectDialog
+          employee={correct.employee}
+          types={balanceTypes}
+          initialTypeId={correct.leaveTypeId}
+          initialMinutesPerDay={correct.minutesPerDay}
+          businessYear={businessYear}
+          onClose={() => setCorrect(null)}
+          onDone={reloadAll}
+        />
+      ) : null}
+      {modal === 'entitlement' ? (
+        <EntitlementDialog
+          types={typesQ.data ?? []}
+          businessDate={businessDate}
+          onClose={() => setModal(null)}
+          onDone={reloadAll}
+        />
+      ) : null}
+      {modal === 'close' ? (
+        <CloseYearDialog
+          types={typesQ.data ?? []}
+          businessDate={businessDate}
+          onClose={() => setModal(null)}
+          onDone={reloadAll}
+        />
+      ) : null}
+      {importKind ? (
+        <ImportDialog
+          kind={importKind}
+          onClose={() => setImportKind(null)}
+          onDone={reloadAll}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Correct balance                                                     */
+/* ------------------------------------------------------------------ */
+
+function CorrectDialog({
+  employee,
+  types,
+  initialTypeId,
+  initialMinutesPerDay,
+  businessYear,
+  onClose,
+  onDone,
+}: {
+  employee: EmployeeRef | null;
+  types: LeaveType[];
+  initialTypeId: number;
+  initialMinutesPerDay?: number | undefined;
+  businessYear: number;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const toast = useToast();
+  const [person, setPerson] = useState(employee);
+  const [leaveTypeId, setLeaveTypeId] = useState(initialTypeId);
+  const [year, setYear] = useState(businessYear);
+  const [dir, setDir] = useState<'add' | 'remove'>('add');
+  const [days, setDays] = useState('1');
+  const [amountUnit, setAmountUnit] = useState<'days' | 'hours'>('days');
+  const [reason, setReason] = useState('');
+  const [basis, setBasis] = useState('');
+  const [fieldErr, setFieldErr] = useState<Record<string, string>>({});
+  const [err, setErr] = useState<ApiError | null>(null);
+  const [busy, setBusy] = useState(false);
+  const keyRef = useRef(newIdempotencyKey());
+  const peopleQ = useApi(() => employee ? Promise.resolve([] as EmployeeListItem[]) : allItems<EmployeeListItem>('/employees', { include_inactive: 1 }), [employee]);
+
+  // The day length for the ±days conversion comes from the person's own
+  // balance summary (their work pattern), not a global constant.
+  const balQ = useApi(
+    () => person ? api<BalanceSummary[]>(`/balances/${person.id}`).then((summaries) => ({ employeeId: person.id, summaries })) : Promise.resolve(null),
+    [person?.id],
+  );
+  const mpd = leaveTypeId === initialTypeId && initialMinutesPerDay
+    ? initialMinutesPerDay
+    : balQ.data?.employeeId === person?.id ? balQ.data?.summaries.find((s) => s.leave_type.id === leaveTypeId)?.minutes_per_day : undefined;
+
+  async function submit() {
+    if (busy || !mpd || !person) return;
+    const daysNum = Number(days);
+    const fe: Record<string, string> = {};
+    const amountMinutes = amountUnit === 'hours' ? daysNum * 60 : daysToMinutes(daysNum, mpd);
+    if (!Number.isFinite(daysNum) || daysNum <= 0 || (amountUnit === 'days' && !Number.isInteger(daysNum * 2)) || !Number.isSafeInteger(amountMinutes)) fe['days'] = amountUnit === 'days' ? 'Enter an amount in half-day steps, such as ½ or 1 day.' : 'Enter hours that make a whole number of minutes.';
+    if (!reason.trim()) fe['reason'] = 'Add a reason.';
+    if (!basis.trim()) fe['basis'] = 'Add the document this is based on.';
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) fe['year'] = 'Enter a year from 2000 to 2100.';
+    setFieldErr(fe);
+    if (Object.keys(fe).length) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const minutes = (dir === 'add' ? 1 : -1) * amountMinutes;
+      await post(
+        '/adjustments',
+        {
+          employee_id: person.id,
+          leave_type_id: leaveTypeId,
+          period_year: year,
+          minutes,
+          reason: reason.trim(),
+          basis_document: basis.trim(),
+        },
+        keyRef.current,
+      );
+      toast('Correction sent for approval.');
+      onDone();
+      onClose();
+    } catch (e) {
+      const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
+      if (ae.status !== 0) keyRef.current = newIdempotencyKey();
+      setErr(ae);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="Correct balance"
+      onClose={() => { if (!busy) onClose(); }}
+      footer={
+        <>
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>
+            Cancel
+          </button>
+          <button type="button" className="btn" disabled={busy || !mpd} onClick={() => void submit()}>
+            {busy ? 'Sending…' : 'Send for approval'}
+          </button>
+        </>
+      }
+    >
+      {employee ? <p><strong>{employee.full_name}</strong>{employee.org_unit ? <span className="muted"> · {orgUnitName(employee.org_unit.name)}</span> : null}</p> :
+        <Field label="Person (required)"><select disabled={busy || peopleQ.loading} value={person?.id ?? ''} onChange={(e) => {
+          keyRef.current = newIdempotencyKey();
+          setPerson(peopleQ.data?.find((p) => p.id === Number(e.target.value)) ?? null);
+        }}><option value="">Choose a person</option>{peopleQ.data?.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}</select></Field>}
+      {peopleQ.error ? <ErrBox error={peopleQ.error} /> : null}
+      <p className="muted small">Another HR officer must approve this.</p>
+      {err ? <ErrBox error={err} /> : null}
+      {balQ.error ? <ErrBox error={balQ.error} /> : null}
+      {person && !mpd && balQ.loading ? <Loading label="Loading this person's work pattern…" /> : null}
+      <div className="form-grid">
+        <Field label="Leave type">
+          <select disabled={busy} value={leaveTypeId} onChange={(e) => { keyRef.current = newIdempotencyKey(); setLeaveTypeId(Number(e.target.value)); }}>
+            {types.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Year" error={fieldErr['year']}>
+          <input type="number" min={2000} max={2100} step={1} disabled={busy} value={year} onChange={(e) => { keyRef.current = newIdempotencyKey(); setYear(Number(e.target.value)); }} />
+        </Field>
+      </div>
+      <div className="form-grid">
+        <Field label="Change">
+          <select disabled={busy} value={dir} onChange={(e) => { keyRef.current = newIdempotencyKey(); setDir(e.target.value as 'add' | 'remove'); }}>
+            <option value="add">Add days</option>
+            <option value="remove">Remove days</option>
+          </select>
+        </Field>
+        <Field label={amountUnit === 'days' ? 'Days' : 'Hours'} hint={amountUnit === 'days' ? 'In half-day steps.' : 'For a correction shorter than half a day.'} error={fieldErr['days']}>
+          <input
+            type="number"
+            disabled={busy}
+            min={amountUnit === 'days' ? 0.5 : 1 / 60}
+            step={amountUnit === 'days' ? 0.5 : 'any'}
+            value={days}
+            onChange={(e) => { keyRef.current = newIdempotencyKey(); setDays(e.target.value); }}
+          />
+        </Field>
+      </div>
+      <Details title="Use hours instead"><Field label="Amount in"><select value={amountUnit} onChange={(e) => { keyRef.current = newIdempotencyKey(); setAmountUnit(e.target.value as 'days' | 'hours'); }}><option value="days">Days</option><option value="hours">Hours</option></select></Field></Details>
+      <Field label="Reason (required)" error={fieldErr['reason']}>
+        <input type="text" disabled={busy} value={reason} onChange={(e) => { keyRef.current = newIdempotencyKey(); setReason(e.target.value); }} />
+      </Field>
+      <Field
+        label="Reference document (required)"
+        hint="e.g. the paper form number"
+        error={fieldErr['basis']}
+      >
+        <input type="text" disabled={busy} value={basis} onChange={(e) => { keyRef.current = newIdempotencyKey(); setBasis(e.target.value); }} />
+      </Field>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Add entitlement (was: run accrual)                                  */
+/* ------------------------------------------------------------------ */
+
+function EntitlementDialog({
+  types,
+  businessDate,
+  onClose,
+  onDone,
+}: {
+  types: LeaveType[];
+  businessDate: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const toast = useToast();
+  const businessYear = Number(businessDate.slice(0, 4));
+  const businessMonth = Number(businessDate.slice(5, 7));
+  const balanceTypes = types.filter((t) => t.uses_balance || t.policies?.some((p) => p.uses_balance));
+  const [year, setYear] = useState(businessYear);
+  const [month, setMonth] = useState(businessMonth || 1);
+  const [ticked, setTicked] = useState<Set<number>>(() => new Set(balanceTypes.map((t) => t.id)));
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<RunResult[] | null>(null);
+  const keys = useRef(new IntentKeys());
+
+  const plans = balanceTypes.map((t) => ({ t, plan: accrualPlanFor(t, year, month) }));
+  const isRunnable = (p: (typeof plans)[number]) =>
+    !!p.plan && businessDate >= p.plan.runnableFrom;
+  // Keep month selection reachable when a monthly rule starts later in the year.
+  const needsMonth = balanceTypes.some((t) => ticked.has(t.id) &&
+    MONTH_NAMES.some((_, i) => accrualPlanFor(t, year, i + 1)?.kind === 'monthly'));
+  const anyRunnable = plans.some((p) => ticked.has(p.t.id) && isRunnable(p));
+  const periodLabel = needsMonth ? `${MONTH_NAMES[month - 1]} ${year}` : `${year}`;
+  const warnEarly = plans.some(
+    (p) => ticked.has(p.t.id) && isRunnable(p) && p.plan?.kind === 'annual' && year > businessYear,
+  );
+
+  async function run() {
+    if (busy) return;
+    setBusy(true);
+    const out: RunResult[] = results?.filter((r) => r.ok) ?? [];
+    for (const { t, plan } of plans) {
+      if (!ticked.has(t.id) || !plan || businessDate < plan.runnableFrom) continue;
+      if (out.some((r) => r.typeId === t.id)) continue;
+      const intent = `accrual:${t.id}:${year}:${plan.kind === 'monthly' ? month : 'annual'}`;
+      try {
+        const r = await post<{ posted?: number; skipped_existing?: number }>(
+          '/accruals/run',
+          {
+            leave_type_id: t.id,
+            period_year: year,
+            ...(plan.kind === 'monthly' ? { month } : {}),
+          },
+          keys.current.forIntent(intent),
+        );
+        keys.current.reset(intent);
+        const period = plan.kind === 'monthly' ? `${MONTH_NAMES[month - 1]} ${year}` : `${year}`;
+        out.push({
+          typeId: t.id,
+          ok: true,
+          text: `${t.name} — added the ${period} entitlement for ${plural(r.posted ?? 0, 'person', 'people')} (${r.skipped_existing ?? 0} already had it).`,
+        });
+      } catch (e) {
+        const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
+        resetUnlessNetwork(keys.current, intent, ae);
+        out.push({ typeId: t.id, ok: false, text: `${t.name} — ${describeError(ae).message}` });
+      }
+    }
+    setResults(out);
+    setBusy(false);
+    if (out.some((r) => r.ok)) toast(out.some((r) => !r.ok) ? 'Some entitlements were added. Check the remaining leave types.' : `Entitlements added for ${periodLabel}.`);
+    onDone();
+  }
+
+  return (
+    <Modal
+      title="Add entitlement"
+      onClose={() => { if (!busy) onClose(); }}
+      footer={
+        results ? (
+          <>
+            <button type="button" className={results.some((r) => !r.ok) ? 'btn btn-ghost' : 'btn'} disabled={busy} onClick={onClose}>Done</button>
+            {results.some((r) => !r.ok) ? <button type="button" className="btn" disabled={busy} onClick={() => void run()}>{busy ? 'Adding…' : 'Retry remaining types'}</button> : null}
+          </>
+        ) : (
+          <>
+            <button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>
               Cancel
             </button>
-          </div>
-        </Modal>
-      ) : null}
-
-      {modal === 'accrual' || modal === 'close' ? (
-        (() => {
-          const selType = typesQ.data?.find((t) => t.id === accrual.leave_type_id) ?? null;
-          const accrualPolicy = selType ? accrualPeriodPolicy(selType, accrual.period_year, accrual.month) : null;
-          const needsMonth = modal === 'accrual' && accrualPolicy?.accrual_mode === 'monthly';
-          const selectedPolicy = accrualPolicy;
-          const invalidPeriod = modal === 'accrual' && (!selectedPolicy || (needsMonth && selectedPolicy.accrual_mode !== 'monthly'));
-          return (
-        <Modal title={modal === 'accrual' ? 'Run accrual' : 'Close period'} onClose={() => setModal(null)}>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || !anyRunnable}
+              onClick={() => void run()}
+            >
+              {busy ? 'Adding…' : 'Add'}
+            </button>
+          </>
+        )
+      }
+    >
+      {results ? (
+        <RunResults results={results} />
+      ) : (
+        <>
           <p className="muted small">
-            {modal === 'accrual'
-              ? needsMonth
-                ? 'Posts the monthly accrual for everyone entitled under the policy in force for that period. Running the same month twice does not duplicate entries.'
-                : 'Posts the yearly accrual for everyone entitled under the policy. Running it twice does not duplicate entries.'
-              : 'Closes the period and posts carry-over expiry entries per policy. Idempotent.'}
+            Adds the entitlement for the chosen period to everyone entitled. People who already
+            have it are skipped.
           </p>
-          {err ? <ErrBox error={err} /> : null}
-          <Field label="Leave type">
-            <select value={accrual.leave_type_id} onChange={(e) => setAccrual({ ...accrual, leave_type_id: Number(e.target.value) })}>
-              <option value={0}>—</option>
-              {typesQ.data?.filter((t) => t.uses_balance || t.policies?.some((p) => p.uses_balance)).map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Period year">
-            <input type="number" value={accrual.period_year} onChange={(e) => setAccrual({ ...accrual, period_year: Number(e.target.value) })} />
-          </Field>
-          {modal === 'accrual' ? (
-            <Field label="Month" hint="Choose the period first. Monthly accrual uses the policy on its first day; annual accrual uses January.">
-              <select value={accrual.month} onChange={(e) => setAccrual({ ...accrual, month: Number(e.target.value) })}>
-                {['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(
-                  (name, i) => (
+          <div className="form-grid">
+            <Field label="Year">
+              <input
+                type="number"
+                disabled={busy}
+                min={2000}
+                max={2100}
+                value={year}
+                onChange={(e) => setYear(Number(e.target.value))}
+              />
+            </Field>
+            {needsMonth ? (
+              <Field label="Month">
+                <select disabled={busy} value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+                  {MONTH_NAMES.map((name, i) => (
                     <option key={i + 1} value={i + 1}>
                       {name}
                     </option>
-                  ),
-                )}
-              </select>
-            </Field>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
+          </div>
+          <fieldset disabled={busy}>
+            <legend>Leave types</legend>
+            {plans.map(({ t, plan }) => {
+              const runnable = isRunnable({ t, plan });
+              const hint = !plan
+                ? `Nothing adds days for ${periodLabel}`
+                : !runnable
+                  ? `Available from ${fmtDate(plan!.runnableFrom)}`
+                  : '';
+              return (
+                <div key={t.id}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={ticked.has(t.id)}
+                      onChange={(e) => {
+                        const next = new Set(ticked);
+                        if (e.target.checked) next.add(t.id);
+                        else next.delete(t.id);
+                        setTicked(next);
+                      }}
+                    />{' '}
+                    {t.name}
+                    {hint ? <span className="muted small"> — {hint}</span> : null}
+                  </label>
+                </div>
+              );
+            })}
+          </fieldset>
+          {warnEarly ? (
+            <ul className="warn-list">
+              <li>This makes {year} days available now.</li>
+            </ul>
           ) : null}
-          {invalidPeriod && selType ? <p className="alert alert-error">The policy on this period's first day does not support this accrual run. Choose a month with a monthly policy.</p> : null}
-          {modal === 'accrual' && selType && accrualPolicy && !needsMonth ? (
-            <p className="muted small">
-              Policy in force for {accrual.period_year}: {accrualPolicy.accrual_mode} — no month needed.
-            </p>
+          {!anyRunnable ? (
+            <p className="muted">Nothing to add for {periodLabel} yet.</p>
           ) : null}
-          <div className="btn-row">
-            <button
-              className="btn"
-              disabled={busy || !accrual.leave_type_id || invalidPeriod}
-              onClick={() =>
-                void run(async () => {
-                  const path = modal === 'accrual' ? '/accruals/run' : '/periods/close';
-                  const body =
-                    modal === 'accrual'
-                      ? {
-                          leave_type_id: accrual.leave_type_id,
-                          period_year: accrual.period_year,
-                          // `month` is required for monthly policies and rejected otherwise.
-                          ...(needsMonth ? { month: accrual.month } : {}),
-                        }
-                      : { leave_type_id: accrual.leave_type_id, period_year: accrual.period_year };
-                  const r = await post<{ posted?: number; skipped_existing?: number }>(path, body, formKey);
-                  setMsg(
-                    modal === 'accrual'
-                      ? `Accrual done — posted ${r.posted ?? '?'}, skipped existing ${r.skipped_existing ?? 0}.`
-                      : 'Period closed.',
-                  );
-                })
-              }
-            >
-              {busy ? 'Running…' : modal === 'accrual' ? 'Run accrual' : 'Close period'}
-            </button>
-            <button className="btn btn-secondary" onClick={() => setModal(null)}>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Close year (was: close period)                                      */
+/* ------------------------------------------------------------------ */
+
+function closeSentence(name: string, policy: PolicyVersion | null, year: number): string {
+  const next = year + 1;
+  if (!policy) return `${name} — no rules for ${year} yet; skipped.`;
+  if (!policy.uses_balance) return `${name} — does not use a yearly allowance in ${year}; skipped.`;
+  if (!policy.carryover_allowed) return `${name} — unused days are removed.`;
+  const expiry = policy.carryover_expiry_months;
+  const expiryText =
+    expiry === null
+      ? ''
+      : expiry === 0
+        ? ` and expire at the start of ${next}`
+        : ` and expire after ${plural(expiry, 'month')}`;
+  if (policy.carryover_limit_min !== null) {
+    return `${name} — up to ${fmtDuration(policy.carryover_limit_min, STANDARD_DAY_MINUTES)} carry over to ${next}${expiryText}; the rest is removed.`;
+  }
+  return `${name} — unused days carry over to ${next}${expiryText}.`;
+}
+
+function CloseYearDialog({
+  types,
+  businessDate,
+  onClose,
+  onDone,
+}: {
+  types: LeaveType[];
+  businessDate: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const toast = useToast();
+  const businessYear = Number(businessDate.slice(0, 4));
+  const balanceTypes = types.filter((t) => t.uses_balance || t.policies?.some((p) => p.uses_balance));
+  const [year, setYear] = useState(businessYear - 1);
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState<RunResult[] | null>(null);
+  const keys = useRef(new IntentKeys());
+
+  const ended = Number.isInteger(year) && year >= 2000 && year <= businessYear && `${year}-12-31` < businessDate;
+  const lines = balanceTypes.map((t) => ({
+    t,
+    policy: policyInForceOn(t, `${year}-12-31`),
+  }));
+  const postable = lines.filter((l) => l.policy?.uses_balance);
+
+  async function run() {
+    if (busy || !ended || !confirm) return;
+    setBusy(true);
+    const out: RunResult[] = results?.filter((r) => r.ok) ?? [];
+    for (const { t } of postable) {
+      if (out.some((r) => r.typeId === t.id)) continue;
+      const intent = `close:${t.id}:${year}`;
+      try {
+        const result = await post<{ posted: number }>(
+          '/periods/close',
+          { leave_type_id: t.id, period_year: year },
+          keys.current.forIntent(intent),
+        );
+        keys.current.reset(intent);
+        out.push({ typeId: t.id, ok: true, text: result.posted === 0 ? `${t.name} — no balance changes for ${year}.` : `${t.name} — ${year} closed.` });
+      } catch (e) {
+        const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
+        resetUnlessNetwork(keys.current, intent, ae);
+        out.push({ typeId: t.id, ok: false, text: `${t.name} — ${describeError(ae).message}` });
+      }
+    }
+    setResults(out);
+    setBusy(false);
+    if (out.some((r) => r.ok)) toast(out.some((r) => !r.ok) ? 'Some leave types were closed. Check the remaining types.' : out.every(r => r.text.includes('no balance changes')) ? 'No balance changes.' : `${year} closed.`);
+    onDone();
+  }
+
+  return (
+    <Modal
+      title={`Close ${year}`}
+      onClose={() => { if (!busy) onClose(); }}
+      footer={
+        results ? (
+          <>
+            <button type="button" className={results.some((r) => !r.ok) ? 'btn btn-ghost' : 'btn'} disabled={busy} onClick={onClose}>Done</button>
+            {results.some((r) => !r.ok) ? <button type="button" className="btn" disabled={busy} onClick={() => void run()}>{busy ? 'Closing…' : 'Retry remaining types'}</button> : null}
+          </>
+        ) : (
+          <>
+            <button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>
               Cancel
             </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy || !ended || !confirm || !postable.length}
+              onClick={() => void run()}
+            >
+              {busy ? 'Closing…' : `Close ${year}`}
+            </button>
+          </>
+        )
+      }
+    >
+      {results ? (
+        <RunResults results={results} />
+      ) : (
+        <>
+          <Field label="Year to close">
+            <input type="number" min={2000} max={businessYear} step={1} disabled={busy} value={year} onChange={(e) => { setYear(Number(e.target.value)); setConfirm(false); }} />
+          </Field>
+          {!ended ? (
+            <p className="alert alert-info">
+              {year} has not ended yet — you can only close a finished year.
+            </p>
+          ) : null}
+          <p className="muted small">For each leave type:</p>
+          <ul>
+            {lines.map((l) => (
+              <li key={l.t.id}>{closeSentence(l.t.name, l.policy, year)}</li>
+            ))}
+            {!lines.length ? <li>No leave types use balances.</li> : null}
+          </ul>
+          <div>
+            <label>
+              <input
+                type="checkbox"
+                disabled={busy}
+                checked={confirm}
+                onChange={(e) => setConfirm(e.target.checked)}
+              />{' '}
+              I understand the carry-over rules above.
+            </label>
           </div>
-        </Modal>
-          );
-        })()
-      ) : null}
-    </>
+        </>
+      )}
+    </Modal>
   );
 }

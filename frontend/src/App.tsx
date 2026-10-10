@@ -1,11 +1,12 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router';
 import Layout from './components/Layout';
-import { Loading } from './components/ui';
+import { Loading, ToastProvider } from './components/ui';
 import { useSession } from './lib/session';
 import Approvals from './pages/Approvals';
 import Balances from './pages/Balances';
 import Explain from './pages/Explain';
 import Help from './pages/Help';
+import History from './pages/History';
 import Landing from './pages/Landing';
 import MyLeave from './pages/MyLeave';
 import Operations from './pages/Operations';
@@ -38,31 +39,38 @@ function NotFound() {
 export default function App() {
   const { me } = useSession();
   return (
-    <Routes>
-      <Route element={<Layout />}>
-        <Route index element={<Landing />} />
-        <Route path="/my" element={<RequireAuth>{<MyLeave />}</RequireAuth>} />
-        <Route
-          path="/balances/:employeeId/explain"
-          element={<RequireAuth>{<Explain />}</RequireAuth>}
-        />
-        <Route path="/requests/new" element={<RequireAuth>{<RequestNew />}</RequireAuth>} />
-        <Route path="/requests/:id" element={<RequireAuth>{<RequestDetail />}</RequireAuth>} />
-        <Route
-          path="/requests/:id/print"
-          element={<RequireAuth>{<RequestPrint />}</RequireAuth>}
-        />
-        <Route path="/approvals" element={<RequireAuth>{<Approvals />}</RequireAuth>} />
-        <Route path="/calendar" element={<RequireAuth>{<TeamCalendar />}</RequireAuth>} />
-        <Route path="/people" element={<RequireAuth>{<People />}</RequireAuth>} />
-        <Route path="/people/:id" element={<RequireAuth>{<PersonDetail />}</RequireAuth>} />
-        <Route path="/balances" element={<RequireAuth>{<Balances />}</RequireAuth>} />
-        <Route path="/reports" element={<RequireAuth>{<Reports />}</RequireAuth>} />
-        <Route path="/settings" element={<RequireAuth>{<Settings />}</RequireAuth>} />
-        <Route path="/operations" element={<RequireAuth>{<Operations />}</RequireAuth>} />
-        <Route path="/help" element={<RequireAuth>{<Help />}</RequireAuth>} />
-        <Route path="*" element={me ? <NotFound /> : <Landing />} />
-      </Route>
-    </Routes>
+    <ToastProvider key={me?.user.id ?? 'signed-out'}>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<Landing />} />
+          <Route path="/my" element={<RequireAuth>{<MyLeave />}</RequireAuth>} />
+          <Route
+            path="/balances/:employeeId/explain"
+            element={<RequireAuth>{<Explain />}</RequireAuth>}
+          />
+          <Route path="/requests/new" element={<RequireAuth>{<RequestNew />}</RequireAuth>} />
+          <Route path="/requests/:id" element={<RequireAuth>{<RequestDetail />}</RequireAuth>} />
+          <Route
+            path="/requests/:id/print"
+            element={<RequireAuth>{<RequestPrint />}</RequireAuth>}
+          />
+          <Route path="/approvals" element={<RequireAuth>{<Approvals />}</RequireAuth>} />
+          <Route path="/calendar" element={<RequireAuth>{<TeamCalendar />}</RequireAuth>} />
+          <Route path="/people" element={<RequireAuth>{<People />}</RequireAuth>} />
+          <Route path="/people/:id" element={<RequireAuth>{<PersonDetail />}</RequireAuth>} />
+          <Route path="/balances" element={<RequireAuth>{<Balances />}</RequireAuth>} />
+          <Route path="/reports" element={<RequireAuth>{<Reports />}</RequireAuth>} />
+          <Route
+            path="/settings/:section?"
+            element={<RequireAuth>{<Settings />}</RequireAuth>}
+          />
+          <Route path="/system" element={<RequireAuth>{<Operations />}</RequireAuth>} />
+          <Route path="/history" element={<RequireAuth>{<History />}</RequireAuth>} />
+          <Route path="/operations" element={<Navigate to="/system" replace />} />
+          <Route path="/help" element={<RequireAuth>{<Help />}</RequireAuth>} />
+          <Route path="*" element={me ? <NotFound /> : <Landing />} />
+        </Route>
+      </Routes>
+    </ToastProvider>
   );
 }

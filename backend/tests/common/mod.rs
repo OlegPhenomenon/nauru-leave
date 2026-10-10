@@ -103,10 +103,10 @@ impl W {
         let c = &mut conn;
 
         // org units
-        let chr = people::create_org_unit(c, "CHR", "Central HR Office (demo)", None).unwrap();
-        let iu = people::create_org_unit(c, "IU", "Infrastructure Unit (demo)", None).unwrap();
+        let chr = people::create_org_unit(c, "CHR", "Central HR Office", None).unwrap();
+        let iu = people::create_org_unit(c, "IU", "Infrastructure Unit", None).unwrap();
         let csu =
-            people::create_org_unit(c, "CSU", "Community Services Unit (demo)", None).unwrap();
+            people::create_org_unit(c, "CSU", "Community Services Unit", None).unwrap();
 
         // schedules
         let (std_sched, _) = people::create_schedule(
@@ -135,7 +135,7 @@ impl W {
             ("2026-05-17", "Constitution Day"),
             ("2026-10-26", "Angam Day"),
             ("2026-12-25", "Christmas Day"),
-            ("2026-12-28", "Christmas substitute (fictional)"),
+            ("2026-12-28", "Christmas substitute"),
             ("2027-01-01", "New Year's Day"),
         ] {
             people::create_calendar_exception(c, d(date), name, 0, None, NOW).unwrap();

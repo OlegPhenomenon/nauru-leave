@@ -89,6 +89,7 @@ export async function api<T>(path: string, opts: RequestOpts = {}): Promise<T> {
       err?.details,
     );
   }
+  if (method !== 'GET' && !path.startsWith('/demo/login')) window.dispatchEvent(new Event('nld:counts-changed'));
   return data as T;
 }
 

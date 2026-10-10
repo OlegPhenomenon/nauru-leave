@@ -47,3 +47,9 @@
 - [x] E2 Демо-эндпоинты отсутствуют в production (`production_has_no_demo_routes`).
 - [x] E3 Docker-образ собирается, `docker compose up` отдаёт UI; размер образа и RSS при простое записаны в TEST_RESULTS.
 - [x] E4 CSRF: мутация без токена → 403 (`csrf_required`).
+
+## F. Проверки интерфейса после обновления
+
+- [x] F1 Тринадцать задач с измерением кликов от стартового экрана роли и проверкой видимого текста: `frontend/e2e/click-budget.spec.ts` (четыре теста `click budgets: …`).
+- [x] F2 Переходы из People сохраняют сотрудника для бумажного заявления и корректировки, пользователя для доступа и замещения; импорт открывается с выбранным видом, `/operations` перенаправляет в System: `HR person shortcuts preserve employee and user context across pages` в том же файле.
+- [x] F3 Подтверждение фактической корректировки и соответствие созданной записи её идентификатору: `F05 round2: actual correction confirms second approval and preserves adjustment identity` в `frontend/e2e/audit-round2.spec.ts`. Идентификатор проверяется в API, подтверждение в интерфейсе — обычным текстом.

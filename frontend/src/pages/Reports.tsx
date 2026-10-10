@@ -1,56 +1,560 @@
-import { useRef, useState, type ReactNode } from 'react';
-import { api, ApiError, post, postForm, unwrapList } from '../api/client';
-import type { ExportBatch, ImportBatch, ImportPreview, OrgUnit } from '../api/types';
-import { Empty, ErrBox, Field, GenericTable } from '../components/ui';
-import { fmtDateTime } from '../lib/format';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'react-router';
+import { api, ApiError, post, unwrapList } from '../api/client';
+import type { ExportBatch, OrgUnit, RequestSummary } from '../api/types';
+import {
+  DataTable,
+  Details,
+  ErrBox,
+  Field,
+  Loading,
+  Modal,
+  Menu,
+  PageHeader,
+  ReqLink,
+  useToast,
+} from '../components/ui';
+import {
+  fmtDate,
+  fmtDateTime,
+  fmtDuration,
+  fmtRange,
+  orgUnitName,
+  partLabel,
+  plural,
+  statusLabel,
+  stepLabel,
+} from '../lib/format';
 import { IntentKeys } from '../lib/domain';
+import { isValidDate } from '../lib/errors';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
+import './Reports.css';
 
-// Report JSON row shapes are not pinned by API.md — render them generically.
+type ReportId = 'absences' | 'balances' | 'pending' | 'changes' | 'drift' | 'payroll';
 
-function extractRows(data: unknown): Record<string, unknown>[] {
-  return unwrapList<Record<string, unknown>>(data);
-}
+const REPORTS: { id: ReportId; name: string; dates: 'month' | 'date' | 'none' }[] = [
+  { id: 'absences', name: 'Approved absences', dates: 'month' },
+  { id: 'balances', name: 'Days left on a date', dates: 'date' },
+  { id: 'pending', name: 'Requests waiting', dates: 'none' },
+  { id: 'changes', name: 'Changes since last payroll file', dates: 'none' },
+  { id: 'drift', name: 'Leave affected by work-pattern changes', dates: 'none' },
+  { id: 'payroll', name: 'Payroll files', dates: 'month' },
+];
 
-function ReportView({ data, printing }: { data: unknown; printing: boolean }) {
-  const rows = extractRows(data);
-  if (!rows.length) {
-    if (data && typeof data === 'object' && !Array.isArray(data))
-      return <GenericTable rows={[data as Record<string, unknown>]} />;
-    return <Empty>No rows for these parameters.</Empty>;
+const API_PATH: Record<Exclude<ReportId, 'payroll'>, string> = {
+  absences: 'absences',
+  balances: 'balances',
+  pending: 'pending',
+  changes: 'changes-since-export',
+  drift: 'schedule-drift',
+};
+
+type Row = Record<string, unknown>;
+const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+const num = (v: unknown) => (typeof v === 'number' ? v : Number(v) || 0);
+
+// Report downloads need every row, including those beyond the first API page.
+async function allRows<T>(path: string, query: Record<string, string | number | undefined> = {}): Promise<T[]> {
+  const rows: T[] = [];
+  for (;;) {
+    const d = await api<unknown>(path, { query: { ...query, limit: 500, offset: rows.length } });
+    const page = unwrapList<T>(d);
+    rows.push(...page);
+    const total = d && typeof d === 'object' && 'total' in d ? Number(d.total) : rows.length;
+    if (!page.length || rows.length >= total) return rows;
   }
-  void printing;
-  return <GenericTable rows={rows} />;
 }
 
-function ReportCard({
+interface Col {
+  label: string;
+  className?: string | undefined;
+  /** first column is the stacked-mode row title */
+  title?: boolean | undefined;
+  /** plain text — also what the CSV download writes */
+  text: (r: Row) => string;
+  render?: ((r: Row) => ReactNode) | undefined;
+}
+
+const reqCol = (label: string, title = false): Col => ({
+  label,
   title,
-  description,
-  path,
-  children,
-  extraParams,
+  text: (r) => str(r['request_number']),
+  render: (r) => <ReqLink id={num(r['request_id'])} number={str(r['request_number'])} />,
+});
+
+const ABS_COLS: Col[] = [
+  { label: 'Date', title: true, text: (r) => fmtDate(str(r['date'])) },
+  { label: 'Person', text: (r) => str(r['employee']) },
+  { label: 'Leave type', text: (r) => str(r['leave_type']) },
+  { label: 'Part of day', text: (r) => partLabel(str(r['part'])) },
+  { label: 'Days', className: 'num', text: (r) => fmtDuration(num(r['minutes']), num(r['minutes_per_day']) || 480) },
+  reqCol('Request'),
+];
+
+const BAL_COLS: Col[] = [
+  { label: 'Person', title: true, text: (r) => str(r['employee']) },
+  { label: 'Leave type', text: (r) => str(r['leave_type']) },
+  {
+    label: 'Days left',
+    className: 'num',
+    text: (r) => fmtDuration(num(r['available_minutes']), num(r['minutes_per_day']) || 480),
+    render: (r) => (
+      <strong>{fmtDuration(num(r['available_minutes']), num(r['minutes_per_day']) || 480)}</strong>
+    ),
+  },
+  {
+    label: 'Waiting for approval',
+    className: 'num',
+    text: (r) => fmtDuration(num(r['reserved_minutes']), num(r['minutes_per_day']) || 480),
+  },
+];
+
+const PEND_COLS: Col[] = [
+  reqCol('Request', true),
+  { label: 'Person', text: (r) => str(r['employee']) },
+  {
+    label: 'Waiting for',
+    text: (r) => (str(r['pending_step']) ? stepLabel(str(r['pending_step'])) : '—'),
+  },
+  { label: 'Status', text: (r) => statusLabel(str(r['status'])) },
+  { label: 'Waiting', className: 'num', text: (r) => plural(Math.max(0, num(r['age_days'])), 'day') },
+];
+
+function changeText(r: Row): string {
+  const kind = str(r['kind']);
+  const was = fmtDuration(num(r['previous_minutes']), num(r['minutes_per_day']) || 480);
+  const now = fmtDuration(num(r['minutes']), num(r['minutes_per_day']) || 480);
+  if (kind === 'new') return `New — ${now}`;
+  if (kind === 'removed') return `Removed — was ${was}`;
+  return `Changed — ${was} → ${now}`;
+}
+
+const CHG_COLS: Col[] = [
+  { label: 'Date', title: true, text: (r) => fmtDate(str(r['date'])) },
+  { label: 'Person', text: (r) => str(r['employee']) },
+  { label: 'What changed', text: changeText },
+  reqCol('Request'),
+];
+
+const DRIFT_COLS: Col[] = [
+  { label: 'Person', title: true, text: (r) => str(r['employee_name']) },
+  { label: 'Date', text: (r) => fmtDate(str(r['date'])) },
+  reqCol('Request'),
+  {
+    label: 'Recorded → now',
+    className: 'num',
+    text: (r) =>
+      `${fmtDuration(num(r['frozen_minutes']), num(r['minutes_per_day']) || 480)} → ${fmtDuration(num(r['current_minutes']), num(r['minutes_per_day']) || 480)}`,
+  },
+];
+
+const COLS: Record<Exclude<ReportId, 'payroll'>, Col[]> = {
+  absences: ABS_COLS,
+  balances: BAL_COLS,
+  pending: PEND_COLS,
+  changes: CHG_COLS,
+  drift: DRIFT_COLS,
+};
+
+const EMPTY: Record<ReportId, string> = {
+  absences: 'No approved absences in this period.',
+  balances: 'No balances on this date.',
+  pending: 'Nothing is waiting for a decision.',
+  changes: 'No changes since the last payroll file.',
+  drift: 'No leave affected by work-pattern changes.',
+  payroll: '',
+};
+
+/** CSV with the same curated columns as the on-screen table. */
+function downloadCsvFile(name: string, cols: Col[], rows: Row[]) {
+  const esc = (s: string) => {
+    const t = /^[\s]*[=+\-@]/.test(s) ? `'${s}` : s;
+    return /[",\r\n]/.test(t) ? `"${t.replaceAll('"', '""')}"` : t;
+  };
+  const lines = [cols.map((c) => esc(c.label)).join(',')];
+  for (const r of rows) lines.push(cols.map((c) => esc(c.text(r))).join(','));
+  downloadCsvText(name, lines.join('\r\n'));
+}
+
+function downloadCsvText(name: string, csv: string) {
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const ISO_MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+export default function Reports() {
+  const { config, hasRole } = useSession();
+  const toast = useToast();
+  const today = config?.business_date ?? '';
+  const [sp, setSp] = useSearchParams();
+
+  const rawR = sp.get('r') ?? 'absences';
+  const report = (REPORTS.some((r) => r.id === rawR) ? rawR : 'absences') as ReportId;
+  const unit = sp.get('unit') ?? '';
+  const month = ISO_MONTH.test(sp.get('month') ?? '') ? sp.get('month')! : today.slice(0, 7);
+  const custom = sp.get('custom') === '1';
+  const dateParam = sp.get('date');
+  const date = isValidDate(dateParam ?? '') ? dateParam! : today;
+
+  const lastDay = month ? new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5)), 0)).toISOString().slice(0, 10) : '';
+  const monthFrom = `${month}-01`;
+  const from = custom && isValidDate(sp.get('from') ?? '') ? sp.get('from')! : monthFrom;
+  const to = custom && isValidDate(sp.get('to') ?? '') ? sp.get('to')! : lastDay;
+  const validRange = isValidDate(from) && isValidDate(to) && from <= to;
+
+  function update(updates: Record<string, string | null>) {
+    setSp(
+      (p) => {
+        const n = new URLSearchParams(p);
+        for (const [k, v] of Object.entries(updates)) {
+          if (v === null || v === '') n.delete(k);
+          else n.set(k, v);
+        }
+        return n;
+      },
+      { replace: false },
+    );
+  }
+
+  const unitsQ = useApi(() => allRows<OrgUnit>('/org-units'), []);
+  const exportsQ = useApi(
+    () => hasRole('hr') ? allRows<ExportBatch>('/exports') : Promise.resolve([]),
+    [],
+  );
+
+  const [view, setView] = useState<{ rows: Row[]; meta?: string } | null>(null);
+  const [viewErr, setViewErr] = useState<ApiError | null>(null);
+  const [viewBusy, setViewBusy] = useState(false);
+
+  const viewSequence = useRef(0);
+  // Prevent a slow response for old filters replacing the selected report.
+  useEffect(() => {
+    viewSequence.current++;
+    setViewBusy(false);
+    setView(null);
+    setViewErr(null);
+    if (report !== 'payroll' && today && (def.dates === 'none' || (def.dates === 'month' && validRange) || (def.dates === 'date' && isValidDate(date)))) {
+      void showHere();
+    }
+    // The selected report and filters define the view; showHere uses this render's values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [report, unit, from, to, date]);
+
+  const def = REPORTS.find((r) => r.id === report)!;
+
+  async function fetchRows(): Promise<{ rows: Row[]; meta?: string }> {
+    if (report === 'payroll') return { rows: [] };
+    const rows = await allRows<Row>(`/reports/${API_PATH[report]}`, {
+      format: 'json', org_unit_id: unit || undefined,
+      ...(report === 'absences' ? { from, to } : {}),
+      ...(report === 'balances' ? { date } : {}),
+    });
+    if (report === 'balances' || !rows.length) return { rows };
+    const requests = await allRows<RequestSummary>('/requests', { scope: 'all' });
+    const byId = new Map(requests.map((r) => [r.id, r]));
+    const enriched: Row[] = rows.filter((r) => !(unit && (report === 'pending' || report === 'drift')) ||
+      byId.get(num(r['request_id']))?.employee.org_unit?.id === Number(unit))
+      .map((r) => ({ ...r, minutes_per_day: byId.get(num(r['request_id']))?.minutes_per_day ?? (num(r['minutes_per_day']) || 480) }));
+    if (report === 'absences' || report === 'changes') enriched.sort((a, b) => str(a['date']).localeCompare(str(b['date'])) || str(a['employee']).localeCompare(str(b['employee'])));
+    return { rows: enriched, ...(report === 'absences' ? { meta: `${plural(enriched.length, 'absence day')} · ${fmtRange(from, to)}` } : {}) };
+  }
+
+  async function showHere() {
+    const seq = ++viewSequence.current;
+    setViewBusy(true);
+    setViewErr(null);
+    try {
+      const data = await fetchRows();
+      if (viewSequence.current === seq) setView(data);
+    } catch (e) {
+      if (viewSequence.current === seq) setViewErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
+    } finally {
+      if (viewSequence.current === seq) setViewBusy(false);
+    }
+  }
+
+  async function downloadCsv() {
+    if (report !== 'payroll') {
+      const seq = ++viewSequence.current;
+      setViewBusy(true);
+      setViewErr(null);
+      try {
+        const { rows } = view ?? await fetchRows();
+        if (viewSequence.current !== seq) return;
+        downloadCsvFile(
+          `${report}.csv`,
+          COLS[report],
+          rows,
+        );
+        toast('Report downloaded.');
+      } catch (e) {
+        if (viewSequence.current === seq) setViewErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
+      } finally {
+        if (viewSequence.current === seq) setViewBusy(false);
+      }
+      return;
+    }
+  }
+
+  async function printReport() {
+    const seq = ++viewSequence.current;
+    setViewBusy(true);
+    setViewErr(null);
+    try {
+      const data = view ?? await fetchRows();
+      if (viewSequence.current !== seq) return;
+      setView(data);
+      requestAnimationFrame(() => requestAnimationFrame(() => { if (viewSequence.current === seq) window.print(); }));
+    } catch (e) {
+      if (viewSequence.current === seq) setViewErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
+    } finally {
+      if (viewSequence.current === seq) setViewBusy(false);
+    }
+  }
+
+  const filters = (
+<div className="toolbar">
+                <Field label="Unit">
+                  <select value={unit} onChange={(e) => update({ unit: e.target.value || null })}>
+                    <option value="">All units</option>
+                    {unitsQ.data?.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {orgUnitName(u.name)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                {def.dates === 'month' && !custom ? (
+                  <Field label="Month">
+                    <input
+                      type="month"
+                      value={month}
+                      onChange={(e) =>
+                        update({
+                          month: ISO_MONTH.test(e.target.value) ? e.target.value : null,
+                        })
+                      }
+                    />
+                  </Field>
+                ) : null}
+                {def.dates === 'month' && custom ? (
+                  <>
+                    <Field label="From">
+                      <input
+                        type="date"
+                        value={from}
+                        onChange={(e) => update({ from: e.target.value || null })}
+                      />
+                    </Field>
+                    <Field label="To">
+                      <input
+                        type="date"
+                        value={to}
+                        onChange={(e) => update({ to: e.target.value || null })}
+                      />
+                    </Field>
+                  </>
+                ) : null}
+                {def.dates === 'date' ? (
+                  <Field label="On date">
+                    <input
+                      type="date"
+                      value={date}
+                      onChange={(e) => update({ date: e.target.value || null })}
+                    />
+                  </Field>
+                ) : null}
+                {def.dates === 'month' ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() =>
+                      custom
+                        ? update({ custom: null, from: null, to: null, month: from.slice(0, 7) })
+                        : update({ custom: '1', month: null, from: monthFrom, to: lastDay })
+                    }
+                  >
+                    {custom ? 'Back to month' : 'Custom dates'}
+                  </button>
+                ) : null}
+              </div>
+  );
+
+  return (
+    <div className="reports-page">
+      <PageHeader title="Reports" primary={report !== 'payroll' ? <>
+<button
+                  type="button"
+                  className="btn"
+                  disabled={viewBusy || (def.dates === 'month' && !validRange) || (def.dates === 'date' && !isValidDate(date))}
+                  onClick={() => void downloadCsv()}
+                >
+                  Download CSV
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={viewBusy || (def.dates === 'month' && !validRange) || (def.dates === 'date' && !isValidDate(date))}
+                  onClick={() => void showHere()}
+                >
+                  {viewBusy ? 'Loading…' : view ? 'Refresh' : 'Show here'}
+                </button>
+                <button type="button" className="btn btn-ghost" disabled={viewBusy || (def.dates === 'month' && !validRange) || (def.dates === 'date' && !isValidDate(date))} onClick={() => void printReport()}>Print</button>
+      </> : undefined} />
+      <div className="reports-layout">
+        <nav className="reports-nav subnav" aria-label="Reports">
+          {REPORTS.map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              className={r.id === report ? 'active' : ''}
+              aria-current={r.id === report ? 'page' : undefined}
+              onClick={() => update({ r: r.id === 'absences' ? null : r.id })}
+            >
+              {r.name}
+            </button>
+          ))}
+        </nav>
+
+        <section className="panel">
+          {report !== 'payroll' ? <><h2>{def.name}</h2>{filters}</> : null}
+          {unitsQ.error ? <ErrBox error={unitsQ.error} /> : null}
+          {def.dates === 'month' && !validRange ? <p className="field-error">Choose an end date on or after the start date.</p> : null}
+          {report === 'payroll' ? (
+            <PayrollPanel
+              units={unitsQ.data ?? []}
+              unit={unit}
+              from={from}
+              to={to}
+              exportsQ={exportsQ}
+              canManage={hasRole('hr')}
+              filters={filters}
+            />
+          ) : (
+            <>
+              {viewErr ? <ErrBox error={viewErr} /> : null}
+              {view ? (
+                <>
+                  {view.meta ? <p className="muted small">{view.meta}</p> : null}
+                  <DataTable<Row>
+                    columns={COLS[report].map((c) => ({
+                      label: c.label,
+                      className: c.className,
+                      title: c.title,
+                      render: c.render ?? ((r) => c.text(r)),
+                    }))}
+                    rows={view.rows}
+                    empty={EMPTY[report]}
+                  />
+                </>
+              ) : null}
+            </>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Payroll files (was: exports)                                        */
+/* ------------------------------------------------------------------ */
+
+function PayrollPanel({
+  units,
+  unit,
+  from,
+  to,
+  exportsQ,
+  canManage,
+  filters,
 }: {
-  title: string;
-  description: string;
-  path: string;
-  children?: ReactNode;
-  extraParams: Record<string, string | undefined>;
+  units: OrgUnit[];
+  unit: string;
+  from: string;
+  to: string;
+  exportsQ: { data: ExportBatch[] | null; error: ApiError | null; loading: boolean; reload: () => void };
+  canManage: boolean;
+  filters: ReactNode;
 }) {
-  const [shown, setShown] = useState(false);
-  const [data, setData] = useState<unknown>(null);
-  const [err, setErr] = useState<ApiError | null>(null);
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<ApiError | null>(null);
+  const [markId, setMarkId] = useState<number | null>(null);
+  const [markNote, setMarkNote] = useState('');
+  const [creating, setCreating] = useState(false);
+  const keys = useRef(new IntentKeys());
 
-  const query = Object.entries(extraParams).filter(([, v]) => v) as [string, string][];
+  function unitName(id: number | null | undefined) {
+    if (!id) return 'the whole service';
+    const u = units.find((x) => x.id === id);
+    return u ? orgUnitName(u.name) : 'Selected unit';
+  }
 
-  async function view() {
+  async function createFile() {
+    if (busy || !canManage || !isValidDate(from) || !isValidDate(to) || from > to) return;
+    setBusy(true);
+    setCreating(true);
+    setErr(null);
+    try {
+      const r = await post<ExportBatch>(
+        '/exports',
+        { from, to, org_unit_id: unit ? Number(unit) : undefined },
+        keys.current.forIntent(`export:${unit}:${from}:${to}`),
+      );
+      keys.current.reset(`export:${unit}:${from}:${to}`);
+      toast(`Payroll file created — ${plural(r.row_count, 'row')} for ${unitName(r.org_unit_id)}.`);
+      exportsQ.reload();
+      const csv = await api<string>(`/exports/${r.id}/download`);
+      downloadCsvText(`payroll-${r.from}-${r.to}.csv`, csv);
+    } catch (e) {
+      const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
+      if (ae.status !== 0) keys.current.reset(`export:${unit}:${from}:${to}`);
+      setErr(ae);
+    } finally {
+      setBusy(false);
+      setCreating(false);
+    }
+  }
+
+  async function markSent(id = markId, note = markNote) {
+    if (id === null || busy || !canManage) return;
+    setBusy(true);
+    setErr(null);
+    const intent = `sent:${id}:${note}`;
+    try {
+      await post(`/exports/${id}/mark-transferred`, { note }, keys.current.forIntent(intent));
+      keys.current.reset(intent);
+      toast('Marked as sent.');
+      setMarkId(null);
+      setMarkNote('');
+      exportsQ.reload();
+    } catch (e) {
+      const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
+      if (ae.status !== 0) keys.current.reset(intent);
+      setErr(ae);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const batches = (exportsQ.data ?? []).filter((x) => (!unit || x.org_unit_id === Number(unit)) && x.from <= to && x.to >= from);
+
+  async function downloadFile(batch: ExportBatch) {
+    if (busy) return;
     setBusy(true);
     setErr(null);
     try {
-      const p = new URLSearchParams([...query, ['format', 'json']]);
-      setData(await api<unknown>(`${path}?${p}`));
-      setShown(true);
+      const csv = await api<string>(`/exports/${batch.id}/download`);
+      downloadCsvText(`payroll-${batch.from}-${batch.to}.csv`, csv);
+      toast('Payroll file downloaded.');
     } catch (e) {
       setErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
     } finally {
@@ -58,449 +562,120 @@ function ReportCard({
     }
   }
 
-  function csv() {
-    const p = new URLSearchParams([...query, ['format', 'csv']]);
-    window.open(`/api${path}?${p}`, '_blank');
-  }
-
-  return (
-    <section className="panel report-section">
-      <h2 style={{ marginTop: 0 }}>{title}</h2>
-      <p className="muted small">{description}</p>
-      {children}
-      {err ? <ErrBox error={err} /> : null}
-      <div className="btn-row">
-        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void view()}>
-          {busy ? 'Loading…' : shown ? 'Refresh' : 'View'}
-        </button>
-        <button className="btn btn-secondary btn-sm" onClick={csv}>
-          Download CSV
-        </button>
-        {shown ? (
-          <button className="btn btn-secondary btn-sm" onClick={() => window.print()}>
-            Print
-          </button>
-        ) : null}
-      </div>
-      {shown ? <ReportView data={data} printing={false} /> : null}
-    </section>
-  );
-}
-
-export default function Reports() {
-  const { config } = useSession();
-  const today = config?.business_date ?? '';
-  const [orgUnit, setOrgUnit] = useState('');
-  const unitsQ = useApi(() => api<unknown>('/org-units').then((d) => unwrapList<OrgUnit>(d)), []);
-
-  const [balDate, setBalDate] = useState(today);
-  const [absFrom, setAbsFrom] = useState(`${today.slice(0, 7)}-01`);
-  const [absTo, setAbsTo] = useState(todayPlusMonthEnd(today));
-  const [expFrom, setExpFrom] = useState(today);
-  const [expTo, setExpTo] = useState(todayPlusMonthEnd(today));
-  const [expScope, setExpScope] = useState('');
-  const [expBusy, setExpBusy] = useState(false);
-  const [expMsg, setExpMsg] = useState<string | null>(null);
-  const [transferNote, setTransferNote] = useState<Record<number, string>>({});
-  // One Idempotency-Key per intent (export create, import commit); reused only
-  // when retrying the same intent after an unconfirmed network result.
-  const opKeys = useRef(new IntentKeys());
-
-  const exportsQ = useApi(
-    () => api<unknown>('/exports').then((d) => unwrapList<ExportBatch>(d)),
-    [],
-  );
-  const importsQ = useApi(
-    () => api<unknown>('/imports').then((d) => unwrapList<ImportBatch>(d)),
-    [],
-  );
-
-  const [impFile, setImpFile] = useState<File | null>(null);
-  const [impKind, setImpKind] = useState('employees');
-  const [impMode, setImpMode] = useState('already_in_opening');
-  const [impPreview, setImpPreview] = useState<ImportPreview | null>(null);
-  const [impErr, setImpErr] = useState<ApiError | null>(null);
-  const [impBusy, setImpBusy] = useState(false);
-  const [impMsg, setImpMsg] = useState<string | null>(null);
-
-  function todayPlusMonthEnd(d: string) {
-    const [y, m] = d.split('-').map(Number);
-    const last = new Date(Date.UTC(y!, m!, 0)).getUTCDate();
-    return `${d.slice(0, 7)}-${String(last).padStart(2, '0')}`;
-  }
-
-  function unitName(id: number | null | undefined) {
-    if (!id) return 'the whole service';
-    return unitsQ.data?.find((u) => u.id === id)?.name ?? `unit #${id}`;
-  }
-
-  async function createExport() {
-    setExpBusy(true);
-    setExpMsg(null);
-    try {
-      const r = await post<ExportBatch>(
-        '/exports',
-        { from: expFrom, to: expTo, org_unit_id: expScope ? Number(expScope) : undefined },
-        opKeys.current.forIntent('export'),
-      );
-      opKeys.current.reset('export');
-      const scope = unitName(r.org_unit_id);
-      setExpMsg(
-        `Export #${r.id} created for ${scope} — ${r.row_count} rows, sha256 ${r.sha256.slice(0, 12)}…`,
-      );
-      exportsQ.reload();
-    } catch (e) {
-      const ae = e instanceof ApiError ? e : null;
-      // Keep the key only while the result is unconfirmed (status 0); a real
-      // error means the server rejected the intent and the next try is new.
-      if (ae && ae.status !== 0) opKeys.current.reset('export');
-      setExpMsg(
-        ae && ae.status === 0
-          ? 'We could not confirm the export — check the list before retrying.'
-          : e instanceof Error
-            ? e.message
-            : 'Export failed',
-      );
-    } finally {
-      setExpBusy(false);
-    }
-  }
-
-  async function markTransferred(id: number) {
-    try {
-      await post(`/exports/${id}/mark-transferred`, { note: transferNote[id] ?? '' });
-      exportsQ.reload();
-    } catch (e) {
-      setExpMsg(e instanceof Error ? e.message : 'Failed');
-    }
-  }
-
-  async function previewImport() {
-    if (!impFile) return;
-    setImpBusy(true);
-    setImpErr(null);
-    setImpMsg(null);
-    try {
-      const fd = new FormData();
-      fd.set('file', impFile);
-      fd.set('kind', impKind);
-      if (impKind === 'historical_leave') fd.set('mode', impMode);
-      setImpPreview(await postForm<ImportPreview>('/imports/preview', fd));
-    } catch (e) {
-      setImpErr(e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e)));
-    } finally {
-      setImpBusy(false);
-    }
-  }
-
-  async function commitImport() {
-    if (!impPreview) return;
-    setImpBusy(true);
-    setImpErr(null);
-    const intent = `commit:${impPreview.batch_id}`;
-    try {
-      const r = await post<{ applied: number; skipped_duplicates: number }>(
-        `/imports/${impPreview.batch_id}/commit`,
-        {},
-        opKeys.current.forIntent(intent),
-      );
-      opKeys.current.reset(intent);
-      setImpMsg(`Import committed — applied ${r.applied}, skipped duplicates ${r.skipped_duplicates}.`);
-      setImpPreview(null);
-      setImpFile(null);
-      importsQ.reload();
-    } catch (e) {
-      const ae = e instanceof ApiError ? e : new ApiError(0, 'unknown', String(e));
-      if (ae.status !== 0) opKeys.current.reset(intent);
-      setImpErr(ae);
-    } finally {
-      setImpBusy(false);
-    }
-  }
-
-  const ouParam = orgUnit || undefined;
-
   return (
     <>
-      <h1>Reports</h1>
-      <div className="toolbar">
-        <Field label="Org unit (applies to all reports)">
-          <select value={orgUnit} onChange={(e) => setOrgUnit(e.target.value)}>
-            <option value="">All</option>
-            {unitsQ.data?.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
+      <div className="page-header"><h2>Payroll files</h2>{canManage ? <div className="actions">
+        <button
+          type="button"
+          className="btn"
+          disabled={busy || !isValidDate(from) || !isValidDate(to) || from > to}
+          onClick={() => void createFile()}
+        >
+          {creating ? 'Creating…' : 'Create payroll file'}
+        </button>
+      </div> : <p className="muted small">HR creates and sends payroll files.</p>}</div>
+      {filters}
+      <p className="muted small">
+        A CSV of approved leave for {fmtRange(from, to)}
+        {unit ? ` · ${unitName(Number(unit))}` : ' · the whole service'}.
+      </p>
+      {err && markId === null ? <ErrBox error={err} /> : null}
+      {exportsQ.loading ? <Loading /> : null}
+      {exportsQ.error ? <ErrBox error={exportsQ.error} /> : null}
+      {exportsQ.data ? (
+        <DataTable<ExportBatch>
+          columns={[
+            { label: 'Period', title: true, render: (x) => fmtRange(x.from, x.to) },
+            {
+              label: 'Unit',
+              render: (x) => (x.org_unit_id ? unitName(x.org_unit_id) : 'Whole service'),
+            },
+            { label: 'Rows', className: 'num', render: (x) => x.row_count },
+            { label: 'Created', render: (x) => fmtDateTime(x.created_at) },
+            {
+              label: 'Status',
+              render: (x) =>
+                x.transferred_at ? (
+                  <>
+                    Sent on {fmtDateTime(x.transferred_at)}
+                    {x.transferred_by ? ` by ${x.transferred_by.display_name}` : ''}
+                  </>
+                ) : (
+                  'Ready'
+                ),
+            },
+            {
+              label: '',
+              render: (x) => (
+                <>
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void downloadFile(x)}>Download</button>
+                  {!x.transferred_at ? (
+                    <>
+                      {' · '}
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        disabled={busy}
+                        onClick={() => void markSent(x.id, '')}
+                      >
+                        Mark as sent
+                      </button>
+                      <Menu label="More" items={[{ label: 'Mark as sent with a note…', disabled: busy, onSelect: () => { setErr(null); setMarkId(x.id); setMarkNote(''); } }]} />
+                    </>
+                  ) : null}
+                </>
+              ),
+            },
+          ]}
+          rows={batches}
+          empty="No payroll files yet."
+        />
+      ) : null}
+      <Details title="About payroll files">
+        <p className="muted small">
+          A payroll file is a generic CSV for handing approved leave to another system (for
+          example payroll). It is not a ready-made import format for any specific product.
+          Marking a file as sent is a manual confirmation — the file itself is not proof of
+          payroll posting.
+        </p>
+        {batches.length ? (
+          <ul className="small">
+            {batches.map((x) => (
+              <li key={x.id}>
+                {fmtDateTime(x.created_at)} — fingerprint{' '}
+                <code className="mono">{x.sha256}</code>
+              </li>
             ))}
-          </select>
-        </Field>
-      </div>
-
-      <ReportCard
-        title="Balances at date"
-        description="Ledger, reserved and available minutes per employee and leave type."
-        path="/reports/balances"
-        extraParams={{ date: balDate, org_unit_id: ouParam }}
-      >
-        <Field label="As of">
-          <input type="date" value={balDate} onChange={(e) => setBalDate(e.target.value)} />
-        </Field>
-      </ReportCard>
-
-      <ReportCard
-        title="Approved absences"
-        description="Approved leave in the period, with counts and hours."
-        path="/reports/absences"
-        extraParams={{ from: absFrom, to: absTo, org_unit_id: ouParam }}
-      >
-        <div className="form-grid">
-          <Field label="From">
-            <input type="date" value={absFrom} onChange={(e) => setAbsFrom(e.target.value)} />
-          </Field>
-          <Field label="To">
-            <input type="date" value={absTo} onChange={(e) => setAbsTo(e.target.value)} />
-          </Field>
-        </div>
-      </ReportCard>
-
-      <ReportCard
-        title="Pending requests"
-        description="Requests waiting for an action, with age."
-        path="/reports/pending"
-        extraParams={{}}
-      />
-
-      <ReportCard
-        title="Changes since last export"
-        description="Approved changes made after the most recent transferred export, within the selected org unit."
-        path="/reports/changes-since-export"
-        extraParams={{ org_unit_id: ouParam }}
-      />
-
-      <ReportCard
-        title="Schedule drift"
-        description="Future approved or pending days whose recorded schedule no longer matches the current schedule — these may need re-approval."
-        path="/reports/schedule-drift"
-        extraParams={{}}
-      />
-
-      <section className="panel">
-        <h2 style={{ marginTop: 0 }}>Exports (transfer file)</h2>
-        <p className="muted small">
-          A generic CSV for handing approved leave to another system (for example payroll). It is
-          not a ready-made import format for any specific product. Marking it “transferred” is a
-          manual confirmation — the file itself is not proof of payroll posting.
-        </p>
-        <div className="toolbar">
-          <Field label="From">
-            <input type="date" value={expFrom} onChange={(e) => setExpFrom(e.target.value)} />
-          </Field>
-          <Field label="To">
-            <input type="date" value={expTo} onChange={(e) => setExpTo(e.target.value)} />
-          </Field>
-          <Field label="Scope">
-            <select value={expScope} onChange={(e) => setExpScope(e.target.value)}>
-              <option value="">Whole service</option>
-              {unitsQ.data?.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name} only
-                </option>
-              ))}
-            </select>
-          </Field>
-          <button className="btn" disabled={expBusy || !expFrom || !expTo} onClick={() => void createExport()}>
-            {expBusy ? 'Creating…' : 'Create export'}
-          </button>
-        </div>
-        {expMsg ? <div className="alert alert-info">{expMsg}</div> : null}
-        {exportsQ.data && exportsQ.data.length ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Period</th>
-                  <th>Scope</th>
-                  <th className="num">Rows</th>
-                  <th>SHA-256</th>
-                  <th>Created</th>
-                  <th>Status</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {exportsQ.data.map((x) => (
-                  <tr key={x.id}>
-                    <td>{x.id}</td>
-                    <td>
-                      {x.from} – {x.to}
-                    </td>
-                    <td className="small">{x.org_unit_id ? unitName(x.org_unit_id) : 'Whole service'}</td>
-                    <td className="num">{x.row_count}</td>
-                    <td className="mono small" title={x.sha256}>
-                      {x.sha256.slice(0, 16)}…
-                    </td>
-                    <td className="small">{fmtDateTime(x.created_at)}</td>
-                    <td>
-                      {x.transferred_at ? (
-                        <span className="badge">
-                          transferred {x.transferred_at.slice(0, 10)}
-                          {x.transferred_by ? ` by ${x.transferred_by.display_name}` : ''}
-                        </span>
-                      ) : (
-                        <span className="badge">created</span>
-                      )}
-                    </td>
-                    <td className="small" style={{ minWidth: '14rem' }}>
-                      <a href={`/api/exports/${x.id}/download`}>Download</a>
-                      {!x.transferred_at ? (
-                        <span style={{ marginLeft: '0.5rem' }}>
-                          <input
-                            className="small"
-                            placeholder="transfer note"
-                            style={{ width: '9rem', marginRight: '0.3rem' }}
-                            value={transferNote[x.id] ?? ''}
-                            onChange={(e) =>
-                              setTransferNote({ ...transferNote, [x.id]: e.target.value })
-                            }
-                          />
-                          <button
-                            className="btn btn-secondary btn-sm"
-                            onClick={() => void markTransferred(x.id)}
-                          >
-                            Mark transferred
-                          </button>
-                        </span>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <Empty>No exports yet.</Empty>
-        )}
-      </section>
-
-      <section className="panel">
-        <h2 style={{ marginTop: 0 }}>Imports</h2>
-        <p className="muted small">
-          CSV files are previewed first; an import commits all-or-nothing and a repeated import does
-          not duplicate entries.
-        </p>
-        <div className="toolbar">
-          <Field label="Kind">
-            <select value={impKind} onChange={(e) => setImpKind(e.target.value)}>
-              <option value="employees">Employees</option>
-              <option value="opening_balances">Opening balances</option>
-              <option value="historical_leave">Historical leave</option>
-            </select>
-          </Field>
-          {impKind === 'historical_leave' ? (
-            <Field
-              label="Mode"
-              hint="Are these days already included in the opening balance?"
-            >
-              <select value={impMode} onChange={(e) => setImpMode(e.target.value)}>
-                <option value="already_in_opening">Already in opening balance (record only)</option>
-                <option value="post_movements">Not included — post movements</option>
-              </select>
-            </Field>
-          ) : null}
-          <Field label="CSV file">
-            <input type="file" accept=".csv" onChange={(e) => setImpFile(e.target.files?.[0] ?? null)} />
-          </Field>
-          <button className="btn" disabled={!impFile || impBusy} onClick={() => void previewImport()}>
-            {impBusy ? 'Checking…' : 'Preview'}
-          </button>
-        </div>
-        {impErr ? <ErrBox error={impErr} /> : null}
-        {impMsg ? <div className="alert alert-ok">{impMsg}</div> : null}
-
-        {impPreview ? (
-          <>
-            <p>
-              <strong>{impPreview.rows_valid}</strong> of {impPreview.rows_total} rows are valid.
-              {impPreview.rows_valid < impPreview.rows_total
-                ? ' Commit applies all-or-nothing — fix the file first.'
-                : ''}
-            </p>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Line</th>
-                    <th>Data</th>
-                    <th>Errors</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {impPreview.rows.map((r) => (
-                    <tr key={r.line}>
-                      <td className="num">{r.line}</td>
-                      <td className="mono small">
-                        {typeof r.data === 'string' ? r.data : JSON.stringify(r.data)}
-                      </td>
-                      <td>
-                        {r.errors.length ? (
-                          <span className="badge badge-med">{r.errors.join('; ')}</span>
-                        ) : (
-                          <span className="badge">ok</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <button
-              className="btn"
-              disabled={impBusy || impPreview.rows_valid < impPreview.rows_total}
-              title={
-                impPreview.rows_valid < impPreview.rows_total
-                  ? 'All rows must be valid to commit'
-                  : undefined
-              }
-              onClick={() => void commitImport()}
-            >
-              {impBusy ? 'Committing…' : 'Commit import'}
-            </button>
-          </>
+          </ul>
         ) : null}
+      </Details>
 
-        {importsQ.data && importsQ.data.length ? (
-          <>
-            <h3>History</h3>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Kind</th>
-                    <th>Status</th>
-                    <th className="num">Rows</th>
-                    <th className="num">Applied</th>
-                    <th>When</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {importsQ.data.map((b) => (
-                    <tr key={b.id}>
-                      <td>{b.id}</td>
-                      <td>{b.kind}</td>
-                      <td>{b.status}</td>
-                      <td className="num">{b.rows_total ?? '—'}</td>
-                      <td className="num">{b.applied ?? '—'}</td>
-                      <td className="small">{fmtDateTime(b.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        ) : null}
-      </section>
+      {markId !== null ? (
+        <Modal
+          title="Mark as sent"
+          onClose={() => { if (!busy) setMarkId(null); }}
+          footer={
+            <>
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setMarkId(null)}>
+                Cancel
+              </button>
+              <button type="button" className="btn" disabled={busy} onClick={() => void markSent()}>
+                {busy ? 'Saving…' : 'Mark as sent'}
+              </button>
+            </>
+          }
+        >
+          {err ? <ErrBox error={err} /> : null}
+          <Field label="Note (optional)" hint="e.g. which payroll run received it">
+            <input
+              type="text"
+              disabled={busy}
+              value={markNote}
+              onChange={(e) => setMarkNote(e.target.value)}
+            />
+          </Field>
+        </Modal>
+      ) : null}
     </>
   );
 }

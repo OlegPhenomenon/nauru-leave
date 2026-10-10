@@ -1,208 +1,216 @@
 import { Link } from 'react-router';
 import { api, unwrapList } from '../api/client';
-import type { BalanceSummary, RequestSummary } from '../api/types';
+import type { BalanceSummary, RequestDetail, RequestSummary } from '../api/types';
 import {
-  Dur,
+  DataTable,
+  Details,
   Empty,
   ErrBox,
   Loading,
-  PhaseBadge,
-  PolicyBadge,
-  ReqLink,
+  PageHeader,
   StatusBadge,
 } from '../components/ui';
-import { fmtDate, fmtDateFull } from '../lib/format';
+import {
+  fmtDay,
+  fmtDuration,
+  fmtPhase,
+  fmtRange,
+} from '../lib/format';
+import { remainingRanges } from '../lib/domain';
 import { useSession } from '../lib/session';
 import { useApi } from '../lib/useApi';
+import { ActionNeeded } from './employee/ActionNeeded';
+import './MyLeave.css';
+
+const CLOSED: RequestSummary['status'][] = ['rejected', 'withdrawn', 'cancelled'];
+
+function kindText(kind: RequestSummary['kind']): string {
+  return kind === 'amendment' ? 'Change of dates' : 'Cancellation of days';
+}
+
+function RequestTable({ rows }: { rows: RequestSummary[] }) {
+  const { config } = useSession();
+  return (
+    <DataTable<RequestSummary>
+      columns={[
+        {
+          label: 'Dates',
+          title: true,
+          render: (r) => {
+            const phase =
+              r.status === 'approved'
+                ? fmtPhase(r.date_phase, r.start_date, config?.business_date)
+                : '';
+            return (
+              <>
+                <Link to={`/requests/${r.id}`}>
+                  {('ranges' in r ? (r.ranges as [string, string][]).map(([a, b]) => fmtRange(a, b)).join(', ') : fmtRange(r.start_date, r.end_date))}
+                </Link>
+                <div className="muted small">
+                  {r.number}
+                  {r.kind !== 'leave' ? ` · ${kindText(r.kind)}` : ''}
+                  {phase ? ` · ${phase}` : ''}
+                </div>
+              </>
+            );
+          },
+        },
+        { label: 'Type', render: (r) => r.leave_type_name },
+        {
+          label: 'Days',
+          className: 'num',
+          render: (r) => fmtDuration(r.total_minutes, r.minutes_per_day),
+        },
+        {
+          label: 'Status',
+          render: (r) => <StatusBadge status={r.status} label={r.status === 'needs_information' ? 'Question for you' : undefined} />,
+        },
+        { label: '', render: (r) => r.status === 'approved' && r.kind === 'leave' ? <Link className="btn btn-ghost btn-sm" to={`/requests/${r.id}/print`}>Print</Link> : ['submitted', 'under_review', 'needs_information'].includes(r.status) ? <Link className="btn btn-ghost btn-sm" to={`/requests/${r.id}?action=withdraw`}>Withdraw…</Link> : null },
+      ]}
+      rows={rows}
+      empty="Nothing here."
+    />
+  );
+}
 
 export default function MyLeave() {
   const { me, config } = useSession();
   const empId = me?.employee?.id;
+  const userId = me?.user.id;
   const balancesQ = useApi(
     () => (empId ? api<BalanceSummary[]>('/balances/me') : Promise.resolve([])),
     [empId],
   );
   const requestsQ = useApi(
-    () => api<unknown>('/requests', { query: { scope: 'mine' } }).then((d) => unwrapList<RequestSummary>(d)),
-    [],
+    () =>
+      api<unknown>('/requests', { query: { scope: 'mine' } }).then(async (d) =>
+        Promise.all(unwrapList<RequestSummary>(d).map(async r => {
+          if (r.kind !== 'leave' || r.status !== 'approved') return r;
+          const detail = await api<RequestDetail>(`/requests/${r.id}`);
+          const rev = detail.in_force_revision ?? detail.current_revision;
+          return { ...r, ranges: remainingRanges(rev) };
+        })),
+      ),
+    [userId],
   );
 
   const requests = requestsQ.data ?? [];
   const balances = (balancesQ.data ?? []).filter((b) => b.leave_type.uses_balance);
-  const open = requests.filter((r) =>
-    ['draft', 'submitted', 'needs_information', 'under_review'].includes(r.status),
-  );
-  const nextAbsence = requests
+
+  const awaitingAnswer = requests.filter((r) => r.status === 'needs_information');
+  const open = requests
+    .filter((r) => !CLOSED.includes(r.status) && r.date_phase !== 'period_ended' && !(r.kind !== 'leave' && r.status === 'approved'))
+    .sort((a, b) => a.start_date.localeCompare(b.start_date));
+  const closed = requests
+    .filter((r) => CLOSED.includes(r.status) || r.date_phase === 'period_ended' || (r.kind !== 'leave' && r.status === 'approved'))
+    .sort((a, b) => b.start_date.localeCompare(a.start_date));
+
+  const upcoming = requests
     .filter(
       (r) =>
         r.status === 'approved' &&
+        r.kind === 'leave' &&
         config != null &&
-        r.end_date >= config.business_date &&
-        r.kind === 'leave',
+        r.end_date >= config.business_date,
     )
-    .sort((a, b) => a.start_date.localeCompare(b.start_date))[0];
-  const hints = open.filter((r) => r.next_action).slice(0, 5);
+    .sort((a, b) => a.start_date.localeCompare(b.start_date));
+
+  function bookedFrom(b: BalanceSummary): string {
+    const first = upcoming.find((r) => r.leave_type_name === b.leave_type.name);
+    return first ? ` from ${fmtDay('ranges' in first ? (first.ranges as [string, string][])[0]?.[0] ?? first.start_date : first.start_date)}` : '';
+  }
 
   return (
-    <>
-      <h1>My leave</h1>
+    <div className="stack">
+      <PageHeader
+        title="My leave"
+        primary={
+          <Link className="btn" to="/requests/new">
+            Request leave
+          </Link>
+        }
+      />
+
       {!empId ? (
         <div className="alert alert-info">
-          Your user account is not linked to an employee record, so personal balances are not shown.
+          Your user account is not linked to an employee record, so personal balances are
+          not shown.
         </div>
       ) : null}
 
-      {balancesQ.loading ? <Loading label="Loading balances…" /> : null}
-      {balancesQ.error ? <ErrBox error={balancesQ.error} /> : null}
-      {balancesQ.data && balances.length === 0 && empId ? (
-        <Empty>No balance accounts yet.</Empty>
-      ) : null}
-      <div className="card-grid">
-        {balances.map((b) => (
-          <div className="card" key={b.leave_type.id}>
-            <h3>{b.leave_type.name}</h3>
-            <span className="balance-num">
-              <Dur minutes={b.available_minutes} mpd={b.minutes_per_day} />
-            </span>
-            <span className="balance-sub">available now</span>
-            <dl className="kv" style={{ marginTop: '0.6rem' }}>
-              <div className="kv-row">
-                <dt>Ledger</dt>
-                <dd>
-                  <Dur minutes={b.ledger_minutes} mpd={b.minutes_per_day} />
-                </dd>
-              </div>
-              <div className="kv-row">
-                <dt>Reserved by open requests</dt>
-                <dd>
-                  <Dur minutes={b.reserved_minutes} mpd={b.minutes_per_day} />
-                </dd>
-              </div>
-              {b.approved_upcoming_minutes > 0 ? (
-                <div className="kv-row">
-                  <dt>Approved, still upcoming</dt>
-                  <dd>
-                    <Dur minutes={b.approved_upcoming_minutes} mpd={b.minutes_per_day} />
-                  </dd>
-                </div>
-              ) : null}
-              {b.taken_minutes > 0 ? (
-                <div className="kv-row">
-                  <dt>Taken (past dates)</dt>
-                  <dd>
-                    <Dur minutes={b.taken_minutes} mpd={b.minutes_per_day} />
-                  </dd>
-                </div>
-              ) : null}
-            </dl>
-            {b.accounts.length > 1 || b.accounts.some((a) => a.period_year !== undefined) ? (
-              <table className="small">
-                <tbody>
-                  {b.accounts.map((a) => (
-                    <tr key={a.account_id}>
-                      <td>{a.period_year}</td>
-                      <td className="num">
-                        <Dur minutes={a.available_minutes} mpd={a.minutes_per_day} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : null}
-            <Link
-              to={`/balances/${empId}/explain?leave_type_id=${b.leave_type.id}`}
-              className="small"
-            >
-              How is this calculated?
-            </Link>
-            {b.policy ? (
-              <div style={{ marginTop: '0.6rem' }}>
-                <PolicyBadge policy={b.policy} />
-                <div className="muted small">{b.policy.explanation}</div>
-              </div>
-            ) : null}
-          </div>
-        ))}
-      </div>
+      {awaitingAnswer.map((r) => (
+        <ActionNeeded
+          key={r.id}
+          request={r}
+          onDone={() => {
+            requestsQ.reload();
+            balancesQ.reload();
+          }}
+        />
+      ))}
 
-      {nextAbsence ? (
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>Next absence</h2>
-          <p>
-            <ReqLink id={nextAbsence.id} number={nextAbsence.number} /> — {nextAbsence.leave_type_name}
-            , {fmtDateFull(nextAbsence.start_date)} – {fmtDateFull(nextAbsence.end_date)} (
-            <Dur minutes={nextAbsence.total_minutes} mpd={nextAbsence.minutes_per_day} />){' '}
-            <PhaseBadge phase={nextAbsence.date_phase} />
-          </p>
-        </div>
-      ) : null}
-
-      {hints.length ? (
-        <div className="panel">
-          <h2 style={{ marginTop: 0 }}>What&apos;s next</h2>
-          {hints.map((r) => (
-            <p key={r.id} className="next-hint">
-              <ReqLink id={r.id} number={r.number} /> — {r.next_action}
-            </p>
+      <section aria-label="Days left">
+        <h2>Days left</h2>
+        {balancesQ.loading ? <Loading label="Loading balances…" /> : null}
+        {balancesQ.error ? <ErrBox error={balancesQ.error} /> : null}
+        {balancesQ.data && balances.length === 0 && empId ? (
+          <Empty>No balances yet — ask HR if you expected one.</Empty>
+        ) : null}
+        <div className="days-list">
+          {balances.map((b) => (
+            <div className="day-row" key={b.leave_type.id}>
+              <div className="day-head">
+                <span className="day-name">{b.leave_type.name}</span>
+                <span className="day-num">
+                  {fmtDuration(b.available_minutes, b.minutes_per_day)} left
+                </span>
+              </div>
+              {b.reserved_minutes > 0 || b.approved_upcoming_minutes > 0 ? (
+                <p className="day-note">
+                  {[
+                    b.reserved_minutes > 0
+                      ? `${fmtDuration(b.reserved_minutes, b.minutes_per_day)} waiting for approval`
+                      : '',
+                    b.approved_upcoming_minutes > 0
+                      ? `${fmtDuration(b.approved_upcoming_minutes, b.minutes_per_day)} booked${bookedFrom(b)}`
+                      : '',
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </p>
+              ) : null}
+              {empId ? (
+                <Link
+                  className="small"
+                  to={`/balances/${empId}/explain?leave_type_id=${b.leave_type.id}`}
+                >
+                  How is this worked out?
+                </Link>
+              ) : null}
+            </div>
           ))}
         </div>
-      ) : null}
+      </section>
 
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>My requests</h2>
-        <p>
-          <Link className="btn btn-sm" to="/requests/new">
-            New request
-          </Link>
-        </p>
+      <section aria-label="My requests">
+        <h2>My requests</h2>
         {requestsQ.loading ? <Loading /> : null}
         {requestsQ.error ? <ErrBox error={requestsQ.error} /> : null}
         {requestsQ.data && requests.length === 0 ? (
-          <Empty>No requests yet — start with “New request”.</Empty>
+          <Empty>
+            No requests yet — press <strong>Request leave</strong> to start one.
+          </Empty>
         ) : null}
-        {requests.length ? (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Number</th>
-                  <th>Type</th>
-                  <th>Dates</th>
-                  <th className="num">Length</th>
-                  <th>Status</th>
-                  <th>Next step</th>
-                </tr>
-              </thead>
-              <tbody>
-                {requests.map((r) => (
-                  <tr key={r.id}>
-                    <td>
-                      <ReqLink id={r.id} number={r.number} />
-                      {r.kind !== 'leave' ? (
-                        <span className="badge" style={{ marginLeft: '0.4rem' }}>
-                          {r.kind}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td>{r.leave_type_name}</td>
-                    <td>
-                      {fmtDate(r.start_date)} – {fmtDate(r.end_date)}{' '}
-                      <PhaseBadge phase={r.date_phase} />
-                    </td>
-                    <td className="num">
-                      <Dur minutes={r.total_minutes} mpd={r.minutes_per_day} />
-                    </td>
-                    <td>
-                      <StatusBadge status={r.status} label={r.status_label} />
-                    </td>
-                    <td className="small">{r.next_action ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {open.length ? <RequestTable rows={open} /> : null}
+        {!open.length && requests.length ? (
+          <p className="muted">Nothing open right now.</p>
         ) : null}
-      </div>
-    </>
+        {closed.length ? (
+          <Details title="Show past and closed requests" count={closed.length}>
+            <RequestTable rows={closed} />
+          </Details>
+        ) : null}
+      </section>
+    </div>
   );
 }

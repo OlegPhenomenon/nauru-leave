@@ -30,13 +30,13 @@ endpoints use it. The client accepts either `{items|rows: []}` or a bare array
   the next year. `carryover_limit_min`: null = no limit; the policy form edits
   it in days and converts to minutes (`STANDARD_DAY_MINUTES` = 480, the demo
   full-time day — no org-level day length is exposed to the client).
-  The Settings tab shows the “Fictional demo rule” badge when
+  The leave-rule panel shows the “Fictional demo rule” badge when
   `status === 'demo_fictional'` and a Verify button when it is not `'verified'`.
 - `BalanceSummary` (from `GET /api/balances/me` and
   `GET /api/balances/:employee_id`) carries `policy: PolicyVersion | null`;
   `POST /api/requests/preview` also returns `policy`. Every surface that shows
-  a policy uses `PolicyBadge` (`src/components/ui.tsx`): a fictional demo rule
-  is always labelled “Fictional demo rule — not Nauru law”.
+  a policy uses `PolicyBadge` (`src/components/ui.tsx`). In demo mode the strip identifies
+  fictional rules once; unverified rules still carry a visible label.
 - Preview `warnings` for `code: 'team_overlap'` carry
   `details: [{ name, from, to }]` — rendered as a sub-list naming the absent
   teammates (`WarnList` in `src/components/ui.tsx`).
@@ -73,19 +73,19 @@ endpoints use it. The client accepts either `{items|rows: []}` or a bare array
   basis_document, status: 'proposed'|'applied'|'rejected', balance_before,
   balance_after_if_applied, proposed_by, decided_by, decided_at, created_at,
   minutes_per_day? }` (mpd defaults to 480 when absent).
-- `ExportBatch`: `{ id, from, to, org_unit: {id,name}|null, row_count, sha256,
-  created_at, status?, transferred_at?, transferred_by? }` — `org_unit` null
-  means the export covered the whole service; the list shows the scope and the
+- `ExportBatch`: `{ id, from, to, org_unit_id: number|null, row_count, sha256,
+  created_at, transferred_at?, transferred_by? }` — `org_unit_id` null
+  means the file covered the whole service; the list shows the scope and the
   transferred state. `POST /api/exports` takes `{ from, to, org_unit_id? }`
   and `changes-since-export` takes `org_unit_id`.
 - `ImportBatch` history rows: `{ id, kind, status, rows_total?, applied?,
   created_at }` — missing fields render as `—`.
-- `GET /api/ops/summary`: rendered generically (key/value tree) since no shape
-  is pinned.
-- Report JSON responses (`/api/reports/*?format=json`): rows are rendered in a
-  generic table built from the keys of the returned objects
-  (`GenericTable`, `extractRows`). If the shape changes the report still works,
-  only column headings change.
+- `GET /api/ops/summary`: `SystemSummary` in `Operations.tsx` reads email
+  counts, scanner/file counts and reservation totals, and displays named status
+  messages instead of a raw key/value tree.
+- Report JSON responses (`/api/reports/*?format=json`) use explicit column
+  definitions in `Reports.tsx`; dates, durations and change labels are formatted
+  before rendering or CSV download.
 
 ## Behavioural assumptions
 
@@ -125,11 +125,8 @@ endpoints use it. The client accepts either `{items|rows: []}` or a bare array
 - `revise` (allowed action on submitted/under_review) is implemented through
   `POST /requests/:id/respond` with `changes` — API.md only documents `changes`
   under `respond`, and lists `revise` as a separate allowed action.
-- Reassign needs a user list. The dialog tries `GET /api/users`; if that is
-  forbidden for the caller (e.g. HR is not tech_admin), it falls back to a
-  numeric `assignee_user_id` input.
-- “Age” on the Approvals queue is computed from `updated_at` against the
-  business date (no `created_at` on `RequestSummary`).
+- Reassign uses `GET /api/users` and the server-provided assignment scope; the
+  dialog offers eligible people by name.
 - `POST /api/demo/login` is used both for the initial persona pick and for
   “Switch persona” while signed in.
 - Attachments upload (`POST /requests/:id/attachments`) returns
@@ -137,37 +134,57 @@ endpoints use it. The client accepts either `{items|rows: []}` or a bare array
 - `GET /api/requests/:id/card` returns a `RequestDetail` subset; the print page
   renders defensively around optional fields.
 - CSV downloads (`/api/reports/*?format=csv`, `/api/exports/:id/download`) are
-  plain `<a>`/`window.open` GETs — cookies are same-origin so no extra headers
-  are needed.
+  fetched through the same-origin API and downloaded as files. Report columns
+  use explicit labels and formatted dates/durations.
 
 ## Deliberate product choices
 
 - Team calendar is visible to every signed-in user (spec §10: colleagues see
   name + “Away”). The server still decides per-request visibility via
   `request_id` and the `label` field.
-- Bundle is a single chunk (no code splitting) to keep the Rust binary embed
-  simple; 112 KB gzipped JS.
+- Bundle is a single chunk (no code splitting) for the Rust binary embed. Vite
+  currently reports a chunk-size advisory; the build succeeds.
 
-## End-to-end test (Playwright)
+## Frontend structure and navigation
 
-`e2e/main-scenario.spec.ts` walks scenario steps 1–5 (balance → request →
-three-step approval → amendment → time travel) against a **running** stack.
-It is not part of `npm test`.
+`lib/nav.ts` chooses each role's landing page and navigation, including queue and correction counts. Employees start at `/my`; reviewers use `/approvals`; HR also has People, Balances, Calendar, Reports and Settings. Auditors start at `/history`, and technical administrators at `/system`. The demo person switch navigates to the new role's home and remounts the page. The user menu contains Help and Sign out.
+
+`components/ui.tsx` supplies page headers, menus, disclosures, modal focus handling, tables and toasts. `lib/format.ts` supplies plain labels and durations; `lib/errors.ts` supplies readable errors. Menus identify actions by label and destination so asynchronously loaded actions do not replace a link during a click.
+
+`DecisionCard` is shared by expanded Approvals rows and the reviewer request page. Decisions and questions stay inline. Request dialogs and collapsed sections are in `pages/request/`; the employee answer card and paper-form person picker are in `pages/employee/`. People dialogs are in `pages/people/`. `ImportDialog({kind, onClose, onDone?})` is shared by People and Balances; file selection automatically previews, and successful import refreshes the calling page.
+
+Settings sections are `/settings/leave-types`, `/settings/schedules`, `/settings/holidays`, `/settings/route`, `/settings/users`, and `/settings/delegations`. `/operations` redirects to `/system`. `/history` searches audit records and links to a request with its History disclosure open.
+
+Cross-page shortcuts preserve context: `/requests/new?employee=…` selects paper-form entry for that employee; `/balances?employee=…&correct=1` opens a correction; `/settings/delegations?new=1&for=…` selects the absent user; `/settings/users?user=…` opens access; `/requests/:id?history=open` opens history. These links are exercised in `e2e/click-budget.spec.ts`.
+
+## End-to-end tests (Playwright)
+
+Run against a real demo backend and Vite's API proxy. No business responses are mocked. The dropped-response test forwards the mutation to the server before aborting its reply.
 
 ```bash
-# 1. backend (fresh data dir so seeded balances start at 20 days)
-NLD_MODE=demo NLD_BIND=127.0.0.1:18080 NLD_DATA_DIR=/tmp/nld-fe-data \
-  NLD_PUBLIC_URL=http://127.0.0.1:5173 /tmp/nauru-leave-snapshot serve
+# From the repository root. Reuse an existing binary, or build it once:
+cd backend && cargo build --release --target-dir target
+cd ..
 
-# 2. dev server with the /api proxy pointed at that backend
-cd frontend && NLD_API=http://127.0.0.1:18080 npx vite --host 127.0.0.1
+# Fresh data directory; local quota allows repeated full browser runs.
+NLD_MODE=demo NLD_BIND=127.0.0.1:18080 \
+  NLD_DATA_DIR=/tmp/nld-frontend-tests \
+  NLD_SANDBOX_CREATIONS_PER_HOUR=1000 \
+  NLD_PUBLIC_URL=http://127.0.0.1:5173 \
+  backend/target/release/nauru-leave serve
 
-# 3. in another shell
-cd frontend && npm run e2e        # E2E_BASE=http://127.0.0.1:5173 by default
+# In a second terminal:
+cd frontend
+NLD_API=http://127.0.0.1:18080 npx vite --host 127.0.0.1 --port 5173 --strictPort
+
+# In a third terminal:
+cd frontend
+npx tsc --noEmit && npx vitest run && npx vite build
+npx playwright test
 ```
 
-Browsers: `npx playwright install chromium` once if chromium is not cached.
-The scenario mutates the sandbox (it creates/approves requests and moves the
-business date to 2026-11-12), so re-run it only after `POST /api/demo/reset`
-or a fresh `NLD_DATA_DIR`. The demo backend rate-limits bursts; the spec
-waits and retries when it sees `rate_limited`.
+`backend/target/debug/nauru-leave` also works. Keep all Cargo artifacts in `backend/target`; the backend source need not change for these tests. The larger sandbox quota is only a local test setting. Default `E2E_BASE` is `http://127.0.0.1:5173`. Chromium must already be installed or be installed once with `npx playwright install chromium`.
+
+Each test has a fresh browser context and creates its own sandbox. The suites cover the main lifecycle, new-person lifecycle, audit fixes and R01/R02/R03 regressions. `click-budget.spec.ts` adds thirteen measured task flows and cross-page shortcut checks. Its helper counts every action click, checks the budget, and checks visible body text before and after each click and after form input; date/form selections are not counted as navigation clicks. Fixture creation and persona selection happen before measurement.
+
+Final run logs: `docs/test-logs/frontend.log` and `docs/test-logs/e2e-playwright.log`. Stop both processes after testing. A fresh directory prevents stale seeded templates when using a newly built backend.

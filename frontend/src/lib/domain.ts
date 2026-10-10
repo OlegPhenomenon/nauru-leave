@@ -16,6 +16,31 @@ export function inForceRevision(d: {
   return d.in_force_revision ?? d.current_revision;
 }
 
+/** Move a bare YYYY-MM-DD date by whole months, keeping the day clamped by UTC. */
+export function shiftMonths(iso: string, months: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const t = new Date(Date.UTC(y!, m! - 1 + months, 1));
+  const lastDay = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+  t.setUTCDate(Math.min(d!, lastDay));
+  return t.toISOString().slice(0, 10);
+}
+
+/**
+ * The policy version in force on a bare date (YYYY-MM-DD): latest valid_from
+ * on or before it, ties on the highest id — the same rule the server uses.
+ */
+export function policyInForceOn(
+  type: Pick<LeaveType, 'policy'> & { policies?: PolicyVersion[] },
+  on: string,
+): PolicyVersion | null {
+  const versions = type.policies?.length ? type.policies : type.policy ? [type.policy] : [];
+  let best: PolicyVersion | null = null;
+  for (const v of versions) {
+    if (v.valid_from <= on && (!best || v.valid_from > best.valid_from || (v.valid_from === best.valid_from && v.id > best.id))) best = v;
+  }
+  return best;
+}
+
 /**
  * The policy version that applies to an accrual run for `periodYear`: the
  * version in force on January 1 (or on the selected month's first day).
@@ -27,13 +52,7 @@ export function accrualPolicyForYear(
   periodYear: number,
   month = 1,
 ): PolicyVersion | null {
-  const versions = type.policies?.length ? type.policies : type.policy ? [type.policy] : [];
-  const periodStart = `${periodYear}-${String(month).padStart(2, '0')}-01`;
-  let best: PolicyVersion | null = null;
-  for (const v of versions) {
-    if (v.valid_from <= periodStart && (!best || v.valid_from > best.valid_from || (v.valid_from === best.valid_from && v.id > best.id))) best = v;
-  }
-  return best;
+  return policyInForceOn(type, `${periodYear}-${String(month).padStart(2, '0')}-01`);
 }
 
 /** Resolve the selected period before deciding whether the API needs a month. */
@@ -42,6 +61,33 @@ export function accrualPeriodPolicy(type: Pick<LeaveType, 'policy'> & { policies
   const selected = accrualPolicyForYear(type, year, month);
   if (selected?.accrual_mode === 'monthly') return selected;
   return selected?.accrual_mode === 'annual_upfront' && january?.accrual_mode === 'annual_upfront' ? january : null;
+}
+
+export interface AccrualPlan {
+  /** 'annual' → POST without month; 'monthly' → POST with the selected month. */
+  kind: 'annual' | 'monthly';
+  /** Earliest business date the server accepts this run (YYYY-MM-DD). */
+  runnableFrom: string;
+}
+
+/**
+ * What an "Add entitlement" run can post for a type in (year, month), and from
+ * when. Mirrors the server rules: an annual entitlement may be published
+ * `advance_publish_months` before 1 January; a monthly slice can be posted at
+ * the earliest on the month's first day. Null when the period's policy adds
+ * nothing (no policy, accrual 'none', or a non-balance rule).
+ */
+export function accrualPlanFor(
+  type: Pick<LeaveType, 'policy'> & { policies?: PolicyVersion[] },
+  year: number,
+  month: number,
+): AccrualPlan | null {
+  if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isInteger(month) || month < 1 || month > 12) return null;
+  const p = accrualPeriodPolicy(type, year, month);
+  if (!p || p.accrual_mode === 'none' || !p.uses_balance) return null;
+  const first = `${year}-${String(month).padStart(2, '0')}-01`;
+  if (p.accrual_mode === 'monthly') return { kind: 'monthly', runnableFrom: first };
+  return { kind: 'annual', runnableFrom: shiftMonths(`${year}-01-01`, -p.advance_publish_months) };
 }
 
 /** Standard full-time schedule day used for the carry-over limit conversion. */
@@ -112,4 +158,17 @@ export function correctableDays(days: DayRow[], corrections: { date: string; acc
       return { ...a, minutes: Math.max(0, a.minutes - (c?.applied_minutes ?? 0) - (c?.pending_minutes ?? 0)) };
     }),
   }));
+}
+
+/** Range of days still counted by the server, preserving gaps after cancellation. */
+export function remainingRanges(revision: Revision): [string, string][] {
+  const days = revision.days.filter(d => d.minutes > 0).map(d => d.date).sort();
+  const cancelled = new Set(revision.days.filter(d => d.part === 'none' && d.scheduled_minutes > 0).map(d => d.date));
+  const ranges: [string, string][] = [];
+  for (const date of days) {
+    const last = ranges.at(-1);
+    if (last && ![...cancelled].some(d => d > last[1] && d < date)) last[1] = date;
+    else ranges.push([date, date]);
+  }
+  return ranges;
 }
